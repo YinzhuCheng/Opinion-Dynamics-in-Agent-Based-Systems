@@ -24,6 +24,8 @@ export async function chatStream(
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
 ): Promise<string> {
+  const apiBase = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+  const endpoint = apiBase ? `${apiBase}/api/llm` : '/api/llm';
   handlers?.onStatus?.('waiting_response');
 
   const stream = extra?.stream ?? true;
@@ -41,7 +43,7 @@ export async function chatStream(
       stream,
     } as Record<string, unknown>;
 
-    response = await fetch('/api/llm', {
+    response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
