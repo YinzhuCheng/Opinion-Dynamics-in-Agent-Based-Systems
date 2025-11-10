@@ -84,14 +84,25 @@ export const buildRequestFromConfig = (
   config: ModelConfig,
   apiKey: string,
   messages: UnifiedLLMRequest['messages'],
-): UnifiedLLMRequest => ({
-  vendor: config.vendor,
-  baseUrl: config.baseUrl,
-  apiKey,
-  model: config.model,
-  temperature: config.temperature,
-  top_p: config.top_p,
-  max_output_tokens: config.max_output_tokens,
-  response_format: 'text',
-  messages,
-});
+): UnifiedLLMRequest => {
+  const payload: UnifiedLLMRequest = {
+    vendor: config.vendor,
+    baseUrl: config.baseUrl?.trim() ? config.baseUrl : undefined,
+    apiKey,
+    model: config.model,
+    response_format: 'text',
+    messages,
+  };
+
+  if (config.temperature !== undefined) {
+    payload.temperature = config.temperature;
+  }
+  if (config.top_p !== undefined) {
+    payload.top_p = config.top_p;
+  }
+  if (config.max_output_tokens !== undefined) {
+    payload.max_output_tokens = config.max_output_tokens;
+  }
+
+  return payload;
+};
