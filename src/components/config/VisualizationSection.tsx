@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 
 export function VisualizationSection() {
+  const [collapsed, setCollapsed] = useState(false);
   const enableStanceChart = useAppStore((state) => state.runState.config.visualization.enableStanceChart);
   const updateRunConfig = useAppStore((state) => state.updateRunConfig);
 
@@ -16,11 +18,21 @@ export function VisualizationSection() {
   };
 
   return (
-    <section className="card">
+    <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
         <div>
           <h2>结果可视化</h2>
           <p className="card__subtitle">配置是否生成观点演化曲线及相关导出。</p>
+        </div>
+        <div className="card__actions">
+          <button
+            type="button"
+            className="card__toggle"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '展开' : '收起'}
+          </button>
         </div>
       </header>
       <div className="card__body column-gap">

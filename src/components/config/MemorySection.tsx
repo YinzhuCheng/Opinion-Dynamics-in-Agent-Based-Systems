@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 
 export function MemorySection() {
+  const [collapsed, setCollapsed] = useState(false);
   const memory = useAppStore((state) => state.runState.config.memory);
   const setMemoryWindowBudget = useAppStore((state) => state.setMemoryWindowBudget);
 
@@ -10,11 +12,21 @@ export function MemorySection() {
   };
 
   return (
-    <section className="card">
+    <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
         <div>
           <h2>记忆管理</h2>
           <p className="card__subtitle">系统默认开启摘要压缩，可调整可见窗口占用的 Token 预算。</p>
+        </div>
+        <div className="card__actions">
+          <button
+            type="button"
+            className="card__toggle"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '展开' : '收起'}
+          </button>
         </div>
       </header>
       <div className="card__body column-gap">

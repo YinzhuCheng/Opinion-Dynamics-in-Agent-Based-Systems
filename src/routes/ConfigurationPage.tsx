@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom';
-import { ModelKeysSection } from '../components/config/ModelKeysSection';
 import { RunSettingsSection } from '../components/config/RunSettingsSection';
 import { AgentListSection } from '../components/config/AgentListSection';
 import { SentimentSection } from '../components/config/SentimentSection';
@@ -14,7 +13,6 @@ export function ConfigurationPage() {
 
   return (
     <div className="page page--configuration">
-      <ModelKeysSection />
       <RunSettingsSection />
       <AgentListSection />
       <SentimentSection />

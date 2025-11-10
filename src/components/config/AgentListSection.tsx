@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type {
   AgentSpec,
@@ -33,6 +33,7 @@ const defaultMBTIPersona = (): PersonaMBTI => ({
 });
 
 export function AgentListSection() {
+  const [collapsed, setCollapsed] = useState(false);
   const agents = useAppStore((state) => state.runState.agents);
   const runConfig = useAppStore((state) => state.runState.config);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
@@ -92,7 +93,7 @@ export function AgentListSection() {
     };
 
   return (
-    <section className="card">
+    <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
         <div>
           <h2>Agent 列表</h2>
@@ -101,6 +102,14 @@ export function AgentListSection() {
         <div className="card__actions">
           <button type="button" className="button primary" onClick={() => addAgent()}>
             新增 Agent
+          </button>
+          <button
+            type="button"
+            className="card__toggle"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '展开' : '收起'}
           </button>
         </div>
       </header>

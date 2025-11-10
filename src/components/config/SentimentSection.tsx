@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { ModelConfig, Vendor } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
 
 export function SentimentSection() {
+  const [collapsed, setCollapsed] = useState(false);
   const sentiment = useAppStore((state) => state.runState.config.sentiment);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const updateSentiment = useAppStore((state) => state.updateSentiment);
@@ -51,16 +53,26 @@ export function SentimentSection() {
   const modelConfig = sentiment.modelConfigOverride;
 
   return (
-    <section className="card">
+    <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
         <div>
           <h2>情感分类</h2>
           <p className="card__subtitle">可选启用情感分类 Agent，为每条消息贴上标签。</p>
         </div>
-        <label className="toggle">
-          <input type="checkbox" checked={sentiment.enabled} onChange={handleToggle} />
-          <span>{sentiment.enabled ? '已启用' : '已关闭'}</span>
-        </label>
+        <div className="card__actions">
+          <label className="toggle">
+            <input type="checkbox" checked={sentiment.enabled} onChange={handleToggle} />
+            <span>{sentiment.enabled ? '已启用' : '已关闭'}</span>
+          </label>
+          <button
+            type="button"
+            className="card__toggle"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '展开' : '收起'}
+          </button>
+        </div>
       </header>
       {sentiment.enabled && (
         <div className="card__body column-gap">
