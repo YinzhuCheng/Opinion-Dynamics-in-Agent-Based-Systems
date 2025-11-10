@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { testVendorConnection } from '../../utils/api';
 import type { DialogueMode, ModelConfig, Vendor } from '../../types';
@@ -174,6 +174,40 @@ export function RunSettingsSection() {
     model: vendorDefault.model ?? vendorPlaceholders[selectedVendor].model,
     systemPromptExtra: '',
   };
+
+  const pythonSnippet = useMemo(() => {
+    if (selectedVendor !== 'openai') {
+      return '# 当前示例针对 OpenAI 兼容接口，其他供应商请参考其官方 SDK。';
+    }
+    const fallback = vendorDefaults[selectedVendor] ?? {};
+    const baseUrl =
+      (globalConfig.baseUrl && globalConfig.baseUrl.trim()) ||
+      fallback.baseUrl ||
+      vendorPlaceholders[selectedVendor].baseUrl;
+    const modelName =
+      (globalConfig.model && globalConfig.model.trim()) ||
+      fallback.model ||
+      vendorPlaceholders[selectedVendor].model;
+    const userPrompt = (testMessage || 'Hello, introduce yourself.')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
+    return `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${baseUrl}",
+    api_key="YOUR_API_KEY",  # 请替换为实际密钥
+)
+
+response = client.chat.completions.create(
+    model="${modelName}",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "${userPrompt}"}
+    ],
+    stream=False,
+)
+print(response.choices[0].message.content)`;
+  }, [selectedVendor, globalConfig.baseUrl, globalConfig.model, vendorDefaults, testMessage]);
 
   const handleClearGlobalApiKey = () => {
     updateGlobalModelConfig({ apiKey: '' });
@@ -380,6 +414,10 @@ export function RunSettingsSection() {
                 {testState.status === 'error' && (
                   <pre className="vendor-test-result error">{testState.message}</pre>
                 )}
+                <div className="code-preview">
+                  <div className="code-preview__header">Python 调试示例</div>
+                  <pre>{pythonSnippet}</pre>
+                </div>
             </div>
           )}
         </div>
