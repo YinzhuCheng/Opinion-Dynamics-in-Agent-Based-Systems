@@ -15,6 +15,7 @@ export interface ChatStreamHandlers {
 export interface ChatStreamExtra {
   temperature?: number;
   maxTokens?: number;
+  stream?: boolean;
 }
 
 export async function chatStream(
@@ -24,6 +25,8 @@ export async function chatStream(
   handlers?: ChatStreamHandlers,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
+
+  const stream = extra?.stream ?? true;
 
   let response: Response;
   try {
@@ -35,14 +38,14 @@ export async function chatStream(
       messages,
       temperature: extra?.temperature,
       max_output_tokens: extra?.maxTokens,
-      stream: true,
+      stream,
     } as Record<string, unknown>;
 
     response = await fetch('/api/llm', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
+        Accept: stream ? 'text/event-stream' : 'application/json',
       },
       body: JSON.stringify(body),
     });

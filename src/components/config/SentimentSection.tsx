@@ -301,6 +301,7 @@ function SentimentModelConfigEditor({
         {
           temperature: resolvedConfig.temperature,
           maxTokens: resolvedConfig.max_output_tokens,
+          stream: false,
         },
       );
       setTestState({
