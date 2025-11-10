@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { testVendorConnection } from '../../utils/api';
 import type { DialogueMode, ModelConfig, Vendor } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
+import { chatStream } from '../../utils/llmAdapter';
 
 const modeOptions: Array<{ value: DialogueMode; label: string; description: string }> = [
   { value: 'round_robin', label: '轮询对话', description: '严格按 Agent 顺序轮流发言，适合结构化讨论。' },
@@ -121,49 +121,56 @@ export function RunSettingsSection() {
     setTestState({ status: 'idle' });
   };
 
-  const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
-    const apiKey = config.apiKey?.trim();
-    if (!apiKey) {
-      setTestState({ status: 'error', message: '请先填写 API Key。' });
-      return;
-    }
-    setTestState({ status: 'loading' });
-    try {
-      const fallback = vendorDefaults[vendor] ?? {};
-      const response = await testVendorConnection({
-        vendor,
+    const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
+      const apiKey = config.apiKey?.trim();
+      if (!apiKey) {
+        setTestState({ status: 'error', message: '请先填写 API Key。' });
+        return;
+      }
+
+      const resolvedConfig: ModelConfig = {
+        ...config,
+        baseUrl:
+          config.baseUrl?.trim() ||
+          vendorDefaults[vendor]?.baseUrl ||
+          vendorPlaceholders[vendor].baseUrl,
+        model:
+          config.model?.trim() ||
+          vendorDefaults[vendor]?.model ||
+          vendorPlaceholders[vendor].model,
         apiKey,
-        baseUrl: config.baseUrl || fallback.baseUrl || vendorPlaceholders[vendor].baseUrl,
-        model: config.model || fallback.model || vendorPlaceholders[vendor].model,
-        messages: [
+      };
+
+      setTestState({ status: 'loading' });
+      try {
+        const result = await chatStream(
+          [
+            {
+              role: 'system',
+              content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口稳定可用。',
+            },
+            {
+              role: 'user',
+              content: testMessage || '请确认你已收到这条测试指令。',
+            },
+          ],
+          resolvedConfig,
           {
-            role: 'system',
-            content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口稳定可用。',
+            temperature: resolvedConfig.temperature,
+            maxTokens: resolvedConfig.max_output_tokens,
           },
-          {
-            role: 'user',
-            content: testMessage || '请确认你已收到这条测试指令。',
-          },
-        ],
-      });
-      if (response.ok) {
+        );
         setTestState({
           status: 'success',
-          message: response.content || '（请求成功但未返回正文）',
+          message: result || '（请求成功但未返回正文）',
         });
-      } else {
+      } catch (error: any) {
         setTestState({
           status: 'error',
-          message: response.error?.message ?? '上游返回错误。',
+          message: error?.message ?? '请求失败，请稍后再试。',
         });
       }
-    } catch (error: any) {
-      setTestState({
-        status: 'error',
-        message: error?.message ?? '请求失败，请稍后再试。',
-      });
-    }
-  };
+    };
 
   const selectedVendor = runConfig.globalModelConfig?.vendor ?? 'openai';
   const vendorDefault = vendorDefaults[selectedVendor];

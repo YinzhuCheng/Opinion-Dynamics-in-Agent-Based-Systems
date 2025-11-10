@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { ModelConfig, Vendor } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
-import { testVendorConnection } from '../../utils/api';
+import { chatStream } from '../../utils/llmAdapter';
 
 type ConnectionTestState = {
   status: 'idle' | 'loading' | 'success' | 'error';
@@ -279,12 +279,14 @@ function SentimentModelConfigEditor({
     }
     setTestState({ status: 'loading' });
     try {
-      const response = await testVendorConnection({
-        vendor,
+      const resolvedConfig: ModelConfig = {
+        ...modelConfig,
+        baseUrl: modelConfig.baseUrl?.trim() || defaults?.baseUrl || fallback.baseUrl,
+        model: modelConfig.model?.trim() || defaults?.model || fallback.model,
         apiKey,
-        baseUrl: modelConfig.baseUrl || defaults?.baseUrl || fallback.baseUrl,
-        model: modelConfig.model || defaults?.model || fallback.model,
-        messages: [
+      };
+      const result = await chatStream(
+        [
           {
             role: 'system',
             content: '你是一名情感分类助手，请用中文简述用户语句的情绪倾向。',
@@ -295,18 +297,16 @@ function SentimentModelConfigEditor({
               testMessage || '请判断：“今天天气真好，我心情棒极了！”这句话的情绪倾向。',
           },
         ],
+        resolvedConfig,
+        {
+          temperature: resolvedConfig.temperature,
+          maxTokens: resolvedConfig.max_output_tokens,
+        },
+      );
+      setTestState({
+        status: 'success',
+        message: result || '（请求成功但未返回正文）',
       });
-      if (response.ok) {
-        setTestState({
-          status: 'success',
-          message: response.content || '（请求成功但未返回正文）',
-        });
-      } else {
-        setTestState({
-          status: 'error',
-          message: response.error?.message ?? '连通失败，请稍后再试。',
-        });
-      }
     } catch (error: any) {
       setTestState({
         status: 'error',

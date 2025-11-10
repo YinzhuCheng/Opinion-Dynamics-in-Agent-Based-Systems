@@ -2,9 +2,10 @@ import { nanoid } from 'nanoid';
 import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt, buildSummarizationPrompt } from './prompts';
 import { resolveSentimentLabels } from './sentiment';
 import { estimateMessagesTokens } from './token';
-import { callLLM, buildRequestFromConfig } from '../utils/api';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { chatStream } from '../utils/llmAdapter';
+import type { ChatMessage } from '../utils/llmAdapter';
 
 const TOTAL_TOKEN_BUDGET = 4096;
 
@@ -188,12 +189,13 @@ class ConversationRunner {
   private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
     const store = this.appStore.getState();
     const { runState } = store;
-    const modelConfig = this.resolveModelConfig(agent, config);
-    const apiKey = this.resolveApiKey(modelConfig);
+    const baseModelConfig = this.resolveModelConfig(agent, config);
+    const apiKey = this.resolveApiKey(baseModelConfig);
 
     if (!apiKey) {
-      throw new Error(`未找到 ${modelConfig.vendor} 的 API Key，请在配置页填写。`);
+      throw new Error(`未找到 ${baseModelConfig.vendor} 的 API Key，请在配置页填写。`);
     }
+    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
     const systemPrompt = buildAgentSystemPrompt({
       agent,
@@ -212,17 +214,34 @@ class ConversationRunner {
       turn,
     });
 
-    const request = buildRequestFromConfig(modelConfig, apiKey, [
+    const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
-    ]);
-    request.requestId = nanoid();
+    ];
+    const extra = {
+      temperature: modelConfig.temperature,
+      maxTokens: modelConfig.max_output_tokens,
+    };
 
-      const response = await this.withAwaiting('response', () => callLLM(request));
-    if (!response.ok) {
-      throw new Error(response.error?.message ?? '模型调用失败。');
+    let content = '';
+    try {
+      content =
+        (await chatStream(messages, modelConfig, extra, {
+          onStatus: (status) => {
+            if (status === 'waiting_response' || status === 'responding') {
+              this.setAwaiting('response');
+            } else if (status === 'thinking') {
+              this.setAwaiting('thinking');
+            } else if (status === 'done') {
+              this.setAwaiting(undefined);
+            }
+          },
+        })) || '';
+    } finally {
+      this.setAwaiting(undefined);
     }
-    const content = (response.content ?? '').trim() || '__SKIP__';
+
+    content = content.trim() || '__SKIP__';
 
     const message: Message = {
       id: nanoid(),
@@ -260,26 +279,25 @@ class ConversationRunner {
     const labels = resolveSentimentLabels(sentimentSetting);
     if (labels.length < 2) return;
 
-    const modelConfig = sentimentSetting.modelConfigOverride ?? this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(modelConfig);
+    const baseModelConfig = sentimentSetting.modelConfigOverride ?? this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(baseModelConfig);
     if (!apiKey) {
       console.warn('[Sentiment] 缺少情感分类模型的 API Key，跳过。');
       return;
     }
-
-    const { system, user } = buildSentimentPrompt(labels);
-    const request = buildRequestFromConfig(modelConfig, apiKey, [
-      { role: 'system', content: system },
-      { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-    ]);
-    request.requestId = `sentiment-${message.id}-${nanoid(6)}`;
+    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
     try {
-        const response = await callLLM(request);
-      if (!response.ok || !response.content) {
-        throw new Error(response.error?.message ?? '情感分类失败');
-      }
-      const parsed = safeJsonParse(response.content);
+      const { system, user } = buildSentimentPrompt(labels);
+      const result = await chatStream(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
+        ],
+        modelConfig,
+        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+      );
+      const parsed = safeJsonParse(result);
       if (parsed?.label && labels.includes(parsed.label)) {
         this.appStore.getState().updateMessage(message.id, (msg) => {
           msg.sentiment = {
@@ -294,25 +312,25 @@ class ConversationRunner {
   }
 
   private async performStanceScoring(message: Message, config: RunConfig) {
-    const modelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(modelConfig);
+    const baseModelConfig = this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(baseModelConfig);
     if (!apiKey) {
       console.warn('[Stance] 缺少模型 API Key，跳过立场评分。');
       return;
     }
+    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-    const { system, user } = buildStancePrompt();
-    const request = buildRequestFromConfig(modelConfig, apiKey, [
-      { role: 'system', content: system },
-      { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-    ]);
-    request.requestId = `stance-${message.id}-${nanoid(6)}`;
-      try {
-        const response = await callLLM(request);
-      if (!response.ok || !response.content) {
-        throw new Error(response.error?.message ?? '立场评分失败');
-      }
-      const parsed = safeJsonParse(response.content);
+    try {
+      const { system, user } = buildStancePrompt();
+      const result = await chatStream(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
+        ],
+        modelConfig,
+        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+      );
+      const parsed = safeJsonParse(result);
       if (typeof parsed?.score === 'number') {
         this.appStore.getState().updateMessage(message.id, (msg) => {
           msg.stance = {
@@ -356,24 +374,37 @@ class ConversationRunner {
     const chunk = messages.slice(summarizeFromIndex, summarizeFromIndex + newSummariesCount);
     const transcripts = chunk.map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId))).join('\n');
 
-    const modelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(modelConfig);
+    const baseModelConfig = this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(baseModelConfig);
     if (!apiKey) {
       console.warn('[Summary] 缺少模型 API Key，跳过摘要压缩。');
       return;
     }
-
-    const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
-    const request = buildRequestFromConfig(modelConfig, apiKey, [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ]);
-    request.requestId = `summary-${nanoid(6)}`;
+    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
     try {
-      const response = await this.withAwaiting('thinking', () => callLLM(request));
-      if (response.ok && response.content) {
-        this.appStore.getState().setSummary(response.content.trim());
+      const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
+      const result = await chatStream(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        modelConfig,
+        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+        {
+          onStatus: (status) => {
+            if (status === 'waiting_response' || status === 'responding') {
+              this.setAwaiting('response');
+            } else if (status === 'thinking') {
+              this.setAwaiting('thinking');
+            } else if (status === 'done') {
+              this.setAwaiting(undefined);
+            }
+          },
+        },
+      );
+      if (result) {
+        this.appStore.getState().setSummary(result.trim());
         this.setStatus((status) => ({
           ...status,
           summarizedCount: status.summarizedCount + newSummariesCount,
@@ -381,6 +412,8 @@ class ConversationRunner {
       }
     } catch (error) {
       console.warn('[Summary] 摘要生成失败：', error);
+    } finally {
+      this.setAwaiting(undefined);
     }
   }
 
@@ -471,15 +504,6 @@ class ConversationRunner {
       ...status,
       awaitingLabel: label,
     }));
-  }
-
-  private async withAwaiting<T>(label: 'response' | 'thinking', task: () => Promise<T>): Promise<T> {
-    this.setAwaiting(label);
-    try {
-      return await task();
-    } finally {
-      this.setAwaiting(undefined);
-    }
   }
 
   private shouldStop() {

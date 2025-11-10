@@ -12,6 +12,7 @@ interface UnifiedRequest {
   response_format?: 'text' | 'json';
   requestId?: string;
   metadata?: Record<string, unknown>;
+  stream?: boolean;
 }
 
 interface UnifiedResponse {
@@ -68,6 +69,25 @@ export default {
       if (!payload) {
         return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid JSON payload' } }, 400);
       }
+
+      if (payload.stream && payload.vendor === 'openai') {
+        try {
+          return await proxyOpenAIStream(payload);
+        } catch (error: any) {
+          return json(
+            {
+              ok: false,
+              error: {
+                code: error?.code ?? 'UPSTREAM_ERROR',
+                message: error?.message ?? 'Unknown error',
+                details: sanitizeError(error),
+              },
+            },
+            typeof error?.status === 'number' ? error.status : 500,
+          );
+        }
+      }
+
       const result = await withRetries(() => callVendor(payload), 3);
       return json(result);
     } catch (error: any) {
@@ -102,6 +122,7 @@ export default {
               ],
         temperature: payload.temperature ?? 0,
         max_output_tokens: Math.min(payload.max_output_tokens ?? 32, 64),
+        stream: false,
       };
       const result = await withRetries(() => callVendor(testPayload), 2);
       return json(result);
@@ -130,6 +151,51 @@ export default {
     }
   },
 };
+
+async function proxyOpenAIStream(payload: UnifiedRequest): Promise<Response> {
+  const base = (payload.baseUrl || OPENAI_BASE).replace(/\/$/, '');
+  const url = `${base}/chat/completions`;
+  const body = {
+    model: payload.model,
+    messages: payload.messages,
+    temperature: payload.temperature,
+    top_p: payload.top_p,
+    max_tokens: payload.max_output_tokens,
+    stream: true,
+  };
+
+  const upstream = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${payload.apiKey}`,
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!upstream.ok || !upstream.body) {
+    const errBody = await safeJson(upstream);
+    throw normalizeError('openai', upstream.status, errBody);
+  }
+
+  const { readable, writable } = new TransformStream();
+  upstream.body
+    .pipeTo(writable)
+    .catch((error) => console.warn('[OpenAI stream] pipe error', error));
+
+  const headers = new Headers({
+    ...DEFAULT_HEADERS,
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+
+  return new Response(readable, {
+    status: 200,
+    headers,
+  });
+}
 
 async function callVendor(payload: UnifiedRequest): Promise<UnifiedResponse> {
   switch (payload.vendor) {
