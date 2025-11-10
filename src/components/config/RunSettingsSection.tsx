@@ -74,9 +74,6 @@ export function RunSettingsSection() {
       baseUrl: defaults.baseUrl ?? '',
       apiKey: defaults.apiKey ?? '',
       model: defaults.model ?? vendorPlaceholders[vendor].model,
-      temperature: 0.7,
-      top_p: 0.95,
-      max_output_tokens: 2048,
       systemPromptExtra: '',
     }));
     setShowGlobalKey(false);
@@ -175,9 +172,6 @@ export function RunSettingsSection() {
     baseUrl: vendorDefault.baseUrl ?? '',
     apiKey: vendorDefault.apiKey ?? '',
     model: vendorDefault.model ?? vendorPlaceholders[selectedVendor].model,
-    temperature: 0.7,
-    top_p: 0.95,
-    max_output_tokens: 2048,
     systemPromptExtra: '',
   };
 

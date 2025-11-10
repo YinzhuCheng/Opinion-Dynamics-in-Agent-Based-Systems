@@ -20,8 +20,6 @@ const defaultModelConfig: ModelConfig = {
   baseUrl: '',
   apiKey: '',
   model: 'gpt-4.1-mini',
-  temperature: 0.7,
-  top_p: 0.95,
 };
 
 const defaultPersona: Persona = {

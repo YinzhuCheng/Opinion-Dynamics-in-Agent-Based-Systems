@@ -65,8 +65,6 @@ export function SentimentSection() {
         vendor: 'openai',
         model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
         apiKey: vendorDefaults.openai.apiKey ?? '',
-        temperature: 0,
-        top_p: 0.9,
         baseUrl: vendorDefaults.openai.baseUrl,
       };
     });
