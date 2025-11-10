@@ -2,6 +2,27 @@ import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { ModelConfig, Vendor } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
+import { testVendorConnection } from '../../utils/api';
+
+type ConnectionTestState = {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  message?: string;
+};
+
+const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+  },
+  anthropic: {
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-3-5-sonnet-latest',
+  },
+  gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-1.5-pro',
+  },
+};
 
 export function SentimentSection() {
   const [collapsed, setCollapsed] = useState(false);
@@ -187,6 +208,8 @@ function SentimentModelConfigEditor({
   ) => void;
   vendorDefaults: VendorDefaults;
 }) {
+  const [testState, setTestState] = useState<ConnectionTestState>({ status: 'idle' });
+  const [testMessage, setTestMessage] = useState('请判断“今天真让人开心！”的情绪。');
   const handleVendorChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const vendor = event.target.value as Vendor;
     const defaults = vendorDefaults[vendor];
@@ -197,6 +220,7 @@ function SentimentModelConfigEditor({
       baseUrl: defaults.baseUrl ?? modelConfig.baseUrl,
       apiKey: defaults.apiKey ?? modelConfig.apiKey ?? '',
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -235,6 +259,57 @@ function SentimentModelConfigEditor({
       ...modelConfig,
       systemPromptExtra: event.target.value,
     });
+  };
+
+  const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setTestMessage(event.target.value);
+  };
+
+  const handleTestConnection = async () => {
+    const vendor = modelConfig.vendor;
+    const defaults = vendorDefaults[vendor];
+    const fallback = vendorFallbacks[vendor];
+    const apiKey = (modelConfig.apiKey ?? defaults?.apiKey ?? '').trim();
+    if (!apiKey) {
+      setTestState({ status: 'error', message: '请先填写该模型的 API Key。' });
+      return;
+    }
+    setTestState({ status: 'loading' });
+    try {
+      const response = await testVendorConnection({
+        vendor,
+        apiKey,
+        baseUrl: modelConfig.baseUrl || defaults?.baseUrl || fallback.baseUrl,
+        model: modelConfig.model || defaults?.model || fallback.model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是一名情感分类助手，请用中文简述用户语句的情绪倾向。',
+          },
+          {
+            role: 'user',
+            content:
+              testMessage || '请判断：“今天天气真好，我心情棒极了！”这句话的情绪倾向。',
+          },
+        ],
+      });
+      if (response.ok) {
+        setTestState({
+          status: 'success',
+          message: response.content || '（请求成功但未返回正文）',
+        });
+      } else {
+        setTestState({
+          status: 'error',
+          message: response.error?.message ?? '连通失败，请稍后再试。',
+        });
+      }
+    } catch (error: any) {
+      setTestState({
+        status: 'error',
+        message: error?.message ?? '请求异常，请检查网络或 Worker 配置。',
+      });
+    }
   };
 
   const defaults = vendorDefaults[modelConfig.vendor];
@@ -320,6 +395,30 @@ function SentimentModelConfigEditor({
           onChange={handleSystemPromptChange}
         />
       </label>
+      <label className="form-field">
+        <span>连通性测试输入</span>
+        <textarea
+          value={testMessage}
+          onChange={handleTestMessageChange}
+          placeholder="例如：请判断“今天真让人开心！”这句话的情绪。"
+        />
+      </label>
+      <div className="vendor-card__actions">
+        <button
+          type="button"
+          className="button secondary"
+          onClick={handleTestConnection}
+          disabled={testState.status === 'loading'}
+        >
+          {testState.status === 'loading' ? '测试中…' : '测试连通'}
+        </button>
+      </div>
+      {testState.status === 'success' && (
+        <pre className="vendor-test-result success">{testState.message}</pre>
+      )}
+      {testState.status === 'error' && (
+        <pre className="vendor-test-result error">{testState.message}</pre>
+      )}
     </div>
   );
 }

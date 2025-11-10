@@ -57,7 +57,9 @@ const createDefaultRunConfig = (): RunConfig => ({
   },
   memory: {
     summarizationEnabled: true,
-    windowTokenBudgetPct: 40,
+    minWindowPct: 20,
+    maxWindowPct: 60,
+    growthRate: 1.2,
   },
   visualization: {
     enableStanceChart: false,
@@ -139,7 +141,7 @@ export interface AppStore {
   setSentimentModelConfig: (
     updater: Partial<ModelConfig> | null | ((current?: ModelConfig) => ModelConfig | undefined),
   ) => void;
-  setMemoryWindowBudget: (value: number) => void;
+  updateMemoryConfig: (updater: Partial<RunConfig['memory']>) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -339,28 +341,42 @@ export const useAppStore = create<AppStore>((set) => ({
         };
       }),
     ),
-  setSentimentModelConfig: (updater) =>
-    set(
-      produce((state: AppStore) => {
-        const current = state.runState.config.sentiment.modelConfigOverride;
-        if (updater === null) {
-          state.runState.config.sentiment.modelConfigOverride = undefined;
-        } else if (typeof updater === 'function') {
-          state.runState.config.sentiment.modelConfigOverride = updater(current ?? undefined);
-        } else {
-          state.runState.config.sentiment.modelConfigOverride = {
-            ...(current ?? { ...defaultModelConfig }),
-            ...updater,
-          };
-        }
-      }),
-    ),
-  setMemoryWindowBudget: (value) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.config.memory.windowTokenBudgetPct = Math.min(90, Math.max(10, value));
-      }),
-    ),
+    setSentimentModelConfig: (updater) =>
+      set(
+        produce((state: AppStore) => {
+          const current = state.runState.config.sentiment.modelConfigOverride;
+          if (updater === null) {
+            state.runState.config.sentiment.modelConfigOverride = undefined;
+          } else if (typeof updater === 'function') {
+            state.runState.config.sentiment.modelConfigOverride = updater(current ?? undefined);
+          } else {
+            state.runState.config.sentiment.modelConfigOverride = {
+              ...(current ?? { ...defaultModelConfig }),
+              ...updater,
+            };
+          }
+        }),
+      ),
+    updateMemoryConfig: (updater) =>
+      set(
+        produce((state: AppStore) => {
+          const current = state.runState.config.memory;
+          const next = { ...current, ...updater };
+          const clampPct = (val: number | undefined, fallback: number) =>
+            Math.min(90, Math.max(5, val ?? fallback));
+          next.minWindowPct = clampPct(next.minWindowPct, current.minWindowPct);
+          next.maxWindowPct = clampPct(next.maxWindowPct, current.maxWindowPct);
+          if (next.minWindowPct > next.maxWindowPct) {
+            [next.minWindowPct, next.maxWindowPct] = [next.maxWindowPct, next.minWindowPct];
+          }
+          const growth = next.growthRate ?? current.growthRate;
+          next.growthRate = growth <= 0 ? 0.5 : Math.min(5, growth);
+          if (typeof next.summarizationEnabled !== 'boolean') {
+            next.summarizationEnabled = current.summarizationEnabled;
+          }
+          state.runState.config.memory = next;
+        }),
+      ),
   setRunStatus: (updater) =>
     set(
       produce((state: AppStore) => {

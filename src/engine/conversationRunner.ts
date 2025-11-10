@@ -326,7 +326,7 @@ class ConversationRunner {
     }
   }
 
-  private async maybeSummarizeMemory(config: RunConfig) {
+    private async maybeSummarizeMemory(config: RunConfig) {
     const store = this.appStore.getState();
     const { runState } = store;
     const { messages, status } = runState;
@@ -336,10 +336,9 @@ class ConversationRunner {
       return;
     }
 
-    const windowBudgetTokens = Math.max(
-      200,
-      Math.floor((TOTAL_TOKEN_BUDGET * config.memory.windowTokenBudgetPct) / 100),
-    );
+      const agentCount = Math.max(1, runState.agents.length);
+      const windowPct = this.computeWindowPct(runState.status, config, agentCount);
+      const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
 
     const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
     this.appStore.getState().setVisibleWindow(visibleMessages);
@@ -380,13 +379,12 @@ class ConversationRunner {
     }
   }
 
-  private updateVisibleWindow() {
+    private updateVisibleWindow() {
     const store = this.appStore.getState();
-    const { config, messages } = store.runState;
-    const windowBudgetTokens = Math.max(
-      200,
-      Math.floor((TOTAL_TOKEN_BUDGET * config.memory.windowTokenBudgetPct) / 100),
-    );
+      const { config, messages, status, agents } = store.runState;
+      const agentCount = Math.max(1, agents.length);
+      const windowPct = this.computeWindowPct(status, config, agentCount);
+      const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
     const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
     this.appStore.getState().setVisibleWindow(visibleMessages);
   }
@@ -430,6 +428,35 @@ class ConversationRunner {
 
   private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
     this.appStore.getState().setRunStatus(updater);
+  }
+
+  private computeWindowPct(status: RunStatus, config: RunConfig, agentCount: number): number {
+    const { memory } = config;
+    const minPct = Math.min(memory.minWindowPct, memory.maxWindowPct);
+    const maxPct = Math.max(memory.minWindowPct, memory.maxWindowPct);
+    const growthRate = memory.growthRate > 0 ? memory.growthRate : 0.5;
+    const progress = this.estimateDialogueProgress(status, config, agentCount);
+    let curve: number;
+    const denominator = 1 - Math.exp(-growthRate);
+    if (Math.abs(denominator) < 1e-6) {
+      curve = progress;
+    } else {
+      curve = (1 - Math.exp(-growthRate * progress)) / denominator;
+    }
+    const pct = minPct + (maxPct - minPct) * curve;
+    return Math.min(90, Math.max(5, pct));
+  }
+
+  private estimateDialogueProgress(status: RunStatus, config: RunConfig, agentCount: number): number {
+    const expectedMessages =
+      config.mode === 'round_robin'
+        ? (config.maxRounds ?? Math.max(1, status.currentRound || 1)) * Math.max(1, agentCount)
+        : config.maxMessages ?? Math.max(1, status.totalMessages || agentCount);
+    if (expectedMessages <= 0) {
+      return 0;
+    }
+    const progress = status.totalMessages / expectedMessages;
+    return Math.min(1, Math.max(0, progress));
   }
 
     private setAwaiting(label?: 'response' | 'thinking') {

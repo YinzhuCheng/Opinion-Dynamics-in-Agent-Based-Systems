@@ -82,8 +82,10 @@ export interface RunConfig {
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
   memory: {
-    summarizationEnabled: true;
-    windowTokenBudgetPct: number;
+    summarizationEnabled: boolean;
+    minWindowPct: number;
+    maxWindowPct: number;
+    growthRate: number;
   };
   visualization: {
     enableStanceChart: boolean;

@@ -17,6 +17,27 @@ import {
   MBTI_OPTIONS,
   BIG5_TRAIT_LABELS,
 } from '../../data/personaTemplates';
+import { testVendorConnection } from '../../utils/api';
+
+type ConnectionTestState = {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  message?: string;
+};
+
+const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+  },
+  anthropic: {
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-3-5-sonnet-latest',
+  },
+  gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-1.5-pro',
+  },
+};
 
 const defaultBig5Persona = (): PersonaBig5 => ({
   type: 'big5',
@@ -41,7 +62,7 @@ export function AgentListSection() {
   const updateAgent = useAppStore((state) => state.updateAgent);
   const removeAgent = useAppStore((state) => state.removeAgent);
   const memory = useAppStore((state) => state.runState.config.memory);
-  const setMemoryWindowBudget = useAppStore((state) => state.setMemoryWindowBudget);
+  const updateMemoryConfig = useAppStore((state) => state.updateMemoryConfig);
 
   useEffect(() => {
     if (!runConfig.useGlobalModelConfig) {
@@ -168,25 +189,51 @@ export function AgentListSection() {
           </div>
         ))}
         <div className="agent-memory-block">
-          <h4>记忆窗口管理</h4>
+          <h4>记忆窗口管理（动态）</h4>
           <p className="form-hint">
-            系统会在 Token 接近上限时自动摘要早期消息，并保留近期对话在可见窗口中。
+            前几轮仅保留少量上下文，随着讨论深入逐步扩大可见窗口，其余内容会被摘要保存在长期记忆中。
           </p>
-          <div className="memory-slider">
+          <div className="grid three-columns memory-grid">
             <label className="form-field">
-              <span>可见窗口 Token 预算（占总预算百分比）</span>
+              <span>初始可见窗口（%）</span>
               <input
-                type="range"
-                min={10}
-                max={80}
-                step={5}
-                value={memory.windowTokenBudgetPct}
-                onChange={(event) => setMemoryWindowBudget(Number(event.target.value))}
+                type="number"
+                min={5}
+                max={90}
+                value={memory.minWindowPct}
+                onChange={(event) =>
+                  updateMemoryConfig({ minWindowPct: Number(event.target.value) })
+                }
               />
+              <p className="form-hint">对话开场时用于保留的新消息比例，建议 10–30。</p>
             </label>
-            <div className="memory-slider__value">
-              {memory.windowTokenBudgetPct}% 用于保留近期消息，剩余 {100 - memory.windowTokenBudgetPct}% 用于摘要。
-            </div>
+            <label className="form-field">
+              <span>最大可见窗口（%）</span>
+              <input
+                type="number"
+                min={5}
+                max={90}
+                value={memory.maxWindowPct}
+                onChange={(event) =>
+                  updateMemoryConfig({ maxWindowPct: Number(event.target.value) })
+                }
+              />
+              <p className="form-hint">讨论后期可使用的最大比例，建议不超过 70。</p>
+            </label>
+            <label className="form-field">
+              <span>增长速率</span>
+              <input
+                type="number"
+                min={0.2}
+                max={5}
+                step={0.1}
+                value={memory.growthRate}
+                onChange={(event) =>
+                  updateMemoryConfig({ growthRate: Number(event.target.value) })
+                }
+              />
+              <p className="form-hint">数值越大，窗口扩张越快；0.5 慢速，2.0 较激进。</p>
+            </label>
           </div>
         </div>
       </div>
@@ -387,6 +434,9 @@ const AgentModelConfigEditor = ({
   const modelConfig = agent.modelConfig;
   if (!modelConfig) return null;
 
+  const [testState, setTestState] = useState<ConnectionTestState>({ status: 'idle' });
+  const [testMessage, setTestMessage] = useState('请给出一句示例发言。');
+
   const handleVendorChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const vendor = event.target.value as Vendor;
     const defaults = vendorDefaults[vendor];
@@ -399,6 +449,7 @@ const AgentModelConfigEditor = ({
         apiKey: defaults.apiKey ?? modelConfig.apiKey ?? '',
       },
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleModelChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -426,6 +477,7 @@ const AgentModelConfigEditor = ({
         apiKey: event.target.value,
       },
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleNumberChange =
@@ -447,6 +499,56 @@ const AgentModelConfigEditor = ({
         systemPromptExtra: event.target.value,
       },
     });
+  };
+
+  const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setTestMessage(event.target.value);
+  };
+
+  const handleTestConnection = async () => {
+    const vendor = modelConfig.vendor;
+    const defaults = vendorDefaults[vendor];
+    const fallback = vendorFallbacks[vendor];
+    const apiKey = (modelConfig.apiKey ?? defaults?.apiKey ?? '').trim();
+    if (!apiKey) {
+      setTestState({ status: 'error', message: '请为该 Agent 填写 API Key。' });
+      return;
+    }
+    setTestState({ status: 'loading' });
+    try {
+      const response = await testVendorConnection({
+        vendor,
+        apiKey,
+        baseUrl: modelConfig.baseUrl || defaults?.baseUrl || fallback.baseUrl,
+        model: modelConfig.model || defaults?.model || fallback.model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是多智能体讨论中的一员，请围绕议题给出简短回答。',
+          },
+          {
+            role: 'user',
+            content: testMessage || '请举例说明你将如何参与讨论。',
+          },
+        ],
+      });
+      if (response.ok) {
+        setTestState({
+          status: 'success',
+          message: response.content || '（请求成功但未返回正文）',
+        });
+      } else {
+        setTestState({
+          status: 'error',
+          message: response.error?.message ?? '连通失败，请稍后再试。',
+        });
+      }
+    } catch (error: any) {
+      setTestState({
+        status: 'error',
+        message: error?.message ?? '请求异常，请检查网络或 Worker 配置。',
+      });
+    }
   };
 
   const defaults = vendorDefaults[modelConfig.vendor];
@@ -533,6 +635,30 @@ const AgentModelConfigEditor = ({
           onChange={handleSystemPromptChange}
         />
       </label>
+      <label className="form-field">
+        <span>连通性测试输入</span>
+        <textarea
+          value={testMessage}
+          onChange={handleTestMessageChange}
+          placeholder="例如：请说明你将在讨论中先发言的角度。"
+        />
+      </label>
+      <div className="vendor-card__actions">
+        <button
+          type="button"
+          className="button secondary"
+          onClick={handleTestConnection}
+          disabled={testState.status === 'loading'}
+        >
+          {testState.status === 'loading' ? '测试中…' : '测试连通'}
+        </button>
+      </div>
+      {testState.status === 'success' && (
+        <pre className="vendor-test-result success">{testState.message}</pre>
+      )}
+      {testState.status === 'error' && (
+        <pre className="vendor-test-result error">{testState.message}</pre>
+      )}
     </div>
   );
 };

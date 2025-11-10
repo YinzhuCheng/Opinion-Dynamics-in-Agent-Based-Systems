@@ -37,21 +37,9 @@ type TestState = {
 
 export function RunSettingsSection() {
   const [collapsed, setCollapsed] = useState(false);
-  const [showKeys, setShowKeys] = useState<Record<Vendor, boolean>>({
-    openai: false,
-    anthropic: false,
-    gemini: false,
-  });
-  const [testMessages, setTestMessages] = useState<Record<Vendor, string>>({
-    openai: '你好，能听到吗？',
-    anthropic: 'Hello Claude, are you there?',
-    gemini: 'Ping from UI, please respond.',
-  });
-  const [testStates, setTestStates] = useState<Record<Vendor, TestState>>({
-    openai: { status: 'idle' },
-    anthropic: { status: 'idle' },
-    gemini: { status: 'idle' },
-  });
+  const [showGlobalKey, setShowGlobalKey] = useState(false);
+  const [testMessage, setTestMessage] = useState('请用一句话介绍你自己。');
+  const [testState, setTestState] = useState<TestState>({ status: 'idle' });
 
   const runConfig = useAppStore((state) => state.runState.config);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
@@ -91,6 +79,8 @@ export function RunSettingsSection() {
       max_output_tokens: 2048,
       systemPromptExtra: '',
     }));
+    setShowGlobalKey(false);
+    setTestState({ status: 'idle' });
   };
 
   const handleGlobalModelChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -120,79 +110,57 @@ export function RunSettingsSection() {
       } as Partial<ModelConfig>);
     };
 
-  const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    updateGlobalModelConfig({ systemPromptExtra: event.target.value });
-  };
+    const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+      updateGlobalModelConfig({ systemPromptExtra: event.target.value });
+    };
 
-  const handleVendorBaseUrlChange = (vendor: Vendor) => (event: ChangeEvent<HTMLInputElement>) => {
-    setVendorBaseUrl(vendor, event.target.value);
-  };
+    const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+      setTestMessage(event.target.value);
+    };
 
-  const handleVendorModelChange = (vendor: Vendor) => (event: ChangeEvent<HTMLInputElement>) => {
-    setVendorModel(vendor, event.target.value);
-  };
-
-  const handleVendorApiKeyChange = (vendor: Vendor) => (event: ChangeEvent<HTMLInputElement>) => {
-    setVendorApiKey(vendor, event.target.value);
-  };
-
-  const handleTestMessageChange = (vendor: Vendor) => (event: ChangeEvent<HTMLTextAreaElement>) => {
-    const value = event.target.value;
-    setTestMessages((prev) => ({ ...prev, [vendor]: value }));
-  };
-
-  const handleTestConnection = async (vendor: Vendor) => {
-    const vendorConfig = vendorDefaults[vendor];
-    const apiKey = vendorConfig.apiKey?.trim();
-    if (!apiKey) {
-      setTestStates((prev) => ({
-        ...prev,
-        [vendor]: { status: 'error', message: '请先填写 API Key。' },
-      }));
-      return;
-    }
-    setTestStates((prev) => ({
-      ...prev,
-      [vendor]: { status: 'loading' },
-    }));
-    try {
-      const response = await testVendorConnection({
-        vendor,
-        apiKey,
-        baseUrl: vendorConfig.baseUrl || undefined,
-        model: vendorConfig.model || vendorPlaceholders[vendor].model,
-        messages: [
-          {
-            role: 'system',
-            content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口可用。',
-          },
-          {
-            role: 'user',
-            content: testMessages[vendor] || '你好，能否收到？',
-          },
-        ],
-      });
-      if (response.ok) {
-        setTestStates((prev) => ({
-          ...prev,
-          [vendor]: { status: 'success', message: response.content || '（无返回内容）' },
-        }));
-      } else {
-        setTestStates((prev) => ({
-          ...prev,
-          [vendor]: {
-            status: 'error',
-            message: response.error?.message ?? '连通失败。',
-          },
-        }));
+    const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
+      const apiKey = config.apiKey?.trim();
+      if (!apiKey) {
+        setTestState({ status: 'error', message: '请先填写 API Key。' });
+        return;
       }
-    } catch (error: any) {
-      setTestStates((prev) => ({
-        ...prev,
-        [vendor]: { status: 'error', message: error?.message ?? '连通失败。' },
-      }));
-    }
-  };
+      setTestState({ status: 'loading' });
+      try {
+        const fallback = vendorDefaults[vendor] ?? {};
+        const response = await testVendorConnection({
+          vendor,
+          apiKey,
+          baseUrl: config.baseUrl || fallback.baseUrl || vendorPlaceholders[vendor].baseUrl,
+          model: config.model || fallback.model || vendorPlaceholders[vendor].model,
+          messages: [
+            {
+              role: 'system',
+              content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口稳定可用。',
+            },
+            {
+              role: 'user',
+              content: testMessage || '请确认你已收到这条测试指令。',
+            },
+          ],
+        });
+        if (response.ok) {
+          setTestState({
+            status: 'success',
+            message: response.content || '（请求成功但未返回正文）',
+          });
+        } else {
+          setTestState({
+            status: 'error',
+            message: response.error?.message ?? '上游返回错误。',
+          });
+        }
+      } catch (error: any) {
+        setTestState({
+          status: 'error',
+          message: error?.message ?? '请求失败，请稍后再试。',
+        });
+      }
+    };
 
   const selectedVendor = runConfig.globalModelConfig?.vendor ?? 'openai';
   const vendorDefault = vendorDefaults[selectedVendor];
@@ -205,6 +173,12 @@ export function RunSettingsSection() {
     top_p: 0.95,
     max_output_tokens: 2048,
     systemPromptExtra: '',
+  };
+
+  const handleClearGlobalApiKey = () => {
+    updateGlobalModelConfig({ apiKey: '' });
+    setVendorApiKey(selectedVendor, '');
+    setTestState({ status: 'idle' });
   };
 
   return (
@@ -227,102 +201,6 @@ export function RunSettingsSection() {
       </header>
 
       <div className="card__body column-gap">
-        <div className="card-section">
-          <h3 className="card-section-title">模型与密钥</h3>
-          <div className="vendor-card-grid">
-            {(Object.keys(vendorLabels) as Vendor[]).map((vendor) => {
-              const label = vendorLabels[vendor];
-              const vendorConfig = vendorDefaults[vendor];
-              const state = testStates[vendor];
-              const placeholder = vendorPlaceholders[vendor];
-              return (
-                <div key={vendor} className="vendor-card">
-                  <div className="vendor-card__header">
-                    <h3>{label}</h3>
-                    <span className="vendor-card__badge">{vendor.toUpperCase()}</span>
-                  </div>
-                  <label className="form-field">
-                    <span>Base URL（可选）</span>
-                    <input
-                      type="url"
-                      value={vendorConfig.baseUrl ?? ''}
-                      placeholder={placeholder.baseUrl}
-                      onChange={handleVendorBaseUrlChange(vendor)}
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>默认模型名</span>
-                    <input
-                      type="text"
-                      value={vendorConfig.model ?? ''}
-                      placeholder={placeholder.model}
-                      onChange={handleVendorModelChange(vendor)}
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>API Key</span>
-                    <div className="form-field__input-with-action">
-                      <input
-                        type={showKeys[vendor] ? 'text' : 'password'}
-                        autoComplete="off"
-                        value={vendorConfig.apiKey ?? ''}
-                        onChange={handleVendorApiKeyChange(vendor)}
-                        placeholder="sk-..."
-                      />
-                      <button
-                        type="button"
-                        className="button tertiary"
-                        onClick={() =>
-                          setShowKeys((prev) => ({
-                            ...prev,
-                            [vendor]: !prev[vendor],
-                          }))
-                        }
-                      >
-                        {showKeys[vendor] ? '隐藏' : '显示'}
-                      </button>
-                    </div>
-                  </label>
-
-                  <div className="vendor-test-area">
-                    <label className="form-field">
-                      <span>连通性测试输入</span>
-                      <textarea
-                        value={testMessages[vendor]}
-                        onChange={handleTestMessageChange(vendor)}
-                        placeholder="请输入想要测试的内容，例如：请用一句话介绍你自己。"
-                      />
-                    </label>
-                    <div className="vendor-card__actions">
-                      <button
-                        type="button"
-                        className="button secondary"
-                        onClick={() => handleTestConnection(vendor)}
-                        disabled={state.status === 'loading'}
-                      >
-                        {state.status === 'loading' ? '测试中…' : '测试连通'}
-                      </button>
-                      <button
-                        type="button"
-                        className="button ghost"
-                        onClick={() => setVendorApiKey(vendor, '')}
-                      >
-                        清空密钥
-                      </button>
-                    </div>
-                    {state.status === 'success' && (
-                      <pre className="vendor-test-result success">{state.message}</pre>
-                    )}
-                    {state.status === 'error' && (
-                      <pre className="vendor-test-result error">{state.message}</pre>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
         <div className="card-section">
           <h3 className="card-section-title">对话模式与全局模型</h3>
           <div className="mode-selector">
@@ -398,12 +276,21 @@ export function RunSettingsSection() {
                 </label>
                 <label className="form-field">
                   <span>API Key</span>
-                  <input
-                    type={showKeys[selectedVendor] ? 'text' : 'password'}
-                    value={globalConfig.apiKey ?? ''}
-                    onChange={handleGlobalApiKeyChange}
-                    placeholder="sk-..."
-                  />
+                  <div className="form-field__input-with-action">
+                    <input
+                      type={showGlobalKey ? 'text' : 'password'}
+                      value={globalConfig.apiKey ?? ''}
+                      onChange={handleGlobalApiKeyChange}
+                      placeholder="sk-..."
+                    />
+                    <button
+                      type="button"
+                      className="button tertiary"
+                      onClick={() => setShowGlobalKey((prev) => !prev)}
+                    >
+                      {showGlobalKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
                 </label>
                 <label className="form-field">
                   <span>模型名称</span>
@@ -466,6 +353,33 @@ export function RunSettingsSection() {
                   onChange={handleSystemPromptChange}
                 />
               </label>
+                <label className="form-field">
+                  <span>连通性测试输入</span>
+                  <textarea
+                    value={testMessage}
+                    onChange={handleTestMessageChange}
+                    placeholder="例如：请用一句话介绍你自己，并说明当前时间。"
+                  />
+                </label>
+                <div className="vendor-card__actions">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => handleGlobalTestConnection(selectedVendor, globalConfig)}
+                    disabled={testState.status === 'loading'}
+                  >
+                    {testState.status === 'loading' ? '测试中…' : '测试连通'}
+                  </button>
+                  <button type="button" className="button ghost" onClick={handleClearGlobalApiKey}>
+                    清空密钥
+                  </button>
+                </div>
+                {testState.status === 'success' && (
+                  <pre className="vendor-test-result success">{testState.message}</pre>
+                )}
+                {testState.status === 'error' && (
+                  <pre className="vendor-test-result error">{testState.message}</pre>
+                )}
             </div>
           )}
         </div>

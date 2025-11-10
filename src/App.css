@@ -329,6 +329,12 @@
   gap: 1.5rem;
 }
 
+.grid.three-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem;
+}
+
 .agent-list {
   list-style: none;
   display: flex;
@@ -405,6 +411,11 @@
   color: #1d4ed8;
 }
 
+.memory-grid .form-hint {
+  font-size: 0.8rem;
+  color: #475569;
+}
+
 .sentiment-hint {
   margin-top: -0.5rem;
 }
@@ -457,21 +468,6 @@
   border-color: rgba(248, 113, 113, 0.45);
   background: rgba(248, 113, 113, 0.15);
   color: #b91c1c;
-}
-
-.memory-slider {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.memory-slider input[type='range'] {
-  width: 100%;
-}
-
-.memory-slider__value {
-  font-weight: 600;
-  color: #1f2937;
 }
 
 .agent-memory-block {
