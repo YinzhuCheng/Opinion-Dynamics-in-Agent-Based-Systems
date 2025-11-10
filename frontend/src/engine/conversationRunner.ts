@@ -1,0 +1,503 @@
+import { nanoid } from 'nanoid';
+import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt, buildSummarizationPrompt } from './prompts';
+import { resolveSentimentLabels } from './sentiment';
+import { estimateMessagesTokens } from './token';
+import { callLLM, buildRequestFromConfig } from '../utils/api';
+import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
+import { useAppStore } from '../store/useAppStore';
+import { useSecretsStore } from '../store/useSecretsStore';
+
+const TOTAL_TOKEN_BUDGET = 4096;
+
+let activeRunner: ConversationRunner | undefined;
+
+export const startConversation = async () => {
+  if (activeRunner?.isRunning()) {
+    activeRunner.requestStop();
+  }
+  const runner = new ConversationRunner();
+  activeRunner = runner;
+  try {
+    await runner.run();
+  } finally {
+    if (activeRunner === runner) {
+      activeRunner = undefined;
+    }
+  }
+};
+
+export const stopConversation = () => {
+  activeRunner?.requestStop();
+};
+
+class ConversationRunner {
+  private stopped = false;
+  private readonly appStore = useAppStore;
+  private readonly secretsStore = useSecretsStore;
+
+  isRunning() {
+    const { phase } = this.appStore.getState().runState.status;
+    return phase === 'running' || phase === 'stopping';
+  }
+
+  requestStop() {
+    this.stopped = true;
+    this.appStore.getState().setStopRequested(true);
+    this.appStore.getState().setRunStatus((status) => ({
+      ...status,
+      phase: status.phase === 'running' ? 'stopping' : status.phase,
+    }));
+  }
+
+  async run() {
+    const state = this.appStore.getState();
+    const { runState } = state;
+    const { agents, config } = runState;
+
+    if (agents.length === 0) {
+      this.appStore.getState().setRunStatus({
+        phase: 'error',
+        mode: config.mode,
+        error: '请至少配置 1 名 Agent 后再开始对话。',
+        currentRound: 0,
+        currentTurn: 0,
+        totalMessages: 0,
+        summarizedCount: 0,
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+      });
+      return;
+    }
+
+    this.appStore.getState().resetMessages();
+    this.appStore.getState().setStopRequested(false);
+    this.stopped = false;
+
+    const startedAt = Date.now();
+    this.setStatus({
+      phase: 'running',
+      mode: config.mode,
+      currentRound: 0,
+      currentTurn: 0,
+      totalMessages: 0,
+      summarizedCount: 0,
+      startedAt,
+      finishedAt: undefined,
+      error: undefined,
+      lastAgentId: undefined,
+    });
+
+    try {
+      if (config.mode === 'round_robin') {
+        await this.runRoundRobin(agents, config);
+      } else {
+        await this.runFreeDialogue(agents, config);
+      }
+      const { status } = this.appStore.getState().runState;
+      if (!this.stopped && status.phase !== 'error') {
+        this.setStatus({
+          ...status,
+          phase: 'completed',
+          finishedAt: Date.now(),
+        });
+      } else if (this.stopped) {
+        this.setStatus((status) => ({
+          ...status,
+          phase: status.phase === 'error' ? status.phase : 'cancelled',
+          finishedAt: Date.now(),
+        }));
+      }
+      this.captureResultSnapshot();
+    } catch (error: any) {
+      this.setStatus({
+        phase: 'error',
+        mode: config.mode,
+        currentRound: this.appStore.getState().runState.status.currentRound,
+        currentTurn: this.appStore.getState().runState.status.currentTurn,
+        totalMessages: this.appStore.getState().runState.status.totalMessages,
+        summarizedCount: this.appStore.getState().runState.status.summarizedCount,
+        error: error?.message ?? '运行过程中发生未知错误。',
+        startedAt,
+        finishedAt: Date.now(),
+        lastAgentId: this.appStore.getState().runState.status.lastAgentId,
+      });
+      throw error;
+    }
+  }
+
+  private async runRoundRobin(agents: AgentSpec[], config: RunConfig) {
+    const maxRounds = config.maxRounds ?? 3;
+    for (let round = 1; round <= maxRounds; round += 1) {
+      if (this.shouldStop()) break;
+      for (let turn = 0; turn < agents.length; turn += 1) {
+        if (this.shouldStop()) break;
+        const agent = agents[turn];
+        this.setStatus((status) => ({
+          ...status,
+          currentRound: round,
+          currentTurn: turn + 1,
+          lastAgentId: agent.id,
+        }));
+        await this.executeAgentTurn(agent, round, turn + 1, config);
+      }
+    }
+  }
+
+  private async runFreeDialogue(agents: AgentSpec[], config: RunConfig) {
+    const maxMessages = config.maxMessages ?? 20;
+    let producedMessages = 0;
+    let round = 0;
+    let consecutiveSkipRounds = 0;
+
+    while (producedMessages < maxMessages && !this.shouldStop()) {
+      round += 1;
+      let skipsThisRound = 0;
+
+      for (let turn = 0; turn < agents.length; turn += 1) {
+        if (this.shouldStop() || producedMessages >= maxMessages) break;
+        const agent = agents[turn];
+        this.setStatus((status) => ({
+          ...status,
+          currentRound: round,
+          currentTurn: turn + 1,
+          lastAgentId: agent.id,
+        }));
+        const message = await this.executeAgentTurn(agent, round, turn + 1, config);
+        if (message?.content === '__SKIP__') {
+          skipsThisRound += 1;
+        } else if (message) {
+          producedMessages += 1;
+        }
+      }
+
+      if (skipsThisRound === agents.length) {
+        consecutiveSkipRounds += 1;
+        if (consecutiveSkipRounds >= 2) {
+          // all agents consistently skip, end early
+          break;
+        }
+      } else {
+        consecutiveSkipRounds = 0;
+      }
+    }
+  }
+
+  private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
+    const store = this.appStore.getState();
+    const { runState } = store;
+    const modelConfig = this.resolveModelConfig(agent, config);
+    const apiKey = this.resolveApiKey(modelConfig);
+
+    if (!apiKey) {
+      throw new Error(`未找到 ${modelConfig.vendor} 的 API Key，请在配置页填写。`);
+    }
+
+    const systemPrompt = buildAgentSystemPrompt({
+      agent,
+      summary: runState.summary,
+      visibleWindow: runState.visibleWindow,
+      mode: config.mode,
+      round,
+      turn,
+    });
+    const userPrompt = buildAgentUserPrompt({
+      agent,
+      summary: runState.summary,
+      visibleWindow: runState.visibleWindow,
+      mode: config.mode,
+      round,
+      turn,
+    });
+
+    const request = buildRequestFromConfig(modelConfig, apiKey, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ]);
+    request.requestId = nanoid();
+
+    const response = await callLLM(request);
+    if (!response.ok) {
+      throw new Error(response.error?.message ?? '模型调用失败。');
+    }
+    const content = (response.content ?? '').trim() || '__SKIP__';
+
+    const message: Message = {
+      id: nanoid(),
+      agentId: agent.id,
+      role: 'assistant',
+      content,
+      ts: Date.now(),
+    };
+
+    this.appStore.getState().appendMessage(message);
+    this.updateVisibleWindow();
+    this.updateStatusAfterMessage(message);
+
+    await this.runClassificationPipelines(message, config);
+    await this.maybeSummarizeMemory(config);
+
+    return message;
+  }
+
+  private async runClassificationPipelines(message: Message, config: RunConfig) {
+    if (message.content === '__SKIP__') {
+      return;
+    }
+    const tasks: Promise<void>[] = [this.performSentiment(message, config)];
+    if (config.visualization?.enableStanceChart) {
+      tasks.push(this.performStanceScoring(message, config));
+    }
+    await Promise.all(tasks);
+  }
+
+  private async performSentiment(message: Message, config: RunConfig) {
+    const sentimentSetting = config.sentiment;
+    if (!sentimentSetting.enabled) return;
+
+    const labels = resolveSentimentLabels(sentimentSetting);
+    if (labels.length < 2) return;
+
+    const modelConfig = sentimentSetting.modelConfigOverride ?? this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(modelConfig);
+    if (!apiKey) {
+      console.warn('[Sentiment] 缺少情感分类模型的 API Key，跳过。');
+      return;
+    }
+
+    const { system, user } = buildSentimentPrompt(labels);
+    const request = buildRequestFromConfig(modelConfig, apiKey, [
+      { role: 'system', content: system },
+      { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
+    ]);
+    request.requestId = `sentiment-${message.id}-${nanoid(6)}`;
+
+    try {
+      const response = await callLLM(request);
+      if (!response.ok || !response.content) {
+        throw new Error(response.error?.message ?? '情感分类失败');
+      }
+      const parsed = safeJsonParse(response.content);
+      if (parsed?.label && labels.includes(parsed.label)) {
+        this.appStore.getState().updateMessage(message.id, (msg) => {
+          msg.sentiment = {
+            label: parsed.label,
+            confidence: typeof parsed.confidence === 'number' ? clamp(parsed.confidence, 0, 1) : undefined,
+          };
+        });
+      }
+    } catch (error) {
+      console.warn('[Sentiment] 分类失败：', error);
+    }
+  }
+
+  private async performStanceScoring(message: Message, config: RunConfig) {
+    const modelConfig = this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(modelConfig);
+    if (!apiKey) {
+      console.warn('[Stance] 缺少模型 API Key，跳过立场评分。');
+      return;
+    }
+
+    const { system, user } = buildStancePrompt();
+    const request = buildRequestFromConfig(modelConfig, apiKey, [
+      { role: 'system', content: system },
+      { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
+    ]);
+    request.requestId = `stance-${message.id}-${nanoid(6)}`;
+    try {
+      const response = await callLLM(request);
+      if (!response.ok || !response.content) {
+        throw new Error(response.error?.message ?? '立场评分失败');
+      }
+      const parsed = safeJsonParse(response.content);
+      if (typeof parsed?.score === 'number') {
+        this.appStore.getState().updateMessage(message.id, (msg) => {
+          msg.stance = {
+            score: clamp(parsed.score, -1, 1),
+            note: typeof parsed.note === 'string' ? parsed.note : undefined,
+          };
+        });
+      }
+    } catch (error) {
+      console.warn('[Stance] 立场评分失败：', error);
+    }
+  }
+
+  private async maybeSummarizeMemory(config: RunConfig) {
+    const store = this.appStore.getState();
+    const { runState } = store;
+    const { messages, status } = runState;
+    const summarizeFromIndex = status.summarizedCount;
+
+    if (messages.length === 0) {
+      return;
+    }
+
+    const windowBudgetTokens = Math.max(
+      200,
+      Math.floor((TOTAL_TOKEN_BUDGET * config.memory.windowTokenBudgetPct) / 100),
+    );
+
+    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
+    this.appStore.getState().setVisibleWindow(visibleMessages);
+
+    const newSummariesCount = messages.length - visibleMessages.length - status.summarizedCount;
+    if (newSummariesCount <= 0) {
+      return;
+    }
+
+    const chunk = messages.slice(summarizeFromIndex, summarizeFromIndex + newSummariesCount);
+    const transcripts = chunk.map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId))).join('\n');
+
+    const modelConfig = this.resolveFallbackModelConfig(config);
+    const apiKey = this.resolveApiKey(modelConfig);
+    if (!apiKey) {
+      console.warn('[Summary] 缺少模型 API Key，跳过摘要压缩。');
+      return;
+    }
+
+    const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
+    const request = buildRequestFromConfig(modelConfig, apiKey, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ]);
+    request.requestId = `summary-${nanoid(6)}`;
+
+    try {
+      const response = await callLLM(request);
+      if (response.ok && response.content) {
+        this.appStore.getState().setSummary(response.content.trim());
+        this.setStatus((status) => ({
+          ...status,
+          summarizedCount: status.summarizedCount + newSummariesCount,
+        }));
+      }
+    } catch (error) {
+      console.warn('[Summary] 摘要生成失败：', error);
+    }
+  }
+
+  private updateVisibleWindow() {
+    const store = this.appStore.getState();
+    const { config, messages } = store.runState;
+    const windowBudgetTokens = Math.max(
+      200,
+      Math.floor((TOTAL_TOKEN_BUDGET * config.memory.windowTokenBudgetPct) / 100),
+    );
+    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
+    this.appStore.getState().setVisibleWindow(visibleMessages);
+  }
+
+  private updateStatusAfterMessage(message: Message) {
+    this.setStatus((status) => ({
+      ...status,
+      totalMessages: status.totalMessages + (message.content === '__SKIP__' ? 0 : 1),
+    }));
+  }
+
+  private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
+    if (config.useGlobalModelConfig && config.globalModelConfig) {
+      return { ...config.globalModelConfig };
+    }
+    if (!config.useGlobalModelConfig && agent.modelConfig) {
+      return { ...agent.modelConfig };
+    }
+    // fallback to default global
+    return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
+  }
+
+  private resolveFallbackModelConfig(config: RunConfig): ModelConfig {
+    return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
+  }
+
+  private resolveApiKey(modelConfig: ModelConfig): string | undefined {
+    const secrets = this.secretsStore.getState();
+    const key = secrets.apiKeys[modelConfig.vendor];
+    if (modelConfig.apiKeyRef === 'localEncrypted' && !secrets.encryptionUnlocked) {
+      throw new Error('请先解锁本地加密密钥以继续调用模型。');
+    }
+    return key;
+  }
+
+  private resolveAgentName(agentId: string): string {
+    const store = this.appStore.getState();
+    const agent = store.runState.agents.find((a) => a.id === agentId);
+    return agent ? agent.name : agentId;
+  }
+
+  private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
+    this.appStore.getState().setRunStatus(updater);
+  }
+
+  private shouldStop() {
+    return this.stopped || this.appStore.getState().runState.stopRequested;
+  }
+
+  private captureResultSnapshot() {
+    const state = this.appStore.getState().runState;
+    const status = state.status;
+    this.appStore.getState().setResult({
+      messages: state.messages,
+      finishedAt: status.finishedAt ?? Date.now(),
+      summary: state.summary,
+      configSnapshot: state.config,
+      status,
+    });
+  }
+}
+
+const collectVisibleMessages = (messages: Message[], budgetTokens: number): Message[] => {
+  const reversed: Message[] = [];
+  let tokenCount = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const tokens = estimateMessagesTokens([message]);
+    if (tokenCount + tokens > budgetTokens) {
+      break;
+    }
+    reversed.push(message);
+    tokenCount += tokens;
+  }
+  return reversed.reverse();
+};
+
+const formatMessageForTranscript = (message: Message, agentName: string): string => {
+  const sentiment = message.sentiment ? `（情感：${message.sentiment.label}${formatConfidence(message.sentiment.confidence)}）` : '';
+  const stance =
+    typeof message.stance?.score === 'number'
+      ? `（立场：${message.stance.score.toFixed(2)}${message.stance.note ? `，${message.stance.note}` : ''}）`
+      : '';
+  const meta = [sentiment, stance].filter(Boolean).join(' ');
+  return `${agentName}: ${message.content}${meta ? ` ${meta}` : ''}`;
+};
+
+const formatConfidence = (confidence?: number) => {
+  if (typeof confidence !== 'number') return '';
+  return `，置信度 ${confidence.toFixed(2)}`;
+};
+
+const safeJsonParse = (content: string): any => {
+  try {
+    const trimmed = content.trim();
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+};
+
+const clamp = (value: number, min: number, max: number) => {
+  return Math.min(max, Math.max(min, value));
+};
+
+const defaultFallbackModel = (): ModelConfig => ({
+  vendor: 'openai',
+  model: 'gpt-4.1-mini',
+  apiKeyRef: 'memory',
+  temperature: 0.7,
+  top_p: 0.95,
+  max_output_tokens: 1024,
+});

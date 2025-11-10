@@ -78,11 +78,15 @@ export interface RunConfig {
   mode: DialogueMode;
   maxRounds?: number;
   maxMessages?: number;
+  useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
   memory: {
     summarizationEnabled: true;
     windowTokenBudgetPct: number;
+  };
+  visualization: {
+    enableStanceChart: boolean;
   };
 }
 
@@ -102,6 +106,8 @@ export interface RunState {
   messages: Message[];
   summary: string;
   visibleWindow: Message[];
+  status: RunStatus;
+  stopRequested: boolean;
 }
 
 export interface SessionResult {
@@ -109,6 +115,20 @@ export interface SessionResult {
   finishedAt: number;
   summary: string;
   configSnapshot: RunConfig;
+  status: RunStatus;
+}
+
+export interface RunStatus {
+  phase: 'idle' | 'running' | 'stopping' | 'completed' | 'error' | 'cancelled';
+  mode: DialogueMode;
+  startedAt?: number;
+  finishedAt?: number;
+  currentRound: number;
+  currentTurn: number;
+  totalMessages: number;
+  summarizedCount: number;
+  lastAgentId?: string;
+  error?: string;
 }
 
 export type PageKey = 'configuration' | 'dialogue' | 'results';
