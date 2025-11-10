@@ -151,7 +151,8 @@ async function callVendor(payload: UnifiedRequest): Promise<UnifiedResponse> {
 }
 
 async function callOpenAI(payload: UnifiedRequest): Promise<UnifiedResponse> {
-  const url = `${payload.baseUrl || OPENAI_BASE}/chat/completions`;
+  const base = (payload.baseUrl || OPENAI_BASE).replace(/\/$/, '');
+  const url = `${base}/chat/completions`;
   const body = {
     model: payload.model,
     messages: payload.messages,
@@ -184,7 +185,8 @@ async function callOpenAI(payload: UnifiedRequest): Promise<UnifiedResponse> {
 }
 
 async function callAnthropic(payload: UnifiedRequest): Promise<UnifiedResponse> {
-  const url = `${payload.baseUrl || ANTHROPIC_BASE}/v1/messages`;
+  const base = (payload.baseUrl || ANTHROPIC_BASE).replace(/\/$/, '');
+  const url = `${base}/v1/messages`;
   const systemMessages = payload.messages.filter((msg) => msg.role === 'system');
   const nonSystemMessages = payload.messages.filter((msg) => msg.role !== 'system');
 
@@ -197,7 +199,7 @@ async function callAnthropic(payload: UnifiedRequest): Promise<UnifiedResponse> 
     })),
     temperature: payload.temperature,
     top_p: payload.top_p,
-    max_tokens: payload.max_output_tokens ?? 1024,
+    max_tokens: payload.max_output_tokens ?? 4096,
   };
 
   const response = await fetch(url, {

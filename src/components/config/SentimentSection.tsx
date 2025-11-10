@@ -67,7 +67,6 @@ export function SentimentSection() {
         apiKey: vendorDefaults.openai.apiKey ?? '',
         temperature: 0,
         top_p: 0.9,
-        max_output_tokens: 512,
         baseUrl: vendorDefaults.openai.baseUrl,
       };
     });
@@ -228,6 +227,7 @@ function SentimentModelConfigEditor({
       ...modelConfig,
       apiKey: event.target.value,
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleModelChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -235,6 +235,7 @@ function SentimentModelConfigEditor({
       ...modelConfig,
       model: event.target.value,
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -242,6 +243,7 @@ function SentimentModelConfigEditor({
       ...modelConfig,
       baseUrl: event.target.value,
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleNumberChange =
@@ -252,6 +254,7 @@ function SentimentModelConfigEditor({
         ...modelConfig,
         [key]: value === '' ? undefined : Number(value),
       });
+      setTestState({ status: 'idle' });
     };
 
   const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -259,10 +262,12 @@ function SentimentModelConfigEditor({
       ...modelConfig,
       systemPromptExtra: event.target.value,
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     setTestMessage(event.target.value);
+    setTestState({ status: 'idle' });
   };
 
   const handleTestConnection = async () => {
@@ -382,7 +387,7 @@ function SentimentModelConfigEditor({
             type="number"
             min={16}
             value={modelConfig.max_output_tokens ?? ''}
-            placeholder="512"
+          placeholder="留空表示无限制"
             onChange={handleNumberChange('max_output_tokens')}
           />
         </label>

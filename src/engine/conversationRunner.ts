@@ -326,9 +326,14 @@ class ConversationRunner {
     }
   }
 
-    private async maybeSummarizeMemory(config: RunConfig) {
-    const store = this.appStore.getState();
-    const { runState } = store;
+  private async maybeSummarizeMemory(config: RunConfig) {
+    if (!config.memory.summarizationEnabled) {
+      const messages = this.appStore.getState().runState.messages;
+      this.appStore.getState().setVisibleWindow(messages);
+      return;
+    }
+
+    const { runState } = this.appStore.getState();
     const { messages, status } = runState;
     const summarizeFromIndex = status.summarizedCount;
 
@@ -336,9 +341,9 @@ class ConversationRunner {
       return;
     }
 
-      const agentCount = Math.max(1, runState.agents.length);
-      const windowPct = this.computeWindowPct(runState.status, config, agentCount);
-      const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
+    const agentCount = Math.max(1, runState.agents.length);
+    const windowPct = this.computeWindowPct(runState.status, config, agentCount);
+    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
 
     const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
     this.appStore.getState().setVisibleWindow(visibleMessages);
@@ -365,8 +370,8 @@ class ConversationRunner {
     ]);
     request.requestId = `summary-${nanoid(6)}`;
 
-      try {
-        const response = await this.withAwaiting('thinking', () => callLLM(request));
+    try {
+      const response = await this.withAwaiting('thinking', () => callLLM(request));
       if (response.ok && response.content) {
         this.appStore.getState().setSummary(response.content.trim());
         this.setStatus((status) => ({
@@ -379,12 +384,15 @@ class ConversationRunner {
     }
   }
 
-    private updateVisibleWindow() {
-    const store = this.appStore.getState();
-      const { config, messages, status, agents } = store.runState;
-      const agentCount = Math.max(1, agents.length);
-      const windowPct = this.computeWindowPct(status, config, agentCount);
-      const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
+  private updateVisibleWindow() {
+    const { config, messages, status, agents } = this.appStore.getState().runState;
+    if (!config.memory.summarizationEnabled) {
+      this.appStore.getState().setVisibleWindow(messages);
+      return;
+    }
+    const agentCount = Math.max(1, agents.length);
+    const windowPct = this.computeWindowPct(status, config, agentCount);
+    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
     const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
     this.appStore.getState().setVisibleWindow(visibleMessages);
   }
@@ -411,13 +419,13 @@ class ConversationRunner {
     return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
   }
 
-    private resolveApiKey(modelConfig: ModelConfig): string | undefined {
-      if (modelConfig.apiKey && modelConfig.apiKey.trim()) {
-        return modelConfig.apiKey.trim();
-      }
-      const vendorDefaults = this.appStore.getState().vendorDefaults;
-      const fallback = vendorDefaults[modelConfig.vendor]?.apiKey;
-      return fallback?.trim();
+  private resolveApiKey(modelConfig: ModelConfig): string | undefined {
+    if (modelConfig.apiKey && modelConfig.apiKey.trim()) {
+      return modelConfig.apiKey.trim();
+    }
+    const vendorDefaults = this.appStore.getState().vendorDefaults;
+    const fallback = vendorDefaults[modelConfig.vendor]?.apiKey;
+    return fallback?.trim();
   }
 
   private resolveAgentName(agentId: string): string {
@@ -431,18 +439,17 @@ class ConversationRunner {
   }
 
   private computeWindowPct(status: RunStatus, config: RunConfig, agentCount: number): number {
+    if (!config.memory.summarizationEnabled) {
+      return 100;
+    }
     const { memory } = config;
     const minPct = Math.min(memory.minWindowPct, memory.maxWindowPct);
     const maxPct = Math.max(memory.minWindowPct, memory.maxWindowPct);
     const growthRate = memory.growthRate > 0 ? memory.growthRate : 0.5;
     const progress = this.estimateDialogueProgress(status, config, agentCount);
-    let curve: number;
     const denominator = 1 - Math.exp(-growthRate);
-    if (Math.abs(denominator) < 1e-6) {
-      curve = progress;
-    } else {
-      curve = (1 - Math.exp(-growthRate * progress)) / denominator;
-    }
+    const curve =
+      Math.abs(denominator) < 1e-6 ? progress : (1 - Math.exp(-growthRate * progress)) / denominator;
     const pct = minPct + (maxPct - minPct) * curve;
     return Math.min(90, Math.max(5, pct));
   }
@@ -459,21 +466,21 @@ class ConversationRunner {
     return Math.min(1, Math.max(0, progress));
   }
 
-    private setAwaiting(label?: 'response' | 'thinking') {
-      this.setStatus((status) => ({
-        ...status,
-        awaitingLabel: label,
-      }));
-    }
+  private setAwaiting(label?: 'response' | 'thinking') {
+    this.setStatus((status) => ({
+      ...status,
+      awaitingLabel: label,
+    }));
+  }
 
-    private async withAwaiting<T>(label: 'response' | 'thinking', task: () => Promise<T>): Promise<T> {
-      this.setAwaiting(label);
-      try {
-        return await task();
-      } finally {
-        this.setAwaiting(undefined);
-      }
+  private async withAwaiting<T>(label: 'response' | 'thinking', task: () => Promise<T>): Promise<T> {
+    this.setAwaiting(label);
+    try {
+      return await task();
+    } finally {
+      this.setAwaiting(undefined);
     }
+  }
 
   private shouldStop() {
     return this.stopped || this.appStore.getState().runState.stopRequested;
@@ -546,5 +553,4 @@ const defaultFallbackModel = (): ModelConfig => ({
   model: 'gpt-4.1-mini',
   temperature: 0.7,
   top_p: 0.95,
-  max_output_tokens: 1024,
 });

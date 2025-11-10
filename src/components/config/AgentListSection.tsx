@@ -459,6 +459,7 @@ const AgentModelConfigEditor = ({
         model: event.target.value,
       },
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -468,6 +469,7 @@ const AgentModelConfigEditor = ({
         baseUrl: event.target.value,
       },
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -490,6 +492,7 @@ const AgentModelConfigEditor = ({
           [key]: value === '' ? undefined : Number(value),
         },
       });
+      setTestState({ status: 'idle' });
     };
 
   const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -499,10 +502,12 @@ const AgentModelConfigEditor = ({
         systemPromptExtra: event.target.value,
       },
     });
+    setTestState({ status: 'idle' });
   };
 
   const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     setTestMessage(event.target.value);
+    setTestState({ status: 'idle' });
   };
 
   const handleTestConnection = async () => {
@@ -622,7 +627,7 @@ const AgentModelConfigEditor = ({
             type="number"
             min={16}
             value={modelConfig.max_output_tokens ?? ''}
-            placeholder="2048"
+            placeholder="留空表示无限制"
             onChange={handleNumberChange('max_output_tokens')}
           />
         </label>

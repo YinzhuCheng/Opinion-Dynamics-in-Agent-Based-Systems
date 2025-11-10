@@ -87,18 +87,21 @@ export function RunSettingsSection() {
     const value = event.target.value;
     updateGlobalModelConfig({ model: value });
     setVendorModel(selectedVendor, value);
+    setTestState({ status: 'idle' });
   };
 
   const handleGlobalBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     updateGlobalModelConfig({ baseUrl: value });
     setVendorBaseUrl(selectedVendor, value);
+    setTestState({ status: 'idle' });
   };
 
   const handleGlobalApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     updateGlobalModelConfig({ apiKey: value });
     setVendorApiKey(selectedVendor, value);
+    setTestState({ status: 'idle' });
   };
 
   const handleGlobalNumberChange =
@@ -108,59 +111,62 @@ export function RunSettingsSection() {
       updateGlobalModelConfig({
         [key]: value === '' ? undefined : Number(value),
       } as Partial<ModelConfig>);
+      setTestState({ status: 'idle' });
     };
 
-    const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-      updateGlobalModelConfig({ systemPromptExtra: event.target.value });
-    };
+  const handleSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    updateGlobalModelConfig({ systemPromptExtra: event.target.value });
+    setTestState({ status: 'idle' });
+  };
 
-    const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-      setTestMessage(event.target.value);
-    };
+  const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setTestMessage(event.target.value);
+    setTestState({ status: 'idle' });
+  };
 
-    const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
-      const apiKey = config.apiKey?.trim();
-      if (!apiKey) {
-        setTestState({ status: 'error', message: '请先填写 API Key。' });
-        return;
-      }
-      setTestState({ status: 'loading' });
-      try {
-        const fallback = vendorDefaults[vendor] ?? {};
-        const response = await testVendorConnection({
-          vendor,
-          apiKey,
-          baseUrl: config.baseUrl || fallback.baseUrl || vendorPlaceholders[vendor].baseUrl,
-          model: config.model || fallback.model || vendorPlaceholders[vendor].model,
-          messages: [
-            {
-              role: 'system',
-              content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口稳定可用。',
-            },
-            {
-              role: 'user',
-              content: testMessage || '请确认你已收到这条测试指令。',
-            },
-          ],
+  const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
+    const apiKey = config.apiKey?.trim();
+    if (!apiKey) {
+      setTestState({ status: 'error', message: '请先填写 API Key。' });
+      return;
+    }
+    setTestState({ status: 'loading' });
+    try {
+      const fallback = vendorDefaults[vendor] ?? {};
+      const response = await testVendorConnection({
+        vendor,
+        apiKey,
+        baseUrl: config.baseUrl || fallback.baseUrl || vendorPlaceholders[vendor].baseUrl,
+        model: config.model || fallback.model || vendorPlaceholders[vendor].model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口稳定可用。',
+          },
+          {
+            role: 'user',
+            content: testMessage || '请确认你已收到这条测试指令。',
+          },
+        ],
+      });
+      if (response.ok) {
+        setTestState({
+          status: 'success',
+          message: response.content || '（请求成功但未返回正文）',
         });
-        if (response.ok) {
-          setTestState({
-            status: 'success',
-            message: response.content || '（请求成功但未返回正文）',
-          });
-        } else {
-          setTestState({
-            status: 'error',
-            message: response.error?.message ?? '上游返回错误。',
-          });
-        }
-      } catch (error: any) {
+      } else {
         setTestState({
           status: 'error',
-          message: error?.message ?? '请求失败，请稍后再试。',
+          message: response.error?.message ?? '上游返回错误。',
         });
       }
-    };
+    } catch (error: any) {
+      setTestState({
+        status: 'error',
+        message: error?.message ?? '请求失败，请稍后再试。',
+      });
+    }
+  };
 
   const selectedVendor = runConfig.globalModelConfig?.vendor ?? 'openai';
   const vendorDefault = vendorDefaults[selectedVendor];
@@ -340,7 +346,7 @@ export function RunSettingsSection() {
                     type="number"
                     min={16}
                     value={globalConfig.max_output_tokens ?? ''}
-                    placeholder="2048"
+                    placeholder="留空表示无限制"
                     onChange={handleGlobalNumberChange('max_output_tokens')}
                   />
                 </label>

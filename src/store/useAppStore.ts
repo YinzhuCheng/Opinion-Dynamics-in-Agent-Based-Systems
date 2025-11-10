@@ -22,7 +22,6 @@ const defaultModelConfig: ModelConfig = {
   model: 'gpt-4.1-mini',
   temperature: 0.7,
   top_p: 0.95,
-  max_output_tokens: 2048,
 };
 
 const defaultPersona: Persona = {
@@ -362,15 +361,19 @@ export const useAppStore = create<AppStore>((set) => ({
         produce((state: AppStore) => {
           const current = state.runState.config.memory;
           const next = { ...current, ...updater };
-          const clampPct = (val: number | undefined, fallback: number) =>
-            Math.min(90, Math.max(5, val ?? fallback));
+          const clampPct = (val: number | undefined, fallback: number) => {
+            const numeric = typeof val === 'number' && !Number.isNaN(val) ? val : fallback;
+            return Math.min(90, Math.max(5, numeric));
+          };
           next.minWindowPct = clampPct(next.minWindowPct, current.minWindowPct);
           next.maxWindowPct = clampPct(next.maxWindowPct, current.maxWindowPct);
           if (next.minWindowPct > next.maxWindowPct) {
             [next.minWindowPct, next.maxWindowPct] = [next.maxWindowPct, next.minWindowPct];
           }
-          const growth = next.growthRate ?? current.growthRate;
-          next.growthRate = growth <= 0 ? 0.5 : Math.min(5, growth);
+          const growth = typeof next.growthRate === 'number' && !Number.isNaN(next.growthRate)
+            ? next.growthRate
+            : current.growthRate;
+          next.growthRate = Math.min(5, Math.max(0.2, growth));
           if (typeof next.summarizationEnabled !== 'boolean') {
             next.summarizationEnabled = current.summarizationEnabled;
           }
