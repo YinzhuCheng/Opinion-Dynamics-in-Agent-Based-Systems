@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { startConversation, stopConversation } from '../engine/conversationRunner';
@@ -8,6 +8,8 @@ export function DialoguePage() {
   const { messages, agents, status, stopRequested } = useAppStore((state) => state.runState);
   const [isStarting, setIsStarting] = useState(false);
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
+  const [dotStep, setDotStep] = useState(0);
+  const dotSequence = ['.', '..', '...'];
 
   const agentNameMap = resolveAgentNameMap(agents);
 
@@ -25,6 +27,21 @@ export function DialoguePage() {
   const handleStop = () => {
     stopConversation();
   };
+
+  useEffect(() => {
+    if (!status.awaitingLabel) {
+      setDotStep(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setDotStep((prev) => (prev + 1) % dotSequence.length);
+    }, 600);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [status.awaitingLabel]);
+
+  const waitingText = status.awaitingLabel === 'thinking' ? '等待LLM思考' : '等待LLM响应';
 
   return (
     <div className="page page--dialogue">
@@ -65,6 +82,12 @@ export function DialoguePage() {
           </div>
           {status.error ? <p className="form-hint error">错误：{status.error}</p> : null}
         </div>
+        {status.awaitingLabel ? (
+          <div className="waiting-indicator">
+            {waitingText}
+            <span className="waiting-dots">{` ${dotSequence[dotStep]}`}</span>
+          </div>
+        ) : null}
         <div className="card__body">
           {visibleMessages.length === 0 ? (
             <div className="empty-state">

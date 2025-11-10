@@ -5,7 +5,6 @@ import { estimateMessagesTokens } from './token';
 import { callLLM, buildRequestFromConfig } from '../utils/api';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { useSecretsStore } from '../store/useSecretsStore';
 
 const TOTAL_TOKEN_BUDGET = 4096;
 
@@ -33,7 +32,6 @@ export const stopConversation = () => {
 class ConversationRunner {
   private stopped = false;
   private readonly appStore = useAppStore;
-  private readonly secretsStore = useSecretsStore;
 
   isRunning() {
     const { phase } = this.appStore.getState().runState.status;
@@ -46,6 +44,7 @@ class ConversationRunner {
     this.appStore.getState().setRunStatus((status) => ({
       ...status,
       phase: status.phase === 'running' ? 'stopping' : status.phase,
+      awaitingLabel: undefined,
     }));
   }
 
@@ -85,6 +84,7 @@ class ConversationRunner {
       finishedAt: undefined,
       error: undefined,
       lastAgentId: undefined,
+      awaitingLabel: undefined,
     });
 
     try {
@@ -94,33 +94,36 @@ class ConversationRunner {
         await this.runFreeDialogue(agents, config);
       }
       const { status } = this.appStore.getState().runState;
-      if (!this.stopped && status.phase !== 'error') {
-        this.setStatus({
-          ...status,
-          phase: 'completed',
-          finishedAt: Date.now(),
-        });
-      } else if (this.stopped) {
-        this.setStatus((status) => ({
-          ...status,
-          phase: status.phase === 'error' ? status.phase : 'cancelled',
-          finishedAt: Date.now(),
-        }));
+        if (!this.stopped && status.phase !== 'error') {
+          this.setStatus({
+            ...status,
+            phase: 'completed',
+            finishedAt: Date.now(),
+            awaitingLabel: undefined,
+          });
+        } else if (this.stopped) {
+          this.setStatus((status) => ({
+            ...status,
+            phase: status.phase === 'error' ? status.phase : 'cancelled',
+            finishedAt: Date.now(),
+            awaitingLabel: undefined,
+          }));
       }
       this.captureResultSnapshot();
     } catch (error: any) {
-      this.setStatus({
-        phase: 'error',
-        mode: config.mode,
-        currentRound: this.appStore.getState().runState.status.currentRound,
-        currentTurn: this.appStore.getState().runState.status.currentTurn,
-        totalMessages: this.appStore.getState().runState.status.totalMessages,
-        summarizedCount: this.appStore.getState().runState.status.summarizedCount,
-        error: error?.message ?? '运行过程中发生未知错误。',
-        startedAt,
-        finishedAt: Date.now(),
-        lastAgentId: this.appStore.getState().runState.status.lastAgentId,
-      });
+        this.setStatus({
+          phase: 'error',
+          mode: config.mode,
+          currentRound: this.appStore.getState().runState.status.currentRound,
+          currentTurn: this.appStore.getState().runState.status.currentTurn,
+          totalMessages: this.appStore.getState().runState.status.totalMessages,
+          summarizedCount: this.appStore.getState().runState.status.summarizedCount,
+          error: error?.message ?? '运行过程中发生未知错误。',
+          startedAt,
+          finishedAt: Date.now(),
+          lastAgentId: this.appStore.getState().runState.status.lastAgentId,
+          awaitingLabel: undefined,
+        });
       throw error;
     }
   }
@@ -215,7 +218,7 @@ class ConversationRunner {
     ]);
     request.requestId = nanoid();
 
-    const response = await callLLM(request);
+      const response = await this.withAwaiting('response', () => callLLM(request));
     if (!response.ok) {
       throw new Error(response.error?.message ?? '模型调用失败。');
     }
@@ -272,7 +275,7 @@ class ConversationRunner {
     request.requestId = `sentiment-${message.id}-${nanoid(6)}`;
 
     try {
-      const response = await callLLM(request);
+        const response = await callLLM(request);
       if (!response.ok || !response.content) {
         throw new Error(response.error?.message ?? '情感分类失败');
       }
@@ -304,8 +307,8 @@ class ConversationRunner {
       { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
     ]);
     request.requestId = `stance-${message.id}-${nanoid(6)}`;
-    try {
-      const response = await callLLM(request);
+      try {
+        const response = await callLLM(request);
       if (!response.ok || !response.content) {
         throw new Error(response.error?.message ?? '立场评分失败');
       }
@@ -363,8 +366,8 @@ class ConversationRunner {
     ]);
     request.requestId = `summary-${nanoid(6)}`;
 
-    try {
-      const response = await callLLM(request);
+      try {
+        const response = await this.withAwaiting('thinking', () => callLLM(request));
       if (response.ok && response.content) {
         this.appStore.getState().setSummary(response.content.trim());
         this.setStatus((status) => ({
@@ -410,13 +413,13 @@ class ConversationRunner {
     return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
   }
 
-  private resolveApiKey(modelConfig: ModelConfig): string | undefined {
-    const secrets = this.secretsStore.getState();
-    const key = secrets.apiKeys[modelConfig.vendor];
-    if (modelConfig.apiKeyRef === 'localEncrypted' && !secrets.encryptionUnlocked) {
-      throw new Error('请先解锁本地加密密钥以继续调用模型。');
-    }
-    return key;
+    private resolveApiKey(modelConfig: ModelConfig): string | undefined {
+      if (modelConfig.apiKey && modelConfig.apiKey.trim()) {
+        return modelConfig.apiKey.trim();
+      }
+      const vendorDefaults = this.appStore.getState().vendorDefaults;
+      const fallback = vendorDefaults[modelConfig.vendor]?.apiKey;
+      return fallback?.trim();
   }
 
   private resolveAgentName(agentId: string): string {
@@ -428,6 +431,22 @@ class ConversationRunner {
   private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
     this.appStore.getState().setRunStatus(updater);
   }
+
+    private setAwaiting(label?: 'response' | 'thinking') {
+      this.setStatus((status) => ({
+        ...status,
+        awaitingLabel: label,
+      }));
+    }
+
+    private async withAwaiting<T>(label: 'response' | 'thinking', task: () => Promise<T>): Promise<T> {
+      this.setAwaiting(label);
+      try {
+        return await task();
+      } finally {
+        this.setAwaiting(undefined);
+      }
+    }
 
   private shouldStop() {
     return this.stopped || this.appStore.getState().runState.stopRequested;
@@ -495,8 +514,9 @@ const clamp = (value: number, min: number, max: number) => {
 
 const defaultFallbackModel = (): ModelConfig => ({
   vendor: 'openai',
+  baseUrl: '',
+  apiKey: '',
   model: 'gpt-4.1-mini',
-  apiKeyRef: 'memory',
   temperature: 0.7,
   top_p: 0.95,
   max_output_tokens: 1024,

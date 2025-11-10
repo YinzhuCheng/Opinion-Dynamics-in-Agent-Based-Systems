@@ -269,22 +269,6 @@
   flex-wrap: wrap;
 }
 
-.encryption-card {
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 1rem;
-  padding: 1.25rem;
-  background: #fff;
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-}
-
-.encryption-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
 .mode-selector {
   display: grid;
   gap: 0.75rem;
@@ -447,6 +431,34 @@
   gap: 1rem;
 }
 
+.vendor-test-area {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.vendor-test-result {
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.vendor-test-result.success {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.vendor-test-result.error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.15);
+  color: #b91c1c;
+}
+
 .memory-slider {
   display: flex;
   flex-direction: column;
@@ -460,6 +472,31 @@
 .memory-slider__value {
   font-weight: 600;
   color: #1f2937;
+}
+
+.agent-memory-block {
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  background: rgba(37, 99, 235, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.waiting-indicator {
+  margin: 1rem 0;
+  font-weight: 600;
+  color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.waiting-dots {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  letter-spacing: 0.1rem;
+  min-width: 2.5rem;
 }
 
 .run-status-panel {

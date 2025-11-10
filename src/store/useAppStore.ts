@@ -17,7 +17,8 @@ import type {
 
 const defaultModelConfig: ModelConfig = {
   vendor: 'openai',
-  apiKeyRef: 'memory',
+  baseUrl: '',
+  apiKey: '',
   model: 'gpt-4.1-mini',
   temperature: 0.7,
   top_p: 0.95,
@@ -80,28 +81,29 @@ const createInitialStatus = (mode: DialogueMode = 'round_robin'): RunStatus => (
   currentTurn: 0,
   totalMessages: 0,
   summarizedCount: 0,
+  awaitingLabel: undefined,
 });
 
 export type VendorDefaults = Record<
   Vendor,
-  { baseUrl?: string; model?: string; apiKeyRef: 'memory' | 'localEncrypted' }
+  { baseUrl?: string; model?: string; apiKey?: string }
 >;
 
 const createVendorDefaults = (): VendorDefaults => ({
   openai: {
     baseUrl: '',
     model: 'gpt-4.1-mini',
-    apiKeyRef: 'memory',
+    apiKey: '',
   },
   anthropic: {
     baseUrl: '',
     model: 'claude-3-5-sonnet-latest',
-    apiKeyRef: 'memory',
+    apiKey: '',
   },
   gemini: {
     baseUrl: '',
     model: 'gemini-1.5-pro',
-    apiKeyRef: 'memory',
+    apiKey: '',
   },
 });
 
@@ -125,22 +127,17 @@ export interface AppStore {
   setResult: (result?: SessionResult) => void;
   setVendorBaseUrl: (vendor: Vendor, baseUrl: string) => void;
   setVendorModel: (vendor: Vendor, model: string) => void;
-  setVendorApiKeyRef: (vendor: Vendor, apiKeyRef: 'memory' | 'localEncrypted') => void;
+  setVendorApiKey: (vendor: Vendor, apiKey: string) => void;
   setRunMode: (mode: RunConfig['mode']) => void;
   setMaxRounds: (value?: number) => void;
   setMaxMessages: (value?: number) => void;
   setUseGlobalModelConfig: (value: boolean) => void;
   updateGlobalModelConfig: (
-    updater:
-      | Partial<ModelConfig>
-      | ((current?: ModelConfig) => ModelConfig | undefined),
+    updater: Partial<ModelConfig> | ((current?: ModelConfig) => ModelConfig | undefined),
   ) => void;
   updateSentiment: (updater: Partial<SentimentSetting>) => void;
   setSentimentModelConfig: (
-    updater:
-      | Partial<ModelConfig>
-      | null
-      | ((current?: ModelConfig) => ModelConfig | undefined),
+    updater: Partial<ModelConfig> | null | ((current?: ModelConfig) => ModelConfig | undefined),
   ) => void;
   setMemoryWindowBudget: (value: number) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
@@ -168,19 +165,19 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.agents = agents;
       }),
     ),
-  addAgent: (agent) =>
-    set(
-      produce((state: AppStore) => {
-        const nextIndex = state.runState.agents.length + 1;
-        state.runState.agents.push({
-          id: nanoid(),
-          name: `A${nextIndex}`,
+    addAgent: (agent) =>
+      set(
+        produce((state: AppStore) => {
+          const nextIndex = state.runState.agents.length + 1;
+          state.runState.agents.push({
+            id: nanoid(),
+            name: `A${nextIndex}`,
             persona: { ...defaultPersona },
-          initialOpinion: '',
-          ...agent,
-        });
-      }),
-    ),
+            initialOpinion: '',
+            ...agent,
+          });
+        }),
+      ),
   updateAgent: (agentId, updater) =>
     set(
       produce((state: AppStore) => {
@@ -194,13 +191,13 @@ export const useAppStore = create<AppStore>((set) => ({
     set(
       produce((state: AppStore) => {
         state.runState.agents = state.runState.agents.filter((a) => a.id !== agentId);
-        if (state.runState.agents.length === 0) {
-          state.runState.agents.push({
-            id: nanoid(),
-            name: 'A1',
+          if (state.runState.agents.length === 0) {
+            state.runState.agents.push({
+              id: nanoid(),
+              name: 'A1',
               persona: { ...defaultPersona },
-            initialOpinion: '',
-          });
+              initialOpinion: '',
+            });
         }
       }),
     ),
@@ -210,7 +207,6 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState = createEmptyRunState();
         state.currentResult = undefined;
         state.currentPage = 'configuration';
-        state.vendorDefaults = createVendorDefaults();
       }),
     ),
   appendMessage: (message) =>
@@ -255,25 +251,37 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.visibleWindow = messages;
       }),
     ),
-  setResult: (result) => set({ currentResult: result }),
-  setVendorBaseUrl: (vendor, baseUrl) =>
-    set(
-      produce((state: AppStore) => {
-        state.vendorDefaults[vendor].baseUrl = baseUrl;
-      }),
-    ),
-  setVendorModel: (vendor, model) =>
-    set(
-      produce((state: AppStore) => {
-        state.vendorDefaults[vendor].model = model;
-      }),
-    ),
-  setVendorApiKeyRef: (vendor, apiKeyRef) =>
-    set(
-      produce((state: AppStore) => {
-        state.vendorDefaults[vendor].apiKeyRef = apiKeyRef;
-      }),
-    ),
+    setResult: (result) => set({ currentResult: result }),
+    setVendorBaseUrl: (vendor, baseUrl) =>
+      set(
+        produce((state: AppStore) => {
+          state.vendorDefaults[vendor].baseUrl = baseUrl;
+          const global = state.runState.config.globalModelConfig;
+          if (global && global.vendor === vendor) {
+            global.baseUrl = baseUrl;
+          }
+        }),
+      ),
+    setVendorModel: (vendor, model) =>
+      set(
+        produce((state: AppStore) => {
+          state.vendorDefaults[vendor].model = model;
+          const global = state.runState.config.globalModelConfig;
+          if (global && global.vendor === vendor) {
+            global.model = model;
+          }
+        }),
+      ),
+    setVendorApiKey: (vendor, apiKey) =>
+      set(
+        produce((state: AppStore) => {
+          state.vendorDefaults[vendor].apiKey = apiKey;
+          const global = state.runState.config.globalModelConfig;
+          if (global && global.vendor === vendor) {
+            global.apiKey = apiKey;
+          }
+        }),
+      ),
   setRunMode: (mode) =>
     set(
       produce((state: AppStore) => {

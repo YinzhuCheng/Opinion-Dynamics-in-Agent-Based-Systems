@@ -9,6 +9,8 @@ export function SentimentSection() {
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const updateSentiment = useAppStore((state) => state.updateSentiment);
   const setSentimentModelConfig = useAppStore((state) => state.setSentimentModelConfig);
+  const visualization = useAppStore((state) => state.runState.config.visualization);
+  const updateRunConfig = useAppStore((state) => state.updateRunConfig);
 
   const handleToggle = (event: ChangeEvent<HTMLInputElement>) => {
     updateSentiment({ enabled: event.target.checked });
@@ -41,7 +43,7 @@ export function SentimentSection() {
       return {
         vendor: 'openai',
         model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
-        apiKeyRef: vendorDefaults.openai.apiKeyRef,
+        apiKey: vendorDefaults.openai.apiKey ?? '',
         temperature: 0,
         top_p: 0.9,
         max_output_tokens: 512,
@@ -51,6 +53,16 @@ export function SentimentSection() {
   };
 
   const modelConfig = sentiment.modelConfigOverride;
+
+  const handleVisualizationToggle = (event: ChangeEvent<HTMLInputElement>) => {
+    updateRunConfig((config) => ({
+      ...config,
+      visualization: {
+        ...config.visualization,
+        enableStanceChart: event.target.checked,
+      },
+    }));
+  };
 
   return (
     <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
@@ -141,7 +153,22 @@ export function SentimentSection() {
             )}
           </div>
         </div>
-      )}
+        )}
+        <div className="card__body column-gap">
+          <label className="form-field checkbox-field">
+            <span>启用观点演化曲线</span>
+            <div className="checkbox-description">
+              <input
+                type="checkbox"
+                checked={visualization.enableStanceChart}
+                onChange={handleVisualizationToggle}
+              />
+              <p className="form-hint">
+                勾选后将在结果页生成立场折线图，可导出 PNG / SVG。
+              </p>
+            </div>
+          </label>
+        </div>
     </section>
   );
 }
@@ -168,14 +195,14 @@ function SentimentModelConfigEditor({
       vendor,
       model: defaults.model ?? modelConfig.model,
       baseUrl: defaults.baseUrl ?? modelConfig.baseUrl,
-      apiKeyRef: defaults.apiKeyRef,
+      apiKey: defaults.apiKey ?? modelConfig.apiKey ?? '',
     });
   };
 
-  const handleApiKeyRefChange = (event: ChangeEvent<HTMLSelectElement>) => {
+  const handleApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     setModelConfig({
       ...modelConfig,
-      apiKeyRef: event.target.value as ModelConfig['apiKeyRef'],
+      apiKey: event.target.value,
     });
   };
 
@@ -224,11 +251,13 @@ function SentimentModelConfigEditor({
           </select>
         </label>
         <label className="form-field">
-          <span>密钥来源</span>
-          <select value={modelConfig.apiKeyRef} onChange={handleApiKeyRefChange}>
-            <option value="memory">仅内存</option>
-            <option value="localEncrypted">本地加密</option>
-          </select>
+          <span>API Key</span>
+          <input
+            type="password"
+            value={modelConfig.apiKey ?? ''}
+            placeholder={defaults.apiKey ? defaults.apiKey.replace(/./g, '•') : 'sk-...'}
+            onChange={handleApiKeyChange}
+          />
         </label>
         <label className="form-field">
           <span>模型名称</span>

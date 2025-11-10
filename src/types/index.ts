@@ -3,7 +3,7 @@ export type Vendor = 'openai' | 'anthropic' | 'gemini';
 export interface ModelConfig {
   vendor: Vendor;
   baseUrl?: string;
-  apiKeyRef: 'memory' | 'localEncrypted';
+  apiKey?: string;
   model: string;
   temperature?: number;
   top_p?: number;
@@ -129,6 +129,7 @@ export interface RunStatus {
   summarizedCount: number;
   lastAgentId?: string;
   error?: string;
+  awaitingLabel?: 'response' | 'thinking';
 }
 
 export type PageKey = 'configuration' | 'dialogue' | 'results';

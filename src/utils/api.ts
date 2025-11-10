@@ -34,6 +34,7 @@ export interface ConnectionTestPayload {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  messages?: UnifiedLLMRequest['messages'];
 }
 
 const jsonHeaders = {
@@ -63,6 +64,7 @@ export const testVendorConnection = async ({
   apiKey,
   baseUrl,
   model,
+  messages,
 }: ConnectionTestPayload): Promise<UnifiedLLMResponse> => {
   const response = await fetch('/api/llm/test', {
     method: 'POST',
@@ -72,6 +74,7 @@ export const testVendorConnection = async ({
       apiKey,
       baseUrl,
       model,
+      messages,
     }),
   });
   return handleResponse(response);

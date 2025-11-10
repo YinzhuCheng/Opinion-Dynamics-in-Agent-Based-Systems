@@ -40,6 +40,8 @@ export function AgentListSection() {
   const addAgent = useAppStore((state) => state.addAgent);
   const updateAgent = useAppStore((state) => state.updateAgent);
   const removeAgent = useAppStore((state) => state.removeAgent);
+  const memory = useAppStore((state) => state.runState.config.memory);
+  const setMemoryWindowBudget = useAppStore((state) => state.setMemoryWindowBudget);
 
   useEffect(() => {
     if (!runConfig.useGlobalModelConfig) {
@@ -47,12 +49,12 @@ export function AgentListSection() {
         runConfig.globalModelConfig ??
         ({
           vendor: 'openai',
+          baseUrl: vendorDefaults.openai.baseUrl ?? '',
+          apiKey: vendorDefaults.openai.apiKey ?? '',
           model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
-          apiKeyRef: vendorDefaults.openai.apiKeyRef,
           temperature: 0.7,
           top_p: 0.95,
           max_output_tokens: 2048,
-          baseUrl: vendorDefaults.openai.baseUrl,
         } satisfies ModelConfig);
       agents.forEach((agent) => {
         if (!agent.modelConfig) {
@@ -165,6 +167,28 @@ export function AgentListSection() {
             )}
           </div>
         ))}
+        <div className="agent-memory-block">
+          <h4>记忆窗口管理</h4>
+          <p className="form-hint">
+            系统会在 Token 接近上限时自动摘要早期消息，并保留近期对话在可见窗口中。
+          </p>
+          <div className="memory-slider">
+            <label className="form-field">
+              <span>可见窗口 Token 预算（占总预算百分比）</span>
+              <input
+                type="range"
+                min={10}
+                max={80}
+                step={5}
+                value={memory.windowTokenBudgetPct}
+                onChange={(event) => setMemoryWindowBudget(Number(event.target.value))}
+              />
+            </label>
+            <div className="memory-slider__value">
+              {memory.windowTokenBudgetPct}% 用于保留近期消息，剩余 {100 - memory.windowTokenBudgetPct}% 用于摘要。
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -372,7 +396,7 @@ const AgentModelConfigEditor = ({
         vendor,
         model: defaults.model ?? modelConfig.model,
         baseUrl: defaults.baseUrl ?? modelConfig.baseUrl,
-        apiKeyRef: defaults.apiKeyRef,
+        apiKey: defaults.apiKey ?? modelConfig.apiKey ?? '',
       },
     });
   };
@@ -395,11 +419,11 @@ const AgentModelConfigEditor = ({
     });
   };
 
-  const handleApiKeyRefChange = (event: ChangeEvent<HTMLSelectElement>) => {
+  const handleApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onChange(agent.id, {
       modelConfig: {
         ...modelConfig,
-        apiKeyRef: event.target.value as ModelConfig['apiKeyRef'],
+        apiKey: event.target.value,
       },
     });
   };
@@ -439,13 +463,15 @@ const AgentModelConfigEditor = ({
             <option value="gemini">Gemini (Google)</option>
           </select>
         </label>
-        <label className="form-field">
-          <span>密钥来源</span>
-          <select value={modelConfig.apiKeyRef} onChange={handleApiKeyRefChange}>
-            <option value="memory">仅内存</option>
-            <option value="localEncrypted">本地加密</option>
-          </select>
-        </label>
+          <label className="form-field">
+            <span>API Key</span>
+            <input
+              type="password"
+              value={modelConfig.apiKey ?? ''}
+              placeholder={defaults.apiKey ? defaults.apiKey.replace(/./g, '•') : 'sk-...'}
+              onChange={handleApiKeyChange}
+            />
+          </label>
         <label className="form-field">
           <span>模型名称</span>
           <input

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { testVendorConnection } from '../../utils/api';
 import type { DialogueMode, ModelConfig, Vendor } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
-import { useSecretsStore } from '../../store/useSecretsStore';
 
 const modeOptions: Array<{ value: DialogueMode; label: string; description: string }> = [
   { value: 'round_robin', label: '轮询对话', description: '严格按 Agent 顺序轮流发言，适合结构化讨论。' },
@@ -31,66 +30,39 @@ const vendorPlaceholders: Record<Vendor, { baseUrl: string; model: string }> = {
   },
 };
 
-type ConnectionState = {
+type TestState = {
   status: 'idle' | 'loading' | 'success' | 'error';
   message?: string;
 };
 
 export function RunSettingsSection() {
   const [collapsed, setCollapsed] = useState(false);
-
-  const runConfig = useAppStore((state) => state.runState.config);
-  const vendorDefaults = useAppStore((state) => state.vendorDefaults);
-  const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
-  const setVendorModel = useAppStore((state) => state.setVendorModel);
-  const setVendorApiKeyRef = useAppStore((state) => state.setVendorApiKeyRef);
-  const setRunMode = useAppStore((state) => state.setRunMode);
-  const setMaxRounds = useAppStore((state) => state.setMaxRounds);
-  const setMaxMessages = useAppStore((state) => state.setMaxMessages);
-  const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
-  const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
-
-  const {
-    apiKeys,
-    encryptionEnabled,
-    encryptionUnlocked,
-    hasStoredCiphertext,
-    lastSavedAt,
-    passphrase,
-    error,
-    initializeFromStorage,
-    setApiKey,
-    clearApiKey,
-    saveEncrypted,
-    loadEncrypted,
-    disableEncryption,
-    forgetEncrypted,
-    setError,
-  } = useSecretsStore();
-
-  useEffect(() => {
-    initializeFromStorage();
-  }, [initializeFromStorage]);
-
   const [showKeys, setShowKeys] = useState<Record<Vendor, boolean>>({
     openai: false,
     anthropic: false,
     gemini: false,
   });
-  const [connectionState, setConnectionState] = useState<Record<Vendor, ConnectionState>>({
+  const [testMessages, setTestMessages] = useState<Record<Vendor, string>>({
+    openai: '你好，能听到吗？',
+    anthropic: 'Hello Claude, are you there?',
+    gemini: 'Ping from UI, please respond.',
+  });
+  const [testStates, setTestStates] = useState<Record<Vendor, TestState>>({
     openai: { status: 'idle' },
     anthropic: { status: 'idle' },
     gemini: { status: 'idle' },
   });
-  const [encryptionPassword, setEncryptionPassword] = useState('');
-  const [encryptionBusy, setEncryptionBusy] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
 
-  useEffect(() => {
-    if (!passphrase) {
-      setEncryptionPassword('');
-    }
-  }, [passphrase]);
+  const runConfig = useAppStore((state) => state.runState.config);
+  const vendorDefaults = useAppStore((state) => state.vendorDefaults);
+  const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
+  const setVendorModel = useAppStore((state) => state.setVendorModel);
+  const setVendorApiKey = useAppStore((state) => state.setVendorApiKey);
+  const setRunMode = useAppStore((state) => state.setRunMode);
+  const setMaxRounds = useAppStore((state) => state.setMaxRounds);
+  const setMaxMessages = useAppStore((state) => state.setMaxMessages);
+  const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
+  const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -109,32 +81,34 @@ export function RunSettingsSection() {
   const handleVendorChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const vendor = event.target.value as Vendor;
     const defaults = vendorDefaults[vendor];
-    updateGlobalModelConfig((prev?: ModelConfig) => ({
-      ...(prev ?? {
-        vendor,
-        apiKeyRef: defaults.apiKeyRef,
-        model: defaults.model ?? '',
-        temperature: 0.7,
-        top_p: 0.95,
-        max_output_tokens: 2048,
-      }),
+    updateGlobalModelConfig(() => ({
       vendor,
       baseUrl: defaults.baseUrl ?? '',
-      model: defaults.model ?? prev?.model ?? '',
-      apiKeyRef: defaults.apiKeyRef,
+      apiKey: defaults.apiKey ?? '',
+      model: defaults.model ?? vendorPlaceholders[vendor].model,
+      temperature: 0.7,
+      top_p: 0.95,
+      max_output_tokens: 2048,
+      systemPromptExtra: '',
     }));
   };
 
   const handleGlobalModelChange = (event: ChangeEvent<HTMLInputElement>) => {
-    updateGlobalModelConfig({ model: event.target.value });
+    const value = event.target.value;
+    updateGlobalModelConfig({ model: value });
+    setVendorModel(selectedVendor, value);
   };
 
   const handleGlobalBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
-    updateGlobalModelConfig({ baseUrl: event.target.value });
+    const value = event.target.value;
+    updateGlobalModelConfig({ baseUrl: value });
+    setVendorBaseUrl(selectedVendor, value);
   };
 
-  const handleGlobalApiKeyRefChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    updateGlobalModelConfig({ apiKeyRef: event.target.value as ModelConfig['apiKeyRef'] });
+  const handleGlobalApiKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    updateGlobalModelConfig({ apiKey: value });
+    setVendorApiKey(selectedVendor, value);
   };
 
   const handleGlobalNumberChange =
@@ -158,87 +132,26 @@ export function RunSettingsSection() {
     setVendorModel(vendor, event.target.value);
   };
 
-  const handleApiKeyChange = (vendor: Vendor) => async (event: ChangeEvent<HTMLInputElement>) => {
-    try {
-      await setApiKey(vendor, event.target.value.trim());
-    } catch (err) {
-      console.error(err);
-    }
+  const handleVendorApiKeyChange = (vendor: Vendor) => (event: ChangeEvent<HTMLInputElement>) => {
+    setVendorApiKey(vendor, event.target.value);
   };
 
-  const handleStorageChange = (vendor: Vendor) => (event: ChangeEvent<HTMLSelectElement>) => {
-    const value = event.target.value as 'memory' | 'localEncrypted';
-    if (value === 'localEncrypted' && !encryptionUnlocked) {
-      setError('请先输入口令并加载加密存储后，再选择“本地加密”。');
-      return;
-    }
-    setVendorApiKeyRef(vendor, value);
-  };
-
-  const handleEncryptionSave = async () => {
-    if (!encryptionPassword) {
-      setError('请先输入用于加密的口令。');
-      return;
-    }
-    setEncryptionBusy(true);
-    try {
-      await saveEncrypted(encryptionPassword);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setEncryptionBusy(false);
-    }
-  };
-
-  const handleEncryptionLoad = async () => {
-    if (!encryptionPassword) {
-      setError('请输入用于解锁的口令。');
-      return;
-    }
-    setEncryptionBusy(true);
-    try {
-      const ok = await loadEncrypted(encryptionPassword);
-      if (!ok) {
-        setEncryptionPassword('');
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setEncryptionBusy(false);
-    }
-  };
-
-  const handleEncryptionDisable = async () => {
-    setEncryptionBusy(true);
-    try {
-      disableEncryption();
-      setEncryptionPassword('');
-    } finally {
-      setEncryptionBusy(false);
-    }
-  };
-
-  const handleEncryptionForget = async () => {
-    setEncryptionBusy(true);
-    try {
-      forgetEncrypted();
-    } finally {
-      setEncryptionBusy(false);
-    }
+  const handleTestMessageChange = (vendor: Vendor) => (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setTestMessages((prev) => ({ ...prev, [vendor]: value }));
   };
 
   const handleTestConnection = async (vendor: Vendor) => {
-    const apiKey = apiKeys[vendor];
+    const vendorConfig = vendorDefaults[vendor];
+    const apiKey = vendorConfig.apiKey?.trim();
     if (!apiKey) {
-      setConnectionState((prev) => ({
+      setTestStates((prev) => ({
         ...prev,
         [vendor]: { status: 'error', message: '请先填写 API Key。' },
       }));
       return;
     }
-    const { baseUrl } = vendorDefaults[vendor];
-    const model = vendorDefaults[vendor].model || vendorPlaceholders[vendor].model;
-    setConnectionState((prev) => ({
+    setTestStates((prev) => ({
       ...prev,
       [vendor]: { status: 'loading' },
     }));
@@ -246,38 +159,53 @@ export function RunSettingsSection() {
       const response = await testVendorConnection({
         vendor,
         apiKey,
-        baseUrl: baseUrl || undefined,
-        model,
+        baseUrl: vendorConfig.baseUrl || undefined,
+        model: vendorConfig.model || vendorPlaceholders[vendor].model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是连通性测试助手，请用简洁中文回答用户输入，以确认接口可用。',
+          },
+          {
+            role: 'user',
+            content: testMessages[vendor] || '你好，能否收到？',
+          },
+        ],
       });
       if (response.ok) {
-        setConnectionState((prev) => ({
+        setTestStates((prev) => ({
           ...prev,
-          [vendor]: { status: 'success', message: '连通成功。' },
+          [vendor]: { status: 'success', message: response.content || '（无返回内容）' },
         }));
       } else {
-        setConnectionState((prev) => ({
+        setTestStates((prev) => ({
           ...prev,
-          [vendor]: { status: 'error', message: response.error?.message ?? '连通失败。' },
+          [vendor]: {
+            status: 'error',
+            message: response.error?.message ?? '连通失败。',
+          },
         }));
       }
-    } catch (err: any) {
-      setConnectionState((prev) => ({
+    } catch (error: any) {
+      setTestStates((prev) => ({
         ...prev,
-        [vendor]: { status: 'error', message: err?.message ?? '连通失败。' },
+        [vendor]: { status: 'error', message: error?.message ?? '连通失败。' },
       }));
     }
   };
 
-  const encryptionStatusText = useMemo(() => {
-    if (!encryptionEnabled) return '当前仅保存在内存中，关闭页面即失效。';
-    if (!encryptionUnlocked) return '已检测到加密存储，请输入口令解锁。';
-    if (lastSavedAt) return `已启用加密存储，上次保存：${new Date(lastSavedAt).toLocaleString()}`;
-    return '已启用加密存储。';
-  }, [encryptionEnabled, encryptionUnlocked, lastSavedAt]);
-
-  const globalConfig = runConfig.globalModelConfig;
-  const selectedVendor = globalConfig?.vendor ?? 'openai';
+  const selectedVendor = runConfig.globalModelConfig?.vendor ?? 'openai';
   const vendorDefault = vendorDefaults[selectedVendor];
+  const globalConfig = runConfig.globalModelConfig ?? {
+    vendor: selectedVendor,
+    baseUrl: vendorDefault.baseUrl ?? '',
+    apiKey: vendorDefault.apiKey ?? '',
+    model: vendorDefault.model ?? vendorPlaceholders[selectedVendor].model,
+    temperature: 0.7,
+    top_p: 0.95,
+    max_output_tokens: 2048,
+    systemPromptExtra: '',
+  };
 
   return (
     <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
@@ -304,10 +232,8 @@ export function RunSettingsSection() {
           <div className="vendor-card-grid">
             {(Object.keys(vendorLabels) as Vendor[]).map((vendor) => {
               const label = vendorLabels[vendor];
-              const baseUrl = vendorDefaults[vendor].baseUrl ?? '';
-              const apiKey = apiKeys[vendor] ?? '';
-              const storageStrategy = vendorDefaults[vendor].apiKeyRef;
-              const state = connectionState[vendor];
+              const vendorConfig = vendorDefaults[vendor];
+              const state = testStates[vendor];
               const placeholder = vendorPlaceholders[vendor];
               return (
                 <div key={vendor} className="vendor-card">
@@ -319,7 +245,7 @@ export function RunSettingsSection() {
                     <span>Base URL（可选）</span>
                     <input
                       type="url"
-                      value={baseUrl}
+                      value={vendorConfig.baseUrl ?? ''}
                       placeholder={placeholder.baseUrl}
                       onChange={handleVendorBaseUrlChange(vendor)}
                     />
@@ -328,7 +254,7 @@ export function RunSettingsSection() {
                     <span>默认模型名</span>
                     <input
                       type="text"
-                      value={vendorDefaults[vendor].model ?? ''}
+                      value={vendorConfig.model ?? ''}
                       placeholder={placeholder.model}
                       onChange={handleVendorModelChange(vendor)}
                     />
@@ -339,8 +265,8 @@ export function RunSettingsSection() {
                       <input
                         type={showKeys[vendor] ? 'text' : 'password'}
                         autoComplete="off"
-                        value={apiKey}
-                        onChange={handleApiKeyChange(vendor)}
+                        value={vendorConfig.apiKey ?? ''}
+                        onChange={handleVendorApiKeyChange(vendor)}
                         placeholder="sk-..."
                       />
                       <button
@@ -357,94 +283,43 @@ export function RunSettingsSection() {
                       </button>
                     </div>
                   </label>
-                  <label className="form-field">
-                    <span>密钥存储</span>
-                    <select value={storageStrategy} onChange={handleStorageChange(vendor)}>
-                      <option value="memory">仅内存（当前会话）</option>
-                      <option value="localEncrypted" disabled={!encryptionUnlocked}>
-                        本地加密（需口令）
-                      </option>
-                    </select>
-                  </label>
-                  <div className="vendor-card__actions">
-                    <button
-                      type="button"
-                      className="button secondary"
-                      onClick={() => handleTestConnection(vendor)}
-                      disabled={state.status === 'loading'}
-                    >
-                      {state.status === 'loading' ? '测试中…' : '测试连通'}
-                    </button>
-                    <button type="button" className="button ghost" onClick={() => clearApiKey(vendor)}>
-                      清空
-                    </button>
+
+                  <div className="vendor-test-area">
+                    <label className="form-field">
+                      <span>连通性测试输入</span>
+                      <textarea
+                        value={testMessages[vendor]}
+                        onChange={handleTestMessageChange(vendor)}
+                        placeholder="请输入想要测试的内容，例如：请用一句话介绍你自己。"
+                      />
+                    </label>
+                    <div className="vendor-card__actions">
+                      <button
+                        type="button"
+                        className="button secondary"
+                        onClick={() => handleTestConnection(vendor)}
+                        disabled={state.status === 'loading'}
+                      >
+                        {state.status === 'loading' ? '测试中…' : '测试连通'}
+                      </button>
+                      <button
+                        type="button"
+                        className="button ghost"
+                        onClick={() => setVendorApiKey(vendor, '')}
+                      >
+                        清空密钥
+                      </button>
+                    </div>
+                    {state.status === 'success' && (
+                      <pre className="vendor-test-result success">{state.message}</pre>
+                    )}
+                    {state.status === 'error' && (
+                      <pre className="vendor-test-result error">{state.message}</pre>
+                    )}
                   </div>
-                  {state.status === 'success' && <p className="form-hint success">{state.message}</p>}
-                  {state.status === 'error' && <p className="form-hint error">{state.message}</p>}
                 </div>
               );
             })}
-          </div>
-
-          <div className="encryption-card">
-            <h3>本地加密保存</h3>
-            <p className="form-hint">{encryptionStatusText}</p>
-            <label className="form-field">
-              <span>加密口令</span>
-              <div className="form-field__input-with-action">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="请输入口令（不少于 8 位）"
-                  value={encryptionPassword}
-                  onChange={(event) => setEncryptionPassword(event.target.value)}
-                />
-                <button
-                  type="button"
-                  className="button tertiary"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                >
-                  {showPassword ? '隐藏' : '显示'}
-                </button>
-              </div>
-            </label>
-            <div className="encryption-actions">
-              <button
-                type="button"
-                className="button primary"
-                onClick={handleEncryptionSave}
-                disabled={encryptionBusy}
-              >
-                保存到本地
-              </button>
-              <button
-                type="button"
-                className="button secondary"
-                onClick={handleEncryptionLoad}
-                disabled={encryptionBusy || !hasStoredCiphertext}
-              >
-                解锁并载入
-              </button>
-              <button
-                type="button"
-                className="button ghost"
-                onClick={handleEncryptionDisable}
-                disabled={encryptionBusy || !encryptionEnabled}
-              >
-                停用加密
-              </button>
-              <button
-                type="button"
-                className="button ghost"
-                onClick={handleEncryptionForget}
-                disabled={encryptionBusy || !hasStoredCiphertext}
-              >
-                清除已保存
-              </button>
-            </div>
-            {error && <p className="form-hint error">{error}</p>}
-            <p className="form-hint">
-              口令仅在当前标签页内存中保留，不会上传到服务器。启用加密后，建议刷新页面时重新输入口令。
-            </p>
           </div>
         </div>
 
@@ -509,8 +384,7 @@ export function RunSettingsSection() {
               <div className="global-model-card__header">
                 <h4>统一模型配置</h4>
                 <p className="form-hint">
-                  当前使用 {vendorLabels[selectedVendor]}，密钥来源：
-                  {globalConfig?.apiKeyRef === 'localEncrypted' ? '本地加密' : '内存'}。
+                  当前使用 {vendorLabels[selectedVendor]}。
                 </p>
               </div>
               <div className="grid two-columns">
@@ -523,17 +397,19 @@ export function RunSettingsSection() {
                   </select>
                 </label>
                 <label className="form-field">
-                  <span>密钥来源</span>
-                  <select value={globalConfig?.apiKeyRef ?? vendorDefault.apiKeyRef} onChange={handleGlobalApiKeyRefChange}>
-                    <option value="memory">仅内存</option>
-                    <option value="localEncrypted">本地加密</option>
-                  </select>
+                  <span>API Key</span>
+                  <input
+                    type={showKeys[selectedVendor] ? 'text' : 'password'}
+                    value={globalConfig.apiKey ?? ''}
+                    onChange={handleGlobalApiKeyChange}
+                    placeholder="sk-..."
+                  />
                 </label>
                 <label className="form-field">
                   <span>模型名称</span>
                   <input
                     type="text"
-                    value={globalConfig?.model ?? vendorDefault.model ?? ''}
+                    value={globalConfig.model ?? vendorDefault.model ?? ''}
                     placeholder={vendorDefault.model ?? ''}
                     onChange={handleGlobalModelChange}
                   />
@@ -542,7 +418,7 @@ export function RunSettingsSection() {
                   <span>Base URL（可选）</span>
                   <input
                     type="url"
-                    value={globalConfig?.baseUrl ?? vendorDefault.baseUrl ?? ''}
+                    value={globalConfig.baseUrl ?? vendorDefault.baseUrl ?? ''}
                     placeholder={vendorDefault.baseUrl ?? 'https://...'}
                     onChange={handleGlobalBaseUrlChange}
                   />
@@ -554,7 +430,7 @@ export function RunSettingsSection() {
                     step="0.05"
                     min={0}
                     max={2}
-                    value={globalConfig?.temperature ?? ''}
+                    value={globalConfig.temperature ?? ''}
                     placeholder="0.7"
                     onChange={handleGlobalNumberChange('temperature')}
                   />
@@ -566,7 +442,7 @@ export function RunSettingsSection() {
                     step="0.05"
                     min={0}
                     max={1}
-                    value={globalConfig?.top_p ?? ''}
+                    value={globalConfig.top_p ?? ''}
                     placeholder="0.95"
                     onChange={handleGlobalNumberChange('top_p')}
                   />
@@ -576,7 +452,7 @@ export function RunSettingsSection() {
                   <input
                     type="number"
                     min={16}
-                    value={globalConfig?.max_output_tokens ?? ''}
+                    value={globalConfig.max_output_tokens ?? ''}
                     placeholder="2048"
                     onChange={handleGlobalNumberChange('max_output_tokens')}
                   />
@@ -585,7 +461,7 @@ export function RunSettingsSection() {
               <label className="form-field">
                 <span>额外系统提示（可选）</span>
                 <textarea
-                  value={globalConfig?.systemPromptExtra ?? ''}
+                  value={globalConfig.systemPromptExtra ?? ''}
                   placeholder="可补充统一的系统提示，例如讨论目标、语言要求等。"
                   onChange={handleSystemPromptChange}
                 />
