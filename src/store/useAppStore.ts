@@ -53,10 +53,15 @@ const createDefaultRunConfig = (): RunConfig => ({
     count: 3,
   },
   memory: {
-    summarizationEnabled: true,
-    minWindowPct: 20,
-    maxWindowPct: 60,
-    growthRate: 1.2,
+    slidingWindow: {
+      enabled: true,
+      windowRounds: 3,
+    },
+    summarization: {
+      enabled: true,
+      intervalRounds: 4,
+      maxSummaryTokens: 512,
+    },
   },
   visualization: {
     enableStanceChart: false,
@@ -358,24 +363,44 @@ export const useAppStore = create<AppStore>((set) => ({
       set(
         produce((state: AppStore) => {
           const current = state.runState.config.memory;
-          const next = { ...current, ...updater };
-          const clampPct = (val: number | undefined, fallback: number) => {
-            const numeric = typeof val === 'number' && !Number.isNaN(val) ? val : fallback;
-            return Math.min(90, Math.max(5, numeric));
+          const patch =
+            typeof updater === 'function' ? updater(current) : updater;
+          if (!patch) {
+            return;
+          }
+          const clamp = (value: number | undefined, min: number, max: number, fallback: number) => {
+            if (typeof value !== 'number' || Number.isNaN(value)) {
+              return fallback;
+            }
+            return Math.min(max, Math.max(min, value));
           };
-          next.minWindowPct = clampPct(next.minWindowPct, current.minWindowPct);
-          next.maxWindowPct = clampPct(next.maxWindowPct, current.maxWindowPct);
-          if (next.minWindowPct > next.maxWindowPct) {
-            [next.minWindowPct, next.maxWindowPct] = [next.maxWindowPct, next.minWindowPct];
-          }
-          const growth = typeof next.growthRate === 'number' && !Number.isNaN(next.growthRate)
-            ? next.growthRate
-            : current.growthRate;
-          next.growthRate = Math.min(5, Math.max(0.2, growth));
-          if (typeof next.summarizationEnabled !== 'boolean') {
-            next.summarizationEnabled = current.summarizationEnabled;
-          }
-          state.runState.config.memory = next;
+          const nextSliding = {
+            ...current.slidingWindow,
+            ...(patch.slidingWindow ?? {}),
+          };
+          nextSliding.windowRounds = clamp(nextSliding.windowRounds, 1, 24, current.slidingWindow.windowRounds);
+
+          const nextSummarization = {
+            ...current.summarization,
+            ...(patch.summarization ?? {}),
+          };
+          nextSummarization.intervalRounds = clamp(
+            nextSummarization.intervalRounds,
+            1,
+            24,
+            current.summarization.intervalRounds,
+          );
+          nextSummarization.maxSummaryTokens = clamp(
+            nextSummarization.maxSummaryTokens,
+            128,
+            2048,
+            current.summarization.maxSummaryTokens,
+          );
+
+          state.runState.config.memory = {
+            slidingWindow: nextSliding,
+            summarization: nextSummarization,
+          };
         }),
       ),
   setRunStatus: (updater) =>

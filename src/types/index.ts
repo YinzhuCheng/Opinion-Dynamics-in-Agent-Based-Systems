@@ -74,6 +74,22 @@ export interface SentimentSetting {
 
 export type DialogueMode = 'round_robin' | 'free';
 
+export interface SlidingWindowMemoryConfig {
+  enabled: boolean;
+  windowRounds: number;
+}
+
+export interface SummarizationMemoryConfig {
+  enabled: boolean;
+  intervalRounds: number;
+  maxSummaryTokens: number;
+}
+
+export interface MemoryConfig {
+  slidingWindow: SlidingWindowMemoryConfig;
+  summarization: SummarizationMemoryConfig;
+}
+
 export interface RunConfig {
   mode: DialogueMode;
   maxRounds?: number;
@@ -81,12 +97,7 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
-  memory: {
-    summarizationEnabled: boolean;
-    minWindowPct: number;
-    maxWindowPct: number;
-    growthRate: number;
-  };
+  memory: MemoryConfig;
   visualization: {
     enableStanceChart: boolean;
   };

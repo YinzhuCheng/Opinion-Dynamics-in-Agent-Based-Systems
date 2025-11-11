@@ -16,6 +16,7 @@ export interface ChatStreamExtra {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  topP?: number;
 }
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
@@ -64,7 +65,7 @@ async function callOpenAI(
   const base = (config.baseUrl?.trim() || OPENAI_BASE).replace(/\/$/, '');
   const url = `${base}/chat/completions`;
   const temperature = extra?.temperature ?? config.temperature;
-  const topP = config.top_p;
+  const topP = extra?.topP ?? config.top_p;
   const maxTokens = extra?.maxTokens ?? config.max_output_tokens;
 
   const body: Record<string, unknown> = {
@@ -145,7 +146,7 @@ async function callAnthropic(
   const base = (config.baseUrl?.trim() || ANTHROPIC_BASE).replace(/\/$/, '');
   const url = `${base}/v1/messages`;
   const temperature = extra?.temperature ?? config.temperature;
-  const topP = config.top_p;
+  const topP = extra?.topP ?? config.top_p;
   const maxTokens = extra?.maxTokens ?? config.max_output_tokens ?? 4096;
 
   const systemPrompt = messages
@@ -228,7 +229,7 @@ async function callGemini(
   const base = (config.baseUrl?.trim() || GEMINI_BASE).replace(/\/$/, '');
   const url = `${base}/v1beta/models/${config.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const temperature = extra?.temperature ?? config.temperature;
-  const topP = config.top_p;
+  const topP = extra?.topP ?? config.top_p;
   const maxTokens = extra?.maxTokens ?? config.max_output_tokens;
 
   const generationConfig = cleanUndefined({

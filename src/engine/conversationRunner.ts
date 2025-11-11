@@ -1,13 +1,16 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt, buildSummarizationPrompt } from './prompts';
+import {
+  buildAgentSystemPrompt,
+  buildAgentUserPrompt,
+  buildSentimentPrompt,
+  buildStancePrompt,
+  buildSummarizationPrompt,
+} from './prompts';
 import { resolveSentimentLabels } from './sentiment';
-import { estimateMessagesTokens } from './token';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
-
-const TOTAL_TOKEN_BUDGET = 4096;
 
 let activeRunner: ConversationRunner | undefined;
 
@@ -221,6 +224,7 @@ class ConversationRunner {
     const extra = {
       temperature: modelConfig.temperature,
       maxTokens: modelConfig.max_output_tokens,
+      topP: modelConfig.top_p,
     };
 
     let content = '';
@@ -295,7 +299,11 @@ class ConversationRunner {
           { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
         ],
         modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+        {
+          temperature: modelConfig.temperature,
+          maxTokens: modelConfig.max_output_tokens,
+          topP: modelConfig.top_p,
+        },
       );
       const parsed = safeJsonParse(result);
       if (parsed?.label && labels.includes(parsed.label)) {
@@ -328,7 +336,11 @@ class ConversationRunner {
           { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
         ],
         modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+        {
+          temperature: modelConfig.temperature,
+          maxTokens: modelConfig.max_output_tokens,
+          topP: modelConfig.top_p,
+        },
       );
       const parsed = safeJsonParse(result);
       if (typeof parsed?.score === 'number') {
@@ -345,34 +357,44 @@ class ConversationRunner {
   }
 
   private async maybeSummarizeMemory(config: RunConfig) {
-    if (!config.memory.summarizationEnabled) {
-      const messages = this.appStore.getState().runState.messages;
-      this.appStore.getState().setVisibleWindow(messages);
-      return;
-    }
-
+    const { summarization, slidingWindow } = config.memory;
     const { runState } = this.appStore.getState();
     const { messages, status } = runState;
-    const summarizeFromIndex = status.summarizedCount;
+
+    if (!summarization.enabled) {
+      if (runState.summary || status.summarizedCount !== 0) {
+        this.appStore.getState().setSummary('');
+        this.setStatus((current) => ({
+          ...current,
+          summarizedCount: 0,
+        }));
+      }
+      return;
+    }
 
     if (messages.length === 0) {
       return;
     }
 
     const agentCount = Math.max(1, runState.agents.length);
-    const windowPct = this.computeWindowPct(runState.status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
+    const windowKeep = slidingWindow.enabled ? this.getWindowMessageCount(config, agentCount) : 0;
+    const cutoffIndex = slidingWindow.enabled ? Math.max(0, messages.length - windowKeep) : messages.length;
+    const alreadySummarized = status.summarizedCount;
 
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
-
-    const newSummariesCount = messages.length - visibleMessages.length - status.summarizedCount;
-    if (newSummariesCount <= 0) {
+    if (cutoffIndex <= alreadySummarized) {
       return;
     }
 
-    const chunk = messages.slice(summarizeFromIndex, summarizeFromIndex + newSummariesCount);
-    const transcripts = chunk.map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId))).join('\n');
+    const pending = messages.slice(alreadySummarized, cutoffIndex);
+    const requiredMessages = this.getSummarizationIntervalMessages(config, agentCount);
+
+    if (pending.length < requiredMessages) {
+      return;
+    }
+
+    const transcripts = pending
+      .map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId)))
+      .join('\n');
 
     const baseModelConfig = this.resolveFallbackModelConfig(config);
     const apiKey = this.resolveApiKey(baseModelConfig);
@@ -383,14 +405,18 @@ class ConversationRunner {
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
     try {
-      const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
+      const { system, user } = buildSummarizationPrompt(runState.summary, transcripts);
       const result = await chatStream(
         [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
         modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
+        {
+          temperature: modelConfig.temperature,
+          maxTokens: summarization.maxSummaryTokens,
+          topP: modelConfig.top_p,
+        },
         {
           onStatus: (status) => {
             if (status === 'waiting_response' || status === 'responding') {
@@ -405,10 +431,11 @@ class ConversationRunner {
       );
       if (result) {
         this.appStore.getState().setSummary(result.trim());
-        this.setStatus((status) => ({
-          ...status,
-          summarizedCount: status.summarizedCount + newSummariesCount,
+        this.setStatus((state) => ({
+          ...state,
+          summarizedCount: state.summarizedCount + pending.length,
         }));
+        this.updateVisibleWindow();
       }
     } catch (error) {
       console.warn('[Summary] 摘要生成失败：', error);
@@ -418,16 +445,20 @@ class ConversationRunner {
   }
 
   private updateVisibleWindow() {
-    const { config, messages, status, agents } = this.appStore.getState().runState;
-    if (!config.memory.summarizationEnabled) {
+    const { config, messages, agents } = this.appStore.getState().runState;
+    const sliding = config.memory.slidingWindow;
+    if (!sliding.enabled) {
       this.appStore.getState().setVisibleWindow(messages);
       return;
     }
     const agentCount = Math.max(1, agents.length);
-    const windowPct = this.computeWindowPct(status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
+    const windowMessages = this.getWindowMessageCount(config, agentCount);
+    if (windowMessages >= messages.length) {
+      this.appStore.getState().setVisibleWindow(messages);
+      return;
+    }
+    const start = Math.max(0, messages.length - windowMessages);
+    this.appStore.getState().setVisibleWindow(messages.slice(start));
   }
 
   private updateStatusAfterMessage(message: Message) {
@@ -471,39 +502,27 @@ class ConversationRunner {
     this.appStore.getState().setRunStatus(updater);
   }
 
-  private computeWindowPct(status: RunStatus, config: RunConfig, agentCount: number): number {
-    if (!config.memory.summarizationEnabled) {
-      return 100;
-    }
-    const { memory } = config;
-    const minPct = Math.min(memory.minWindowPct, memory.maxWindowPct);
-    const maxPct = Math.max(memory.minWindowPct, memory.maxWindowPct);
-    const growthRate = memory.growthRate > 0 ? memory.growthRate : 0.5;
-    const progress = this.estimateDialogueProgress(status, config, agentCount);
-    const denominator = 1 - Math.exp(-growthRate);
-    const curve =
-      Math.abs(denominator) < 1e-6 ? progress : (1 - Math.exp(-growthRate * progress)) / denominator;
-    const pct = minPct + (maxPct - minPct) * curve;
-    return Math.min(90, Math.max(5, pct));
-  }
-
-  private estimateDialogueProgress(status: RunStatus, config: RunConfig, agentCount: number): number {
-    const expectedMessages =
-      config.mode === 'round_robin'
-        ? (config.maxRounds ?? Math.max(1, status.currentRound || 1)) * Math.max(1, agentCount)
-        : config.maxMessages ?? Math.max(1, status.totalMessages || agentCount);
-    if (expectedMessages <= 0) {
-      return 0;
-    }
-    const progress = status.totalMessages / expectedMessages;
-    return Math.min(1, Math.max(0, progress));
-  }
-
   private setAwaiting(label?: 'response' | 'thinking') {
     this.setStatus((status) => ({
       ...status,
       awaitingLabel: label,
     }));
+  }
+
+  private getWindowMessageCount(config: RunConfig, agentCount: number): number {
+    const rounds = Math.max(1, Math.floor(config.memory.slidingWindow.windowRounds));
+    if (config.mode === 'round_robin') {
+      return rounds * Math.max(1, agentCount);
+    }
+    return rounds;
+  }
+
+  private getSummarizationIntervalMessages(config: RunConfig, agentCount: number): number {
+    const rounds = Math.max(1, Math.floor(config.memory.summarization.intervalRounds));
+    if (config.mode === 'round_robin') {
+      return rounds * Math.max(1, agentCount);
+    }
+    return rounds;
   }
 
   private shouldStop() {
@@ -522,21 +541,6 @@ class ConversationRunner {
     });
   }
 }
-
-const collectVisibleMessages = (messages: Message[], budgetTokens: number): Message[] => {
-  const reversed: Message[] = [];
-  let tokenCount = 0;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    const tokens = estimateMessagesTokens([message]);
-    if (tokenCount + tokens > budgetTokens) {
-      break;
-    }
-    reversed.push(message);
-    tokenCount += tokens;
-  }
-  return reversed.reverse();
-};
 
 const formatMessageForTranscript = (message: Message, agentName: string): string => {
   const sentiment = message.sentiment ? `（情感：${message.sentiment.label}${formatConfidence(message.sentiment.confidence)}）` : '';

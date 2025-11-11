@@ -11,12 +11,7 @@ import type {
   Vendor,
 } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
-import {
-  BIG5_TEMPLATE_OPTIONS,
-  MBTI_TEMPLATE_OPTIONS,
-  MBTI_OPTIONS,
-  BIG5_TRAIT_LABELS,
-} from '../../data/personaTemplates';
+import { MBTI_OPTIONS, BIG5_TRAIT_LABELS } from '../../data/personaTemplates';
 import { chatStream } from '../../utils/llmAdapter';
 
 type ConnectionTestState = {
@@ -188,54 +183,102 @@ export function AgentListSection() {
             )}
           </div>
         ))}
-        <div className="agent-memory-block">
-          <h4>记忆窗口管理（动态）</h4>
-          <p className="form-hint">
-            前几轮仅保留少量上下文，随着讨论深入逐步扩大可见窗口，其余内容会被摘要保存在长期记忆中。
-          </p>
-          <div className="grid three-columns memory-grid">
-            <label className="form-field">
-              <span>初始可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.minWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ minWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">对话开场时用于保留的新消息比例，建议 10–30。</p>
-            </label>
-            <label className="form-field">
-              <span>最大可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.maxWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ maxWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">讨论后期可使用的最大比例，建议不超过 70。</p>
-            </label>
-            <label className="form-field">
-              <span>增长速率</span>
-              <input
-                type="number"
-                min={0.2}
-                max={5}
-                step={0.1}
-                value={memory.growthRate}
-                onChange={(event) =>
-                  updateMemoryConfig({ growthRate: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">数值越大，窗口扩张越快；0.5 慢速，2.0 较激进。</p>
-            </label>
+          <div className="agent-memory-block">
+            <h4>记忆管理策略</h4>
+            <div className="memory-section">
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={memory.slidingWindow.enabled}
+                  onChange={(event) =>
+                    updateMemoryConfig({
+                      slidingWindow: { enabled: event.target.checked },
+                    })
+                  }
+                />
+                启用滑动窗口（Sliding Window）
+              </label>
+              <p className="form-hint">只保留最近 N 轮发言，较早的内容会移出上下文。</p>
+              {memory.slidingWindow.enabled && (
+                <label className="form-field">
+                  <span>保留最近 N 轮</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={memory.slidingWindow.windowRounds}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (!Number.isNaN(value)) {
+                        updateMemoryConfig({
+                          slidingWindow: { windowRounds: value },
+                        });
+                      }
+                    }}
+                  />
+                  <p className="form-hint">建议 3–6 轮，可根据讨论复杂度调整。</p>
+                </label>
+              )}
+            </div>
+            <div className="memory-section">
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={memory.summarization.enabled}
+                  onChange={(event) =>
+                    updateMemoryConfig({
+                      summarization: { enabled: event.target.checked },
+                    })
+                  }
+                />
+                启用历史摘要（Summarization Memory）
+              </label>
+              <p className="form-hint">
+                周期性让模型总结旧对话，形成「历史摘要」，上下文 = 历史摘要 + 最近窗口 + 当前输入。
+              </p>
+              {memory.summarization.enabled && (
+                <div className="grid two-columns">
+                  <label className="form-field">
+                    <span>摘要频率（轮）</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={24}
+                      value={memory.summarization.intervalRounds}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isNaN(value)) {
+                          updateMemoryConfig({
+                            summarization: { intervalRounds: value },
+                          });
+                        }
+                      }}
+                    />
+                    <p className="form-hint">每累计 N 轮新对话触发一次摘要。</p>
+                  </label>
+                  <label className="form-field">
+                    <span>摘要最大 Tokens</span>
+                    <input
+                      type="number"
+                      min={128}
+                      max={2048}
+                      step={64}
+                      value={memory.summarization.maxSummaryTokens}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isNaN(value)) {
+                          updateMemoryConfig({
+                            summarization: { maxSummaryTokens: value },
+                          });
+                        }
+                      }}
+                    />
+                    <p className="form-hint">限制摘要长度，默认 512，建议 256–1024。</p>
+                  </label>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
       </div>
     </section>
   );
@@ -267,18 +310,6 @@ const Big5Editor = ({ agent }: { agent: AgentSpec }) => {
       });
     };
 
-  const handleTemplateChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const templateKey = event.target.value || undefined;
-    const template = BIG5_TEMPLATE_OPTIONS.find((item) => item.key === templateKey);
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        templateKey,
-        notes: template?.notes ?? persona.notes ?? '',
-      },
-    });
-  };
-
   const handleNotesChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     updateAgent(agent.id, {
       persona: {
@@ -308,17 +339,6 @@ const Big5Editor = ({ agent }: { agent: AgentSpec }) => {
           ))}
         </div>
         <label className="form-field">
-          <span>性格模板（可选）</span>
-          <select value={persona.templateKey ?? ''} onChange={handleTemplateChange}>
-            <option value="">无模板</option>
-            {BIG5_TEMPLATE_OPTIONS.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="form-field">
           <span>补充说明</span>
           <textarea
             placeholder="描述该 Agent 的动机、沟通风格或注意事项。"
@@ -344,18 +364,6 @@ const MBTIEditor = ({ agent }: { agent: AgentSpec }) => {
     });
   };
 
-  const handleTemplateChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const templateKey = event.target.value || undefined;
-    const template = MBTI_TEMPLATE_OPTIONS.find((item) => item.key === templateKey);
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        templateKey,
-        notes: template?.notes ?? persona.notes ?? '',
-      },
-    });
-  };
-
   const handleNotesChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     updateAgent(agent.id, {
       persona: {
@@ -373,17 +381,6 @@ const MBTIEditor = ({ agent }: { agent: AgentSpec }) => {
           {MBTI_OPTIONS.map((code) => (
             <option key={code} value={code}>
               {code}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="form-field">
-        <span>沟通风格模板（可选）</span>
-        <select value={persona.templateKey ?? ''} onChange={handleTemplateChange}>
-          <option value="">无模板</option>
-          {MBTI_TEMPLATE_OPTIONS.map((option) => (
-            <option key={option.key} value={option.key}>
-              {option.label}
             </option>
           ))}
         </select>
@@ -544,6 +541,7 @@ const AgentModelConfigEditor = ({
           temperature: resolvedConfig.temperature,
           maxTokens: resolvedConfig.max_output_tokens,
           stream: false,
+          topP: resolvedConfig.top_p,
         },
       );
       setTestState({
