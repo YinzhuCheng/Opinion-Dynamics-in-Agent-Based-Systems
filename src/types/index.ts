@@ -64,14 +64,6 @@ export interface AgentSpec {
   modelConfig?: ModelConfig;
 }
 
-export interface SentimentSetting {
-  enabled: boolean;
-  mode: 'byCount' | 'byList';
-  count?: number;
-  labels?: string[];
-  modelConfigOverride?: ModelConfig;
-}
-
 export type DialogueMode = 'round_robin' | 'free';
 
 export interface RunConfig {
@@ -80,17 +72,19 @@ export interface RunConfig {
   maxMessages?: number;
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
-  sentiment: SentimentSetting;
-  memory: {
-    summarizationEnabled: boolean;
-    minWindowPct: number;
-    maxWindowPct: number;
-    growthRate: number;
+  trustMatrix: TrustMatrix;
+  discussion: {
+    topic: string;
+    stanceScaleSize: number;
+    positiveDefinition: string;
+    negativeDefinition: string;
   };
   visualization: {
     enableStanceChart: boolean;
   };
 }
+
+export type TrustMatrix = Record<string, Record<string, number>>;
 
 export interface Message {
   id: string;
@@ -98,7 +92,10 @@ export interface Message {
   role: 'assistant';
   content: string;
   ts: number;
-  sentiment?: { label: string; confidence?: number };
+  round: number;
+  turn: number;
+  systemPrompt?: string;
+  userPrompt?: string;
   stance?: { score: number; note?: string };
 }
 

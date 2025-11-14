@@ -1,13 +1,9 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt, buildSummarizationPrompt } from './prompts';
-import { resolveSentimentLabels } from './sentiment';
-import { estimateMessagesTokens } from './token';
+import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
-
-const TOTAL_TOKEN_BUDGET = 4096;
 
 let activeRunner: ConversationRunner | undefined;
 
@@ -68,6 +64,38 @@ class ConversationRunner {
       });
       return;
     }
+
+      const topic = config.discussion?.topic?.trim();
+      if (!topic) {
+        this.appStore.getState().setRunStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请先在配置页填写对话主题，所有 Agent 将围绕该主题展开。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
+      const positiveDefinition = config.discussion?.positiveDefinition?.trim();
+      const negativeDefinition = config.discussion?.negativeDefinition?.trim();
+      if (!positiveDefinition || !negativeDefinition) {
+        this.appStore.getState().setRunStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请完善“正值代表 / 负值代表”的含义，方便模型给出对应立场。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
 
     this.appStore.getState().resetMessages();
     this.appStore.getState().setStopRequested(false);
@@ -186,9 +214,7 @@ class ConversationRunner {
     }
   }
 
-  private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
-    const store = this.appStore.getState();
-    const { runState } = store;
+    private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
     const baseModelConfig = this.resolveModelConfig(agent, config);
     const apiKey = this.resolveApiKey(baseModelConfig);
 
@@ -197,22 +223,38 @@ class ConversationRunner {
     }
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-    const systemPrompt = buildAgentSystemPrompt({
-      agent,
-      summary: runState.summary,
-      visibleWindow: runState.visibleWindow,
-      mode: config.mode,
-      round,
-      turn,
-    });
-    const userPrompt = buildAgentUserPrompt({
-      agent,
-      summary: runState.summary,
-      visibleWindow: runState.visibleWindow,
-      mode: config.mode,
-      round,
-      turn,
-    });
+      const contextMessages = this.collectDialogueContext(round, agent.id);
+      this.appStore.getState().setVisibleWindow(contextMessages);
+      const agentNames = this.getAgentNameMap();
+      const trustWeights = this.buildTrustContext(agent.id);
+      const discussion = this.appStore.getState().runState.config.discussion;
+
+      const systemPrompt = buildAgentSystemPrompt({
+        agent,
+        mode: config.mode,
+        round,
+        turn,
+        contextMessages,
+        agentNames,
+        trustWeights,
+        topic: discussion.topic,
+        stanceScaleSize: discussion.stanceScaleSize,
+        positiveDefinition: discussion.positiveDefinition,
+        negativeDefinition: discussion.negativeDefinition,
+      });
+      const userPrompt = buildAgentUserPrompt({
+        agent,
+        mode: config.mode,
+        round,
+        turn,
+        contextMessages,
+        agentNames,
+        trustWeights,
+        topic: discussion.topic,
+        stanceScaleSize: discussion.stanceScaleSize,
+        positiveDefinition: discussion.positiveDefinition,
+        negativeDefinition: discussion.negativeDefinition,
+      });
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -243,191 +285,28 @@ class ConversationRunner {
 
     content = content.trim() || '__SKIP__';
 
+      const stanceResult = this.processSelfReportedStance(content, discussion);
+      content = stanceResult.content;
+
     const message: Message = {
       id: nanoid(),
       agentId: agent.id,
       role: 'assistant',
       content,
       ts: Date.now(),
+      round,
+      turn,
+      systemPrompt,
+      userPrompt,
     };
+    if (stanceResult.stance) {
+      message.stance = stanceResult.stance;
+    }
 
     this.appStore.getState().appendMessage(message);
-    this.updateVisibleWindow();
     this.updateStatusAfterMessage(message);
 
-    await this.runClassificationPipelines(message, config);
-    await this.maybeSummarizeMemory(config);
-
     return message;
-  }
-
-  private async runClassificationPipelines(message: Message, config: RunConfig) {
-    if (message.content === '__SKIP__') {
-      return;
-    }
-    const tasks: Promise<void>[] = [this.performSentiment(message, config)];
-    if (config.visualization?.enableStanceChart) {
-      tasks.push(this.performStanceScoring(message, config));
-    }
-    await Promise.all(tasks);
-  }
-
-  private async performSentiment(message: Message, config: RunConfig) {
-    const sentimentSetting = config.sentiment;
-    if (!sentimentSetting.enabled) return;
-
-    const labels = resolveSentimentLabels(sentimentSetting);
-    if (labels.length < 2) return;
-
-    const baseModelConfig = sentimentSetting.modelConfigOverride ?? this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Sentiment] 缺少情感分类模型的 API Key，跳过。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildSentimentPrompt(labels);
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-      );
-      const parsed = safeJsonParse(result);
-      if (parsed?.label && labels.includes(parsed.label)) {
-        this.appStore.getState().updateMessage(message.id, (msg) => {
-          msg.sentiment = {
-            label: parsed.label,
-            confidence: typeof parsed.confidence === 'number' ? clamp(parsed.confidence, 0, 1) : undefined,
-          };
-        });
-      }
-    } catch (error) {
-      console.warn('[Sentiment] 分类失败：', error);
-    }
-  }
-
-  private async performStanceScoring(message: Message, config: RunConfig) {
-    const baseModelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Stance] 缺少模型 API Key，跳过立场评分。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildStancePrompt();
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-      );
-      const parsed = safeJsonParse(result);
-      if (typeof parsed?.score === 'number') {
-        this.appStore.getState().updateMessage(message.id, (msg) => {
-          msg.stance = {
-            score: clamp(parsed.score, -1, 1),
-            note: typeof parsed.note === 'string' ? parsed.note : undefined,
-          };
-        });
-      }
-    } catch (error) {
-      console.warn('[Stance] 立场评分失败：', error);
-    }
-  }
-
-  private async maybeSummarizeMemory(config: RunConfig) {
-    if (!config.memory.summarizationEnabled) {
-      const messages = this.appStore.getState().runState.messages;
-      this.appStore.getState().setVisibleWindow(messages);
-      return;
-    }
-
-    const { runState } = this.appStore.getState();
-    const { messages, status } = runState;
-    const summarizeFromIndex = status.summarizedCount;
-
-    if (messages.length === 0) {
-      return;
-    }
-
-    const agentCount = Math.max(1, runState.agents.length);
-    const windowPct = this.computeWindowPct(runState.status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
-
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
-
-    const newSummariesCount = messages.length - visibleMessages.length - status.summarizedCount;
-    if (newSummariesCount <= 0) {
-      return;
-    }
-
-    const chunk = messages.slice(summarizeFromIndex, summarizeFromIndex + newSummariesCount);
-    const transcripts = chunk.map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId))).join('\n');
-
-    const baseModelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Summary] 缺少模型 API Key，跳过摘要压缩。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-        {
-          onStatus: (status) => {
-            if (status === 'waiting_response' || status === 'responding') {
-              this.setAwaiting('response');
-            } else if (status === 'thinking') {
-              this.setAwaiting('thinking');
-            } else if (status === 'done') {
-              this.setAwaiting(undefined);
-            }
-          },
-        },
-      );
-      if (result) {
-        this.appStore.getState().setSummary(result.trim());
-        this.setStatus((status) => ({
-          ...status,
-          summarizedCount: status.summarizedCount + newSummariesCount,
-        }));
-      }
-    } catch (error) {
-      console.warn('[Summary] 摘要生成失败：', error);
-    } finally {
-      this.setAwaiting(undefined);
-    }
-  }
-
-  private updateVisibleWindow() {
-    const { config, messages, status, agents } = this.appStore.getState().runState;
-    if (!config.memory.summarizationEnabled) {
-      this.appStore.getState().setVisibleWindow(messages);
-      return;
-    }
-    const agentCount = Math.max(1, agents.length);
-    const windowPct = this.computeWindowPct(status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
   }
 
   private updateStatusAfterMessage(message: Message) {
@@ -437,7 +316,79 @@ class ConversationRunner {
     }));
   }
 
-  private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
+    private buildTrustContext(agentId: string): Array<{ agentName: string; weight: number }> {
+      const state = this.appStore.getState();
+      const trustRow = state.runState.config.trustMatrix[agentId];
+      const entries = state.runState.agents.map((agent) => {
+        const raw =
+          typeof trustRow?.[agent.id] === 'number'
+            ? Number(trustRow[agent.id])
+            : agent.id === agentId
+              ? 1
+              : 0;
+        return { agentName: agent.name, weight: Math.max(0, raw) };
+      });
+      const total = entries.reduce((sum, entry) => sum + entry.weight, 0);
+      if (total <= 0) {
+        const uniform = entries.length > 0 ? 1 / entries.length : 0;
+        return entries.map((entry) => ({ ...entry, weight: Number(uniform.toFixed(3)) }));
+      }
+      return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
+    }
+
+    private getAgentNameMap(): Record<string, string> {
+      const agents = this.appStore.getState().runState.agents;
+      return agents.reduce<Record<string, string>>((map, agent) => {
+        map[agent.id] = agent.name;
+        return map;
+      }, {});
+    }
+
+    private collectDialogueContext(round: number, agentId: string): Message[] {
+      const messages = this.appStore.getState().runState.messages;
+      const context: Message[] = [];
+      if (round > 1) {
+        context.push(...messages.filter((message) => message.round === round - 1));
+      }
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId) {
+        context.push(lastMessage);
+      }
+      return context;
+    }
+
+    private processSelfReportedStance(
+      content: string,
+      discussion: RunConfig['discussion'],
+    ): { content: string; stance?: { score: number; note?: string } } {
+      const trimmed = content.trim();
+      const ratingRegex = /(?:\(|（)\s*情感[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
+      const match = trimmed.match(ratingRegex);
+      if (!match) {
+        return { content: trimmed };
+      }
+      const size = normalizeScaleSize(discussion?.stanceScaleSize);
+      const maxLevel = Math.floor(Math.max(3, size) / 2);
+      let score = Number(match[1]);
+      if (!Number.isFinite(score)) {
+        return { content: trimmed };
+      }
+      score = Math.max(-maxLevel, Math.min(maxLevel, score));
+      const positiveDesc = discussion.positiveDefinition?.trim() || '倾向正向立场';
+      const negativeDesc = discussion.negativeDefinition?.trim() || '倾向负向立场';
+      const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
+      const sanitizedContent = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
+      const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
+      return {
+        content: displayContent,
+        stance: {
+          score,
+          note,
+        },
+      };
+    }
+
+    private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
     if (config.useGlobalModelConfig && config.globalModelConfig) {
       return { ...config.globalModelConfig };
     }
@@ -445,10 +396,6 @@ class ConversationRunner {
       return { ...agent.modelConfig };
     }
     // fallback to default global
-    return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
-  }
-
-  private resolveFallbackModelConfig(config: RunConfig): ModelConfig {
     return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
   }
 
@@ -461,42 +408,8 @@ class ConversationRunner {
     return fallback?.trim();
   }
 
-  private resolveAgentName(agentId: string): string {
-    const store = this.appStore.getState();
-    const agent = store.runState.agents.find((a) => a.id === agentId);
-    return agent ? agent.name : agentId;
-  }
-
   private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
     this.appStore.getState().setRunStatus(updater);
-  }
-
-  private computeWindowPct(status: RunStatus, config: RunConfig, agentCount: number): number {
-    if (!config.memory.summarizationEnabled) {
-      return 100;
-    }
-    const { memory } = config;
-    const minPct = Math.min(memory.minWindowPct, memory.maxWindowPct);
-    const maxPct = Math.max(memory.minWindowPct, memory.maxWindowPct);
-    const growthRate = memory.growthRate > 0 ? memory.growthRate : 0.5;
-    const progress = this.estimateDialogueProgress(status, config, agentCount);
-    const denominator = 1 - Math.exp(-growthRate);
-    const curve =
-      Math.abs(denominator) < 1e-6 ? progress : (1 - Math.exp(-growthRate * progress)) / denominator;
-    const pct = minPct + (maxPct - minPct) * curve;
-    return Math.min(90, Math.max(5, pct));
-  }
-
-  private estimateDialogueProgress(status: RunStatus, config: RunConfig, agentCount: number): number {
-    const expectedMessages =
-      config.mode === 'round_robin'
-        ? (config.maxRounds ?? Math.max(1, status.currentRound || 1)) * Math.max(1, agentCount)
-        : config.maxMessages ?? Math.max(1, status.totalMessages || agentCount);
-    if (expectedMessages <= 0) {
-      return 0;
-    }
-    const progress = status.totalMessages / expectedMessages;
-    return Math.min(1, Math.max(0, progress));
   }
 
   private setAwaiting(label?: 'response' | 'thinking') {
@@ -523,58 +436,17 @@ class ConversationRunner {
   }
 }
 
-const collectVisibleMessages = (messages: Message[], budgetTokens: number): Message[] => {
-  const reversed: Message[] = [];
-  let tokenCount = 0;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    const tokens = estimateMessagesTokens([message]);
-    if (tokenCount + tokens > budgetTokens) {
-      break;
-    }
-    reversed.push(message);
-    tokenCount += tokens;
-  }
-  return reversed.reverse();
-};
-
-const formatMessageForTranscript = (message: Message, agentName: string): string => {
-  const sentiment = message.sentiment ? `（情感：${message.sentiment.label}${formatConfidence(message.sentiment.confidence)}）` : '';
-  const stance =
-    typeof message.stance?.score === 'number'
-      ? `（立场：${message.stance.score.toFixed(2)}${message.stance.note ? `，${message.stance.note}` : ''}）`
-      : '';
-  const meta = [sentiment, stance].filter(Boolean).join(' ');
-  return `${agentName}: ${message.content}${meta ? ` ${meta}` : ''}`;
-};
-
-const formatConfidence = (confidence?: number) => {
-  if (typeof confidence !== 'number') return '';
-  return `，置信度 ${confidence.toFixed(2)}`;
-};
-
-const safeJsonParse = (content: string): any => {
-  try {
-    const trimmed = content.trim();
-    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-};
-
-const clamp = (value: number, min: number, max: number) => {
-  return Math.min(max, Math.max(min, value));
-};
-
 const defaultFallbackModel = (): ModelConfig => ({
   vendor: 'openai',
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-4.1-mini',
+  model: 'gpt-4o',
   temperature: 0.7,
   top_p: 0.95,
 });
+
+const normalizeScaleSize = (value: number | undefined): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 3;
+  const atLeastThree = Math.max(3, numeric);
+  return atLeastThree % 2 === 0 ? atLeastThree + 1 : atLeastThree;
+};

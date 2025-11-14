@@ -8,18 +8,18 @@ import type {
   Persona,
   RunConfig,
   RunState,
-  SessionResult,
-  SentimentSetting,
+    SessionResult,
   Vendor,
   DialogueMode,
   RunStatus,
+  TrustMatrix,
 } from '../types';
 
 const defaultModelConfig: ModelConfig = {
   vendor: 'openai',
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-4.1-mini',
+  model: 'gpt-4o',
 };
 
 const defaultPersona: Persona = {
@@ -42,36 +42,107 @@ const createDefaultAgents = (): AgentSpec[] => [
   },
 ];
 
+const clampTrustValue = (value: number): number => {
+  if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+};
+
+const defaultTrustFallback = (rowId: string, colId: string, agentCount: number): number => {
+  if (agentCount <= 1) {
+    return 1;
+  }
+  if (rowId === colId) {
+    return 0.6;
+  }
+  const remainder = 0.4;
+  const others = Math.max(1, agentCount - 1);
+  return Number((remainder / others).toFixed(2));
+};
+
+const ensureTrustMatrix = (agents: AgentSpec[], matrix?: TrustMatrix): TrustMatrix => {
+  const agentIds = agents.map((agent) => agent.id);
+  const next: TrustMatrix = {};
+  agentIds.forEach((rowId) => {
+    const existingRow = matrix?.[rowId] ?? {};
+    const row: Record<string, number> = {};
+    agentIds.forEach((colId) => {
+      const existingValue = existingRow[colId];
+      if (typeof existingValue === 'number' && Number.isFinite(existingValue)) {
+        row[colId] = clampTrustValue(existingValue);
+      } else {
+        row[colId] = defaultTrustFallback(rowId, colId, agentIds.length);
+      }
+    });
+    const hasPositive = Object.values(row).some((value) => value > 0);
+    if (!hasPositive && agentIds.length > 0) {
+      const uniform = 1 / agentIds.length;
+      agentIds.forEach((colId) => {
+        row[colId] = Number(uniform.toFixed(2));
+      });
+    }
+    next[rowId] = row;
+  });
+  return next;
+};
+
+const normalizeTrustRowValues = (row: Record<string, number>): Record<string, number> => {
+  const entries = Object.entries(row).map(([key, value]) => [key, clampTrustValue(value)] as [string, number]);
+  if (entries.length === 0) return row;
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (total <= 0) {
+    const uniform = 1 / entries.length;
+    return entries.reduce<Record<string, number>>((acc, [key], index) => {
+      const value =
+        index === entries.length - 1 ? Number((1 - uniform * (entries.length - 1)).toFixed(2)) : Number(uniform.toFixed(2));
+      acc[key] = value;
+      return acc;
+    }, {});
+  }
+  return entries.reduce<Record<string, number>>((acc, [key, value]) => {
+    acc[key] = Number((value / total).toFixed(3));
+    return acc;
+  }, {});
+};
+
+const sanitizeStanceScaleSize = (value: number | undefined): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 3;
+  const atLeastThree = Math.max(3, numeric);
+  return atLeastThree % 2 === 0 ? atLeastThree + 1 : atLeastThree;
+};
+
 const createDefaultRunConfig = (): RunConfig => ({
   mode: 'round_robin',
   maxRounds: 4,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
-  sentiment: {
-    enabled: false,
-    mode: 'byCount',
-    count: 3,
-  },
-  memory: {
-    summarizationEnabled: true,
-    minWindowPct: 20,
-    maxWindowPct: 60,
-    growthRate: 1.2,
-  },
   visualization: {
-    enableStanceChart: false,
+    enableStanceChart: true,
+  },
+  trustMatrix: {},
+  discussion: {
+    topic: '',
+    stanceScaleSize: 3,
+    positiveDefinition: '',
+    negativeDefinition: '',
   },
 });
 
-const createEmptyRunState = (): RunState => ({
-  agents: createDefaultAgents(),
-  config: createDefaultRunConfig(),
-  messages: [],
-  summary: '',
-  visibleWindow: [],
-  status: createInitialStatus(),
-  stopRequested: false,
-});
+const createEmptyRunState = (): RunState => {
+  const agents = createDefaultAgents();
+  const config = createDefaultRunConfig();
+  config.trustMatrix = ensureTrustMatrix(agents, config.trustMatrix);
+  return {
+    agents,
+    config,
+    messages: [],
+    summary: '',
+    visibleWindow: [],
+    status: createInitialStatus(),
+    stopRequested: false,
+  };
+};
 
 const createInitialStatus = (mode: DialogueMode = 'round_robin'): RunStatus => ({
   phase: 'idle',
@@ -91,7 +162,7 @@ export type VendorDefaults = Record<
 const createVendorDefaults = (): VendorDefaults => ({
   openai: {
     baseUrl: '',
-    model: 'gpt-4.1-mini',
+    model: 'gpt-4o',
     apiKey: '',
   },
   anthropic: {
@@ -134,11 +205,14 @@ export interface AppStore {
   updateGlobalModelConfig: (
     updater: Partial<ModelConfig> | ((current?: ModelConfig) => ModelConfig | undefined),
   ) => void;
-  updateSentiment: (updater: Partial<SentimentSetting>) => void;
-  setSentimentModelConfig: (
-    updater: Partial<ModelConfig> | null | ((current?: ModelConfig) => ModelConfig | undefined),
-  ) => void;
-  updateMemoryConfig: (updater: Partial<RunConfig['memory']>) => void;
+  setTrustValue: (sourceId: string, targetId: string, value: number) => void;
+  normalizeTrustRow: (sourceId: string) => void;
+  setDiscussionTopic: (topic: string) => void;
+  setStanceScaleSize: (size: number) => void;
+    setPositiveDefinition: (text: string) => void;
+    setNegativeDefinition: (text: string) => void;
+    randomizeTrustMatrix: () => void;
+    uniformTrustMatrix: () => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -158,12 +232,16 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.status.mode = state.runState.config.mode;
       }),
     ),
-  setAgents: (agents) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.agents = agents;
-      }),
-    ),
+    setAgents: (agents) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.agents = agents;
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
+        }),
+      ),
     addAgent: (agent) =>
       set(
         produce((state: AppStore) => {
@@ -175,6 +253,10 @@ export const useAppStore = create<AppStore>((set) => ({
             initialOpinion: '',
             ...agent,
           });
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
         }),
       ),
   updateAgent: (agentId, updater) =>
@@ -186,10 +268,10 @@ export const useAppStore = create<AppStore>((set) => ({
         }
       }),
     ),
-  removeAgent: (agentId) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.agents = state.runState.agents.filter((a) => a.id !== agentId);
+    removeAgent: (agentId) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.agents = state.runState.agents.filter((a) => a.id !== agentId);
           if (state.runState.agents.length === 0) {
             state.runState.agents.push({
               id: nanoid(),
@@ -197,9 +279,13 @@ export const useAppStore = create<AppStore>((set) => ({
               persona: { ...defaultPersona },
               initialOpinion: '',
             });
-        }
-      }),
-    ),
+          }
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
+        }),
+      ),
   resetRunState: () =>
     set(
       produce((state: AppStore) => {
@@ -329,55 +415,83 @@ export const useAppStore = create<AppStore>((set) => ({
         }
       }),
     ),
-  updateSentiment: (updater) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.config.sentiment = {
-          ...state.runState.config.sentiment,
-          ...updater,
-        };
-      }),
-    ),
-    setSentimentModelConfig: (updater) =>
+    setTrustValue: (sourceId, targetId, value) =>
       set(
         produce((state: AppStore) => {
-          const current = state.runState.config.sentiment.modelConfigOverride;
-          if (updater === null) {
-            state.runState.config.sentiment.modelConfigOverride = undefined;
-          } else if (typeof updater === 'function') {
-            state.runState.config.sentiment.modelConfigOverride = updater(current ?? undefined);
-          } else {
-            state.runState.config.sentiment.modelConfigOverride = {
-              ...(current ?? { ...defaultModelConfig }),
-              ...updater,
-            };
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
+          if (!state.runState.config.trustMatrix[sourceId]) {
+            state.runState.config.trustMatrix[sourceId] = {};
           }
+          state.runState.config.trustMatrix[sourceId][targetId] = clampTrustValue(value);
         }),
       ),
-    updateMemoryConfig: (updater) =>
+    normalizeTrustRow: (sourceId) =>
       set(
         produce((state: AppStore) => {
-          const current = state.runState.config.memory;
-          const next = { ...current, ...updater };
-          const clampPct = (val: number | undefined, fallback: number) => {
-            const numeric = typeof val === 'number' && !Number.isNaN(val) ? val : fallback;
-            return Math.min(90, Math.max(5, numeric));
-          };
-          next.minWindowPct = clampPct(next.minWindowPct, current.minWindowPct);
-          next.maxWindowPct = clampPct(next.maxWindowPct, current.maxWindowPct);
-          if (next.minWindowPct > next.maxWindowPct) {
-            [next.minWindowPct, next.maxWindowPct] = [next.maxWindowPct, next.minWindowPct];
+          const row = state.runState.config.trustMatrix[sourceId];
+          if (!row) {
+            return;
           }
-          const growth = typeof next.growthRate === 'number' && !Number.isNaN(next.growthRate)
-            ? next.growthRate
-            : current.growthRate;
-          next.growthRate = Math.min(5, Math.max(0.2, growth));
-          if (typeof next.summarizationEnabled !== 'boolean') {
-            next.summarizationEnabled = current.summarizationEnabled;
-          }
-          state.runState.config.memory = next;
+          state.runState.config.trustMatrix[sourceId] = normalizeTrustRowValues(row);
         }),
       ),
+    setDiscussionTopic: (topic) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.topic = topic;
+        }),
+      ),
+    setStanceScaleSize: (size) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
+        }),
+      ),
+      setPositiveDefinition: (text) =>
+        set(
+          produce((state: AppStore) => {
+            state.runState.config.discussion.positiveDefinition = text;
+          }),
+        ),
+      setNegativeDefinition: (text) =>
+        set(
+          produce((state: AppStore) => {
+            state.runState.config.discussion.negativeDefinition = text;
+          }),
+        ),
+      randomizeTrustMatrix: () =>
+        set(
+          produce((state: AppStore) => {
+            const agentIds = state.runState.agents.map((agent) => agent.id);
+            const nextMatrix: TrustMatrix = {};
+            agentIds.forEach((sourceId) => {
+              const rawRow: Record<string, number> = {};
+              agentIds.forEach((targetId) => {
+                rawRow[targetId] = Math.random() + 0.01;
+              });
+              nextMatrix[sourceId] = normalizeTrustRowValues(rawRow);
+            });
+            state.runState.config.trustMatrix = nextMatrix;
+          }),
+        ),
+      uniformTrustMatrix: () =>
+        set(
+          produce((state: AppStore) => {
+            const agentIds = state.runState.agents.map((agent) => agent.id);
+            const nextMatrix: TrustMatrix = {};
+            agentIds.forEach((sourceId) => {
+              const row: Record<string, number> = {};
+              agentIds.forEach((targetId) => {
+                row[targetId] = 1;
+              });
+              nextMatrix[sourceId] = normalizeTrustRowValues(row);
+            });
+            state.runState.config.trustMatrix = nextMatrix;
+          }),
+        ),
   setRunStatus: (updater) =>
     set(
       produce((state: AppStore) => {

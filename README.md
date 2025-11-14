@@ -1,6 +1,6 @@
 # Opinion Dynamics Multi-Agent UI
 
-React + Vite 单页应用，用于配置/运行多 Agent 观点演化讨论；同仓库内包含 Cloudflare Worker 代理，实现 OpenAI / Anthropic / Gemini 的统一调用。
+React + Vite 单页应用，用于配置/运行多 Agent 观点演化讨论。前端现在直接调用各家厂商的 HTTPS API（OpenAI / Anthropic / Gemini），不再依赖 Cloudflare Worker 代理。
 
 ```
 .
@@ -37,46 +37,23 @@ npm run preview
 | Build output directory | `dist`                    |
 | Root directory       | *(留空)*                    |
 
-如需在 Preview/Production 环境下指定 Worker 域名，可在 Pages 中新增环境变量：
+应用默认直接向厂商提供的 HTTPS 入口（例如 `https://api.openai.com/v1`）发起请求；如需切换到自建代理，在“全局模型配置”里修改 Base URL 即可。
 
-```
-Name: VITE_API_BASE
-Value: https://<your-worker>.workers.dev
-```
+## 关于 Cloudflare Worker
 
-若已给 Worker 配置同域路由（例如 `app.example.com/api/llm*`），前端默认的 `/api/llm` 即可直接使用，无需额外变量。
-
-## Cloudflare Worker 代理
-
-`worker/` 目录包含代理源码与 `wrangler.toml`，本地（或 CI）执行：
-
-```bash
-cd worker
-npm install            # 一次即可
-npx wrangler dev       # 可选，本地调试
-npx wrangler publish   # 发布到 Cloudflare
-```
-
-发布后可在 Cloudflare Dashboard → Workers → 选择该 Worker → Triggers 为生产域名添加路由（推荐）：
-
-```
-Route pattern:  your-domain.com/api/llm*
-Environment:    Production
-```
-
-这样前端的 `/api/llm` 请求会被自动代理；否则使用 `workers.dev` 域名并在前端设置 `VITE_API_BASE`。
+仓库仍保留 `worker/` 目录（旧版代理逻辑），但前端已改为直接调用厂商 API，Worker 不再是必需组件。你可以按需删除该目录或将其作为示例，若需要自建代理/缓存层，可参考其中的实现。
 
 ## 目录说明
 
 - `src/`：页面、状态管理、对话编排、ECharts 可视化等核心功能。
-- `worker/src/index.ts`：统一代理上游，处理重试、错误码与 CORS。
-- `worker/wrangler.toml`：Worker 配置，发布时无须修改。
+- `worker/src/index.ts`（可选）：旧版 Cloudflare Worker 代理实现，现已不再默认启用。
+- `worker/wrangler.toml`：Worker 配置文件，仅在需要自建代理时参考。
 - `.gitignore` 已忽略 `dist/`、`node_modules/` 等生成目录。
 
 ## 常见问题
 
-- **测试连通失败**：确认在配置页中填入的 API Key 正确且 Worker 已部署。
-- **跨域报错**：Worker 响应头已允许 `*`，若自行限制域来源需同步调整。
+- **测试连通失败**：确认在配置页中填入的 API Key / Base URL 正确且对应供应商允许来自浏览器的请求；如需避免 CORS，可改用自建代理。
+- **跨域报错**：部分官方 API（如 OpenAI）默认不开放浏览器跨域访问，需使用自建代理或在后端转发。
 - **ECharts 包体积提示**：构建时可能收到 >500 kB 警告，可按需拆分（动态导入）或忽略。
 
-完成以上配置后，即可在 Cloudflare Pages 上一键构建前端，并通过 Worker 安全转发三方大模型请求。*** End Patch
+完成以上配置后，即可在任何静态托管环境部署前端，并直接使用各家 LLM API（或自行接入代理层）。

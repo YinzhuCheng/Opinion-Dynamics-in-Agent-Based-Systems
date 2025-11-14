@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { DialogueMode, ModelConfig, Vendor } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
@@ -18,7 +18,7 @@ const vendorLabels: Record<Vendor, string> = {
 const vendorPlaceholders: Record<Vendor, { baseUrl: string; model: string }> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
   },
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
@@ -42,6 +42,7 @@ export function RunSettingsSection() {
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
 
   const runConfig = useAppStore((state) => state.runState.config);
+  const discussion = useAppStore((state) => state.runState.config.discussion);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
   const setVendorModel = useAppStore((state) => state.setVendorModel);
@@ -51,6 +52,10 @@ export function RunSettingsSection() {
   const setMaxMessages = useAppStore((state) => state.setMaxMessages);
   const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
   const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
+  const setDiscussionTopic = useAppStore((state) => state.setDiscussionTopic);
+  const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
+  const setPositiveDefinition = useAppStore((state) => state.setPositiveDefinition);
+  const setNegativeDefinition = useAppStore((state) => state.setNegativeDefinition);
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -121,6 +126,23 @@ export function RunSettingsSection() {
     setTestState({ status: 'idle' });
   };
 
+  const handleTopicChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setDiscussionTopic(event.target.value);
+  };
+
+  const handleScaleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setStanceScaleSize(Number.isNaN(value) ? 3 : value);
+  };
+
+  const handlePositiveDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setPositiveDefinition(event.target.value);
+  };
+
+  const handleNegativeDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setNegativeDefinition(event.target.value);
+  };
+
     const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
       const apiKey = config.apiKey?.trim();
       if (!apiKey) {
@@ -181,40 +203,6 @@ export function RunSettingsSection() {
     model: vendorDefault.model ?? vendorPlaceholders[selectedVendor].model,
     systemPromptExtra: '',
   };
-
-  const pythonSnippet = useMemo(() => {
-    if (selectedVendor !== 'openai') {
-      return '# 当前示例针对 OpenAI 兼容接口，其他供应商请参考其官方 SDK。';
-    }
-    const fallback = vendorDefaults[selectedVendor] ?? {};
-    const baseUrl =
-      (globalConfig.baseUrl && globalConfig.baseUrl.trim()) ||
-      fallback.baseUrl ||
-      vendorPlaceholders[selectedVendor].baseUrl;
-    const modelName =
-      (globalConfig.model && globalConfig.model.trim()) ||
-      fallback.model ||
-      vendorPlaceholders[selectedVendor].model;
-    const userPrompt = (testMessage || 'Hello, introduce yourself.')
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"');
-    return `from openai import OpenAI
-
-client = OpenAI(
-    base_url="${baseUrl}",
-    api_key="YOUR_API_KEY",  # 请替换为实际密钥
-)
-
-response = client.chat.completions.create(
-    model="${modelName}",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "${userPrompt}"}
-    ],
-    stream=False,
-)
-print(response.choices[0].message.content)`;
-  }, [selectedVendor, globalConfig.baseUrl, globalConfig.model, vendorDefaults, testMessage]);
 
   const handleClearGlobalApiKey = () => {
     updateGlobalModelConfig({ apiKey: '' });
@@ -297,6 +285,56 @@ print(response.choices[0].message.content)`;
               </select>
             </label>
           </div>
+
+            <div className="discussion-block">
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>对话主题</span>
+                  <input
+                    type="text"
+                    value={discussion.topic}
+                    onChange={handleTopicChange}
+                    placeholder="例如：苹果新品 Vision Pro 的定价是否合理？"
+                  />
+                  <p className="form-hint">所有 Agent 必须围绕该主题展开，留空将无法开始对话。</p>
+                </label>
+                <label className="form-field">
+                  <span>立场/情感刻度粒度</span>
+                  <input
+                    type="number"
+                    min={3}
+                    step={2}
+                    value={discussion.stanceScaleSize}
+                    onChange={handleScaleChange}
+                  />
+                  <p className="form-hint">
+                    请输入一个 ≥3 的奇数，如 3、5、7。刻度会映射为 ±{Math.floor(discussion.stanceScaleSize / 2)}…0…±{Math.floor(discussion.stanceScaleSize / 2)}。
+                  </p>
+                </label>
+              </div>
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>正值代表</span>
+                  <input
+                    type="text"
+                    value={discussion.positiveDefinition}
+                    onChange={handlePositiveDefinitionChange}
+                    placeholder="例如：支持项羽的做法"
+                  />
+                  <p className="form-hint">描述当情感评分为正数时的含义，例如“更加认可该方案”。</p>
+                </label>
+                <label className="form-field">
+                  <span>负值代表</span>
+                  <input
+                    type="text"
+                    value={discussion.negativeDefinition}
+                    onChange={handleNegativeDefinitionChange}
+                    placeholder="例如：反对项羽的做法"
+                  />
+                  <p className="form-hint">描述当情感评分为负数时的含义，例如“认为此举是失策”。</p>
+                </label>
+              </div>
+            </div>
 
           {runConfig.useGlobalModelConfig && (
             <div className="global-model-card">
@@ -421,10 +459,6 @@ print(response.choices[0].message.content)`;
                 {testState.status === 'error' && (
                   <pre className="vendor-test-result error">{testState.message}</pre>
                 )}
-                <div className="code-preview">
-                  <div className="code-preview__header">Python 调试示例</div>
-                  <pre>{pythonSnippet}</pre>
-                </div>
             </div>
           )}
         </div>

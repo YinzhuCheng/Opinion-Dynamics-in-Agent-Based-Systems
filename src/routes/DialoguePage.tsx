@@ -104,22 +104,14 @@ export function DialoguePage() {
                       <span className="timestamp">{new Date(message.ts).toLocaleTimeString()}</span>
                     </header>
                     <p className="message-content">{message.content}</p>
-                    {message.sentiment && (
-                      <div className="message-meta">
-                        <span className={`sentiment-tag sentiment-${sanitizeLabel(message.sentiment.label)}`}>
-                          {message.sentiment.label}
-                        </span>
-                        {typeof message.sentiment.confidence === 'number' ? (
-                          <span className="meta-secondary">
-                            置信度 {message.sentiment.confidence.toFixed(2)}
-                          </span>
-                        ) : null}
-                      </div>
-                    )}
                     {message.stance && (
                       <div className="message-meta">
-                        <span className="meta-primary">立场 {message.stance.score.toFixed(2)}</span>
-                        {message.stance.note ? <span className="meta-secondary">{message.stance.note}</span> : null}
+                          <span className={`stance-tag ${stanceClass(message.stance.score)}`}>
+                            {message.stance.score > 0 ? `+${message.stance.score}` : message.stance.score}
+                          </span>
+                          {message.stance.note ? (
+                            <span className="meta-secondary">{message.stance.note}</span>
+                          ) : null}
                       </div>
                     )}
                   </li>
@@ -152,4 +144,8 @@ const translatePhase = (phase: string) => {
   }
 };
 
-const sanitizeLabel = (label: string) => label.replace(/\s+/g, '-').toLowerCase();
+const stanceClass = (score: number) => {
+  if (score > 0) return 'stance-positive';
+  if (score < 0) return 'stance-negative';
+  return 'stance-neutral';
+};
