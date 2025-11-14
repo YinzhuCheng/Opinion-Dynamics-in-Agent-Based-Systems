@@ -39,7 +39,7 @@ export function DialoguePage() {
     return () => {
       window.clearInterval(interval);
     };
-  }, [status.awaitingLabel]);
+  }, [status.awaitingLabel, dotSequence.length]);
 
   const waitingText = status.awaitingLabel === 'thinking' ? '等待LLM思考' : '等待LLM响应';
 

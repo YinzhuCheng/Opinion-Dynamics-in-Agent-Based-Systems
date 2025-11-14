@@ -27,7 +27,7 @@ type ConnectionTestState = {
 const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
   },
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
@@ -61,22 +61,24 @@ export function AgentListSection() {
   const addAgent = useAppStore((state) => state.addAgent);
   const updateAgent = useAppStore((state) => state.updateAgent);
   const removeAgent = useAppStore((state) => state.removeAgent);
-  const memory = useAppStore((state) => state.runState.config.memory);
-  const updateMemoryConfig = useAppStore((state) => state.updateMemoryConfig);
+  const trustMatrix = useAppStore((state) => state.runState.config.trustMatrix);
+  const setTrustValue = useAppStore((state) => state.setTrustValue);
+  const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
+  const resetTrustMatrix = useAppStore((state) => state.resetTrustMatrix);
 
   useEffect(() => {
     if (!runConfig.useGlobalModelConfig) {
       const fallback: ModelConfig =
         runConfig.globalModelConfig ??
-        ({
-          vendor: 'openai',
-          baseUrl: vendorDefaults.openai.baseUrl ?? '',
-          apiKey: vendorDefaults.openai.apiKey ?? '',
-          model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
-          temperature: 0.7,
-          top_p: 0.95,
-          max_output_tokens: 2048,
-        } satisfies ModelConfig);
+          ({
+            vendor: 'openai',
+            baseUrl: vendorDefaults.openai.baseUrl ?? '',
+            apiKey: vendorDefaults.openai.apiKey ?? '',
+            model: vendorDefaults.openai.model ?? 'gpt-4o',
+            temperature: 0.7,
+            top_p: 0.95,
+            max_output_tokens: 2048,
+          } satisfies ModelConfig);
       agents.forEach((agent) => {
         if (!agent.modelConfig) {
           updateAgent(agent.id, { modelConfig: { ...fallback } });
@@ -115,6 +117,12 @@ export function AgentListSection() {
       updateAgent(agent.id, { initialOpinion: event.target.value });
     };
 
+  const handleTrustInputChange =
+    (rowIndex: number, colIndex: number) => (event: ChangeEvent<HTMLInputElement>) => {
+      const value = Number(event.target.value);
+      setTrustValue(rowIndex, colIndex, Number.isNaN(value) ? 0 : value);
+    };
+
   return (
     <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
@@ -139,105 +147,133 @@ export function AgentListSection() {
       <div className="card__body column-gap">
         {agents.map((agent, index) => (
           <div key={agent.id} className="agent-card">
-            <div className="agent-card__header">
-              <div>
-                <h3>{agent.name}</h3>
-                <p className="form-hint">Agent #{index + 1}</p>
-              </div>
-              <div className="agent-card__header-actions">
-                <button type="button" className="button ghost" onClick={() => updateAgent(agent.id, { name: `A${index + 1}` })}>
-                  重命名为 A{index + 1}
-                </button>
-                {agents.length > 1 && (
-                  <button type="button" className="button ghost" onClick={() => removeAgent(agent.id)}>
-                    删除
+              <div className="agent-card__header">
+                <div>
+                  <h3>{agent.name}</h3>
+                  <p className="form-hint">Agent #{index + 1}</p>
+                </div>
+                <div className="agent-card__header-actions">
+                  <button type="button" className="button ghost" onClick={() => updateAgent(agent.id, { name: `A${index + 1}` })}>
+                    重命名为 A{index + 1}
                   </button>
-                )}
+                  {agents.length > 1 && (
+                    <button type="button" className="button ghost" onClick={() => removeAgent(agent.id)}>
+                      删除
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
 
-            <div className="grid two-columns">
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>显示名称</span>
+                  <input type="text" value={agent.name} onChange={handleAgentNameChange(agent)} />
+                </label>
+
+                <label className="form-field">
+                  <span>画像类型</span>
+                  <select value={agent.persona.type} onChange={handlePersonaTypeChange(agent)}>
+                    <option value="big5">大五人格</option>
+                    <option value="mbti">MBTI</option>
+                    <option value="free">自由画像</option>
+                  </select>
+                </label>
+              </div>
+
+              <PersonaEditor agent={agent} />
+
               <label className="form-field">
-                <span>显示名称</span>
-                <input type="text" value={agent.name} onChange={handleAgentNameChange(agent)} />
+                <span>初始观点（可空）</span>
+                <textarea
+                  placeholder="可用于指定起始立场或已有观点，留空则由系统提示引导。"
+                  value={agent.initialOpinion ?? ''}
+                  onChange={handleInitialOpinionChange(agent)}
+                />
               </label>
 
-              <label className="form-field">
-                <span>画像类型</span>
-                <select value={agent.persona.type} onChange={handlePersonaTypeChange(agent)}>
-                  <option value="big5">大五人格</option>
-                  <option value="mbti">MBTI</option>
-                  <option value="free">自由画像</option>
-                </select>
-              </label>
+              {!runConfig.useGlobalModelConfig && (
+                <AgentModelConfigEditor agent={agent} onChange={updateAgent} vendorDefaults={vendorDefaults} />
+              )}
             </div>
-
-            <PersonaEditor agent={agent} />
-
-            <label className="form-field">
-              <span>初始观点（可空）</span>
-              <textarea
-                placeholder="可用于指定起始立场或已有观点，留空则由系统提示引导。"
-                value={agent.initialOpinion ?? ''}
-                onChange={handleInitialOpinionChange(agent)}
-              />
-            </label>
-
-            {!runConfig.useGlobalModelConfig && (
-              <AgentModelConfigEditor agent={agent} onChange={updateAgent} vendorDefaults={vendorDefaults} />
-            )}
-          </div>
-        ))}
-        <div className="agent-memory-block">
-          <h4>记忆窗口管理（动态）</h4>
-          <p className="form-hint">
-            前几轮仅保留少量上下文，随着讨论深入逐步扩大可见窗口，其余内容会被摘要保存在长期记忆中。
-          </p>
-          <div className="grid three-columns memory-grid">
-            <label className="form-field">
-              <span>初始可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.minWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ minWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">对话开场时用于保留的新消息比例，建议 10–30。</p>
-            </label>
-            <label className="form-field">
-              <span>最大可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.maxWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ maxWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">讨论后期可使用的最大比例，建议不超过 70。</p>
-            </label>
-            <label className="form-field">
-              <span>增长速率</span>
-              <input
-                type="number"
-                min={0.2}
-                max={5}
-                step={0.1}
-                value={memory.growthRate}
-                onChange={(event) =>
-                  updateMemoryConfig({ growthRate: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">数值越大，窗口扩张越快；0.5 慢速，2.0 较激进。</p>
-            </label>
+          ))}
+          <div className="trust-matrix-block">
+            <h4>信任度矩阵（DeGroot）</h4>
+            <p className="form-hint">
+              举例：若 A1 行填写〔0.6, 0.4〕，表示生成 A1 下一轮观点时，会将上一批中「A1 自身:0.6」
+              与「A2:0.4」的观点进行加权融合，其余权重为 0。
+            </p>
+            <div className="trust-matrix-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>行＼列</th>
+                    {agents.map((agent) => (
+                      <th key={`trust-col-${agent.id}`}>{agent.name}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {agents.map((rowAgent, rowIndex) => (
+                    <tr key={`trust-row-${rowAgent.id}`}>
+                      <th>
+                        <div className="trust-row-header">
+                          <span>{rowAgent.name}</span>
+                          <button
+                            type="button"
+                            className="button tertiary"
+                            onClick={() => normalizeTrustRow(rowIndex)}
+                          >
+                            行归一
+                          </button>
+                        </div>
+                      </th>
+                      {agents.map((colAgent, colIndex) => {
+                        const currentValue =
+                          typeof trustMatrix[rowIndex]?.[colIndex] === 'number'
+                            ? trustMatrix[rowIndex][colIndex]
+                            : rowIndex === colIndex
+                              ? 1
+                              : 0;
+                        return (
+                          <td key={`trust-cell-${rowAgent.id}-${colAgent.id}`}>
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={currentValue}
+                              onChange={handleTrustInputChange(rowIndex, colIndex)}
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="trust-matrix-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => resetTrustMatrix('identity')}
+              >
+                对角线为 1
+              </button>
+              <button
+                type="button"
+                className="button ghost"
+                onClick={() => resetTrustMatrix('uniform')}
+              >
+                平均分配
+              </button>
+            </div>
+            <p className="form-hint">
+              建议每行权重之和约等于 1，以便准确模拟 DeGroot 权重传播；系统会自动将输入裁剪到 0-1。
+            </p>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
   );
 }
 
@@ -432,10 +468,10 @@ const AgentModelConfigEditor = ({
   vendorDefaults: VendorDefaults;
 }) => {
   const modelConfig = agent.modelConfig;
-  if (!modelConfig) return null;
-
   const [testState, setTestState] = useState<ConnectionTestState>({ status: 'idle' });
   const [testMessage, setTestMessage] = useState('请给出一句示例发言。');
+
+  if (!modelConfig) return null;
 
   const handleVendorChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const vendor = event.target.value as Vendor;
@@ -528,33 +564,35 @@ const AgentModelConfigEditor = ({
         apiKey,
       };
 
-      const result = await chatStream(
-        [
+        const result = await chatStream(
+          [
+            {
+              role: 'system',
+              content: '你是多智能体讨论中的一员，请围绕议题给出简短回答。',
+            },
+            {
+              role: 'user',
+              content: testMessage || '请举例说明你将如何参与讨论。',
+            },
+          ],
+          resolvedConfig,
           {
-            role: 'system',
-            content: '你是多智能体讨论中的一员，请围绕议题给出简短回答。',
+            temperature: resolvedConfig.temperature,
+            maxTokens: resolvedConfig.max_output_tokens,
           },
-          {
-            role: 'user',
-            content: testMessage || '请举例说明你将如何参与讨论。',
-          },
-        ],
-        resolvedConfig,
-        {
-          temperature: resolvedConfig.temperature,
-          maxTokens: resolvedConfig.max_output_tokens,
-        },
-      );
-      setTestState({
-        status: 'success',
-        message: result || '（请求成功但未返回正文）',
-      });
-    } catch (error: any) {
-      setTestState({
-        status: 'error',
-        message: error?.message ?? '请求异常，请检查网络或 Worker 配置。',
-      });
-    }
+        );
+        setTestState({
+          status: 'success',
+          message: result || '（请求成功但未返回正文）',
+        });
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : '请求异常，请检查网络或 Worker 配置。';
+        setTestState({
+          status: 'error',
+          message,
+        });
+      }
   };
 
   const defaults = vendorDefaults[modelConfig.vendor];

@@ -1,13 +1,21 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt, buildSummarizationPrompt } from './prompts';
+import {
+  buildAgentSystemPrompt,
+  buildAgentUserPrompt,
+  buildSentimentPrompt,
+  buildStancePrompt,
+} from './prompts';
 import { resolveSentimentLabels } from './sentiment';
-import { estimateMessagesTokens } from './token';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
+import type { BatchTranscript, TrustEntry } from './prompts';
 
-const TOTAL_TOKEN_BUDGET = 4096;
+type BatchContext = {
+  label: string;
+  messages: Message[];
+};
 
 let activeRunner: ConversationRunner | undefined;
 
@@ -33,6 +41,7 @@ export const stopConversation = () => {
 class ConversationRunner {
   private stopped = false;
   private readonly appStore = useAppStore;
+  private previousBatch: BatchContext = { label: '初始阶段（无历史）', messages: [] };
 
   isRunning() {
     const { phase } = this.appStore.getState().runState.status;
@@ -70,6 +79,7 @@ class ConversationRunner {
     }
 
     this.appStore.getState().resetMessages();
+    this.previousBatch = { label: '初始阶段（无历史）', messages: [] };
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
 
@@ -109,9 +119,10 @@ class ConversationRunner {
             finishedAt: Date.now(),
             awaitingLabel: undefined,
           }));
-      }
-      this.captureResultSnapshot();
-    } catch (error: any) {
+        }
+        this.captureResultSnapshot();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : '运行过程中发生未知错误。';
         this.setStatus({
           phase: 'error',
           mode: config.mode,
@@ -119,20 +130,22 @@ class ConversationRunner {
           currentTurn: this.appStore.getState().runState.status.currentTurn,
           totalMessages: this.appStore.getState().runState.status.totalMessages,
           summarizedCount: this.appStore.getState().runState.status.summarizedCount,
-          error: error?.message ?? '运行过程中发生未知错误。',
+          error: message,
           startedAt,
           finishedAt: Date.now(),
           lastAgentId: this.appStore.getState().runState.status.lastAgentId,
           awaitingLabel: undefined,
         });
-      throw error;
-    }
+        throw error;
+      }
   }
 
   private async runRoundRobin(agents: AgentSpec[], config: RunConfig) {
     const maxRounds = config.maxRounds ?? 3;
+    let previousBatch = this.previousBatch;
     for (let round = 1; round <= maxRounds; round += 1) {
       if (this.shouldStop()) break;
+      const currentBatch: Message[] = [];
       for (let turn = 0; turn < agents.length; turn += 1) {
         if (this.shouldStop()) break;
         const agent = agents[turn];
@@ -142,8 +155,19 @@ class ConversationRunner {
           currentTurn: turn + 1,
           lastAgentId: agent.id,
         }));
-        await this.executeAgentTurn(agent, round, turn + 1, config);
+        const trustEntries = this.buildTrustEntries(agent, agents, config.trustMatrix);
+        const message = await this.executeAgentTurn(
+          agent,
+          round,
+          turn + 1,
+          config,
+          previousBatch,
+          trustEntries,
+        );
+        currentBatch.push(message);
       }
+      previousBatch = { label: `第 ${round} 轮`, messages: currentBatch.slice() };
+      this.previousBatch = previousBatch;
     }
   }
 
@@ -152,10 +176,12 @@ class ConversationRunner {
     let producedMessages = 0;
     let round = 0;
     let consecutiveSkipRounds = 0;
+    let previousBatch = this.previousBatch;
 
     while (producedMessages < maxMessages && !this.shouldStop()) {
       round += 1;
       let skipsThisRound = 0;
+      const currentBatch: Message[] = [];
 
       for (let turn = 0; turn < agents.length; turn += 1) {
         if (this.shouldStop() || producedMessages >= maxMessages) break;
@@ -166,13 +192,24 @@ class ConversationRunner {
           currentTurn: turn + 1,
           lastAgentId: agent.id,
         }));
-        const message = await this.executeAgentTurn(agent, round, turn + 1, config);
+        const trustEntries = this.buildTrustEntries(agent, agents, config.trustMatrix);
+        const message = await this.executeAgentTurn(
+          agent,
+          round,
+          turn + 1,
+          config,
+          previousBatch,
+          trustEntries,
+        );
+        currentBatch.push(message);
         if (message?.content === '__SKIP__') {
           skipsThisRound += 1;
         } else if (message) {
           producedMessages += 1;
         }
       }
+      previousBatch = { label: `自由批次 #${round}`, messages: currentBatch.slice() };
+      this.previousBatch = previousBatch;
 
       if (skipsThisRound === agents.length) {
         consecutiveSkipRounds += 1;
@@ -186,9 +223,14 @@ class ConversationRunner {
     }
   }
 
-  private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
-    const store = this.appStore.getState();
-    const { runState } = store;
+  private async executeAgentTurn(
+    agent: AgentSpec,
+    round: number,
+    turn: number,
+    config: RunConfig,
+    batchContext: BatchContext,
+    trustEntries: TrustEntry[],
+  ) {
     const baseModelConfig = this.resolveModelConfig(agent, config);
     const apiKey = this.resolveApiKey(baseModelConfig);
 
@@ -197,22 +239,22 @@ class ConversationRunner {
     }
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-    const systemPrompt = buildAgentSystemPrompt({
+    this.appStore.getState().setVisibleWindow(batchContext.messages);
+    const batchTranscripts: BatchTranscript[] = batchContext.messages.map((message) => ({
+      agentName: this.resolveAgentName(message.agentId),
+      content: message.content,
+    }));
+    const promptContext = {
       agent,
-      summary: runState.summary,
-      visibleWindow: runState.visibleWindow,
       mode: config.mode,
       round,
       turn,
-    });
-    const userPrompt = buildAgentUserPrompt({
-      agent,
-      summary: runState.summary,
-      visibleWindow: runState.visibleWindow,
-      mode: config.mode,
-      round,
-      turn,
-    });
+      previousBatchLabel: batchContext.label,
+      previousBatch: batchTranscripts,
+      trustEntries,
+    };
+    const systemPrompt = buildAgentSystemPrompt(promptContext);
+    const userPrompt = buildAgentUserPrompt(promptContext);
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -252,11 +294,9 @@ class ConversationRunner {
     };
 
     this.appStore.getState().appendMessage(message);
-    this.updateVisibleWindow();
     this.updateStatusAfterMessage(message);
 
     await this.runClassificationPipelines(message, config);
-    await this.maybeSummarizeMemory(config);
 
     return message;
   }
@@ -344,97 +384,29 @@ class ConversationRunner {
     }
   }
 
-  private async maybeSummarizeMemory(config: RunConfig) {
-    if (!config.memory.summarizationEnabled) {
-      const messages = this.appStore.getState().runState.messages;
-      this.appStore.getState().setVisibleWindow(messages);
-      return;
-    }
-
-    const { runState } = this.appStore.getState();
-    const { messages, status } = runState;
-    const summarizeFromIndex = status.summarizedCount;
-
-    if (messages.length === 0) {
-      return;
-    }
-
-    const agentCount = Math.max(1, runState.agents.length);
-    const windowPct = this.computeWindowPct(runState.status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
-
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
-
-    const newSummariesCount = messages.length - visibleMessages.length - status.summarizedCount;
-    if (newSummariesCount <= 0) {
-      return;
-    }
-
-    const chunk = messages.slice(summarizeFromIndex, summarizeFromIndex + newSummariesCount);
-    const transcripts = chunk.map((msg) => formatMessageForTranscript(msg, this.resolveAgentName(msg.agentId))).join('\n');
-
-    const baseModelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Summary] 缺少模型 API Key，跳过摘要压缩。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildSummarizationPrompt(this.appStore.getState().runState.summary, transcripts);
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-        {
-          onStatus: (status) => {
-            if (status === 'waiting_response' || status === 'responding') {
-              this.setAwaiting('response');
-            } else if (status === 'thinking') {
-              this.setAwaiting('thinking');
-            } else if (status === 'done') {
-              this.setAwaiting(undefined);
-            }
-          },
-        },
-      );
-      if (result) {
-        this.appStore.getState().setSummary(result.trim());
-        this.setStatus((status) => ({
-          ...status,
-          summarizedCount: status.summarizedCount + newSummariesCount,
-        }));
-      }
-    } catch (error) {
-      console.warn('[Summary] 摘要生成失败：', error);
-    } finally {
-      this.setAwaiting(undefined);
-    }
-  }
-
-  private updateVisibleWindow() {
-    const { config, messages, status, agents } = this.appStore.getState().runState;
-    if (!config.memory.summarizationEnabled) {
-      this.appStore.getState().setVisibleWindow(messages);
-      return;
-    }
-    const agentCount = Math.max(1, agents.length);
-    const windowPct = this.computeWindowPct(status, config, agentCount);
-    const windowBudgetTokens = Math.max(200, Math.floor((TOTAL_TOKEN_BUDGET * windowPct) / 100));
-    const visibleMessages = collectVisibleMessages(messages, windowBudgetTokens);
-    this.appStore.getState().setVisibleWindow(visibleMessages);
-  }
-
   private updateStatusAfterMessage(message: Message) {
     this.setStatus((status) => ({
       ...status,
       totalMessages: status.totalMessages + (message.content === '__SKIP__' ? 0 : 1),
     }));
+  }
+
+  private buildTrustEntries(
+    agent: AgentSpec,
+    agents: AgentSpec[],
+    trustMatrix: number[][],
+  ): TrustEntry[] {
+    const rowIndex = Math.max(
+      0,
+      agents.findIndex((candidate) => candidate.id === agent.id),
+    );
+    const matrixRow = trustMatrix[rowIndex] ?? [];
+    return agents.map((target, targetIndex) => {
+      const fallback = rowIndex === targetIndex ? 1 : 0;
+      const weight =
+        typeof matrixRow[targetIndex] === 'number' ? matrixRow[targetIndex]! : fallback;
+      return { agentName: target.name, weight };
+    });
   }
 
   private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
@@ -471,34 +443,6 @@ class ConversationRunner {
     this.appStore.getState().setRunStatus(updater);
   }
 
-  private computeWindowPct(status: RunStatus, config: RunConfig, agentCount: number): number {
-    if (!config.memory.summarizationEnabled) {
-      return 100;
-    }
-    const { memory } = config;
-    const minPct = Math.min(memory.minWindowPct, memory.maxWindowPct);
-    const maxPct = Math.max(memory.minWindowPct, memory.maxWindowPct);
-    const growthRate = memory.growthRate > 0 ? memory.growthRate : 0.5;
-    const progress = this.estimateDialogueProgress(status, config, agentCount);
-    const denominator = 1 - Math.exp(-growthRate);
-    const curve =
-      Math.abs(denominator) < 1e-6 ? progress : (1 - Math.exp(-growthRate * progress)) / denominator;
-    const pct = minPct + (maxPct - minPct) * curve;
-    return Math.min(90, Math.max(5, pct));
-  }
-
-  private estimateDialogueProgress(status: RunStatus, config: RunConfig, agentCount: number): number {
-    const expectedMessages =
-      config.mode === 'round_robin'
-        ? (config.maxRounds ?? Math.max(1, status.currentRound || 1)) * Math.max(1, agentCount)
-        : config.maxMessages ?? Math.max(1, status.totalMessages || agentCount);
-    if (expectedMessages <= 0) {
-      return 0;
-    }
-    const progress = status.totalMessages / expectedMessages;
-    return Math.min(1, Math.max(0, progress));
-  }
-
   private setAwaiting(label?: 'response' | 'thinking') {
     this.setStatus((status) => ({
       ...status,
@@ -516,44 +460,13 @@ class ConversationRunner {
     this.appStore.getState().setResult({
       messages: state.messages,
       finishedAt: status.finishedAt ?? Date.now(),
-      summary: state.summary,
       configSnapshot: state.config,
       status,
     });
   }
 }
 
-const collectVisibleMessages = (messages: Message[], budgetTokens: number): Message[] => {
-  const reversed: Message[] = [];
-  let tokenCount = 0;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    const tokens = estimateMessagesTokens([message]);
-    if (tokenCount + tokens > budgetTokens) {
-      break;
-    }
-    reversed.push(message);
-    tokenCount += tokens;
-  }
-  return reversed.reverse();
-};
-
-const formatMessageForTranscript = (message: Message, agentName: string): string => {
-  const sentiment = message.sentiment ? `（情感：${message.sentiment.label}${formatConfidence(message.sentiment.confidence)}）` : '';
-  const stance =
-    typeof message.stance?.score === 'number'
-      ? `（立场：${message.stance.score.toFixed(2)}${message.stance.note ? `，${message.stance.note}` : ''}）`
-      : '';
-  const meta = [sentiment, stance].filter(Boolean).join(' ');
-  return `${agentName}: ${message.content}${meta ? ` ${meta}` : ''}`;
-};
-
-const formatConfidence = (confidence?: number) => {
-  if (typeof confidence !== 'number') return '';
-  return `，置信度 ${confidence.toFixed(2)}`;
-};
-
-const safeJsonParse = (content: string): any => {
+const safeJsonParse = (content: string): unknown => {
   try {
     const trimmed = content.trim();
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -574,7 +487,7 @@ const defaultFallbackModel = (): ModelConfig => ({
   vendor: 'openai',
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-4.1-mini',
+  model: 'gpt-4o',
   temperature: 0.7,
   top_p: 0.95,
 });
