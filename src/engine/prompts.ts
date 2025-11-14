@@ -29,7 +29,14 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
       : '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。';
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const topicLine = topic ? `固定议题：${topic}` : '固定议题：请围绕用户设定的话题展开。';
-  const ratingLine = `在作答末尾添加一行“情感评分：<值>”，其中 <值> 必须为整数，范围 [-${maxLevel}, +${maxLevel}]，负值越小说明越负面，正值越大越正面，0 表示中立。`;
+  const ratingLine = `请在正文结束后紧跟一个括号标注情绪取向，例如（情感：+1），其中分值必须是 [-${maxLevel}, +${maxLevel}] 之间的整数。不要在正文里解释评分，也不要把它写成独立句。`;
+  const naturalGuidelines = [
+    '像即时聊天一样说话，语气可以轻松，有停顿、语气词或自我修正。',
+    '始终用“我/我们/你”来指代自己和他人，不要说“根据 A1 的观点”这类第三人称，也不要提“轮次”“当前回合”。',
+    '避免使用条列式编号、模板化句式或“综合来看”这类书面语，可拆成两三句短句。',
+    '引用他人时只提名字（例如“我同意小王”），点到为止即可。',
+    '不要在输出里提到“信任度矩阵”“情感评分”这些任务术语。',
+  ].join('\n- ');
 
   const skipInstruction =
     mode === 'free'
@@ -46,12 +53,15 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
 - 保持条理清晰、专业且尊重的表达方式。
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
-    `输出要求：
+      `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
-- ${ratingLine}`,
+- ${ratingLine}
+
+日常表达提示：
+- ${naturalGuidelines}`,
   ].join('\n\n');
 };
 
@@ -86,6 +96,8 @@ export const buildAgentUserPrompt = ({
   const topicHint = topic ? `固定议题：${topic}` : '请围绕用户提供的唯一议题展开。';
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const ratingHint = `请在回答末尾添加“情感评分：X”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数（负值更负面，正值更正面，0 表示中立）。`;
+  const styleHint =
+    '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
 
   return [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
@@ -93,7 +105,8 @@ export const buildAgentUserPrompt = ({
     initialOpinionHint,
     topicHint,
     `上一批次对话 + 上一位发言者内容（仅供参考）：\n${dialogueTranscripts}`,
-    '请仅基于上一批次讨论、上一个发言者内容与信任度矩阵给出回应（或跳过），无需回顾更早轮次。',
+    '请仅基于上一批次讨论、上一个发言者内容给出回应（或跳过），无需回顾更早轮次，不要提到“信任度矩阵”这类内部术语。',
+    styleHint,
     ratingHint,
   ].join('\n\n');
 };
