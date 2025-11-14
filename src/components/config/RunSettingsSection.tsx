@@ -54,6 +54,8 @@ export function RunSettingsSection() {
   const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
   const setDiscussionTopic = useAppStore((state) => state.setDiscussionTopic);
   const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
+  const setPositiveDefinition = useAppStore((state) => state.setPositiveDefinition);
+  const setNegativeDefinition = useAppStore((state) => state.setNegativeDefinition);
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -131,6 +133,14 @@ export function RunSettingsSection() {
   const handleScaleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number(event.target.value);
     setStanceScaleSize(Number.isNaN(value) ? 3 : value);
+  };
+
+  const handlePositiveDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setPositiveDefinition(event.target.value);
+  };
+
+  const handleNegativeDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setNegativeDefinition(event.target.value);
   };
 
     const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
@@ -277,29 +287,53 @@ export function RunSettingsSection() {
           </div>
 
             <div className="discussion-block">
-              <label className="form-field">
-                <span>对话主题</span>
-                <input
-                  type="text"
-                  value={discussion.topic}
-                  onChange={handleTopicChange}
-                  placeholder="例如：苹果新品 Vision Pro 的定价是否合理？"
-                />
-                <p className="form-hint">所有 Agent 必须围绕该主题展开，留空将无法开始对话。</p>
-              </label>
-              <label className="form-field">
-                <span>立场/情感刻度粒度</span>
-                <input
-                  type="number"
-                  min={3}
-                  step={2}
-                  value={discussion.stanceScaleSize}
-                  onChange={handleScaleChange}
-                />
-                <p className="form-hint">
-                  请输入一个 ≥3 的奇数，如 3、5、7。系统会要求每次发言在末尾输出 [-{(discussion.stanceScaleSize - 1) / 2}, {(discussion.stanceScaleSize - 1) / 2}] 之间的整数评分。
-                </p>
-              </label>
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>对话主题</span>
+                  <input
+                    type="text"
+                    value={discussion.topic}
+                    onChange={handleTopicChange}
+                    placeholder="例如：苹果新品 Vision Pro 的定价是否合理？"
+                  />
+                  <p className="form-hint">所有 Agent 必须围绕该主题展开，留空将无法开始对话。</p>
+                </label>
+                <label className="form-field">
+                  <span>立场/情感刻度粒度</span>
+                  <input
+                    type="number"
+                    min={3}
+                    step={2}
+                    value={discussion.stanceScaleSize}
+                    onChange={handleScaleChange}
+                  />
+                  <p className="form-hint">
+                    请输入一个 ≥3 的奇数，如 3、5、7。刻度会映射为 ±{Math.floor(discussion.stanceScaleSize / 2)}…0…±{Math.floor(discussion.stanceScaleSize / 2)}。
+                  </p>
+                </label>
+              </div>
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>正值代表</span>
+                  <input
+                    type="text"
+                    value={discussion.positiveDefinition}
+                    onChange={handlePositiveDefinitionChange}
+                    placeholder="例如：支持项羽的做法"
+                  />
+                  <p className="form-hint">描述当情感评分为正数时的含义，例如“更加认可该方案”。</p>
+                </label>
+                <label className="form-field">
+                  <span>负值代表</span>
+                  <input
+                    type="text"
+                    value={discussion.negativeDefinition}
+                    onChange={handleNegativeDefinitionChange}
+                    placeholder="例如：反对项羽的做法"
+                  />
+                  <p className="form-hint">描述当情感评分为负数时的含义，例如“认为此举是失策”。</p>
+                </label>
+              </div>
             </div>
 
           {runConfig.useGlobalModelConfig && (

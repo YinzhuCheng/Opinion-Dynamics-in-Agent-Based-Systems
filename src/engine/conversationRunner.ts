@@ -1,6 +1,5 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt, buildSentimentPrompt, buildStancePrompt } from './prompts';
-import { resolveSentimentLabels } from './sentiment';
+import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
 import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
@@ -72,6 +71,22 @@ class ConversationRunner {
           phase: 'error',
           mode: config.mode,
           error: '请先在配置页填写对话主题，所有 Agent 将围绕该主题展开。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
+      const positiveDefinition = config.discussion?.positiveDefinition?.trim();
+      const negativeDefinition = config.discussion?.negativeDefinition?.trim();
+      if (!positiveDefinition || !negativeDefinition) {
+        this.appStore.getState().setRunStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请完善“正值代表 / 负值代表”的含义，方便模型给出对应立场。',
           currentRound: 0,
           currentTurn: 0,
           totalMessages: 0,
@@ -224,6 +239,8 @@ class ConversationRunner {
         trustWeights,
         topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
+        positiveDefinition: discussion.positiveDefinition,
+        negativeDefinition: discussion.negativeDefinition,
       });
       const userPrompt = buildAgentUserPrompt({
         agent,
@@ -235,6 +252,8 @@ class ConversationRunner {
         trustWeights,
         topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
+        positiveDefinition: discussion.positiveDefinition,
+        negativeDefinition: discussion.negativeDefinition,
       });
 
     const messages: ChatMessage[] = [
@@ -266,107 +285,28 @@ class ConversationRunner {
 
     content = content.trim() || '__SKIP__';
 
-      const message: Message = {
-        id: nanoid(),
-        agentId: agent.id,
-        role: 'assistant',
-        content,
-        ts: Date.now(),
-        round,
-        turn,
-        systemPrompt,
-        userPrompt,
-      };
+      const stanceResult = this.processSelfReportedStance(content, discussion);
+      content = stanceResult.content;
+
+    const message: Message = {
+      id: nanoid(),
+      agentId: agent.id,
+      role: 'assistant',
+      content,
+      ts: Date.now(),
+      round,
+      turn,
+      systemPrompt,
+      userPrompt,
+    };
+    if (stanceResult.stance) {
+      message.stance = stanceResult.stance;
+    }
 
     this.appStore.getState().appendMessage(message);
     this.updateStatusAfterMessage(message);
 
-    await this.runClassificationPipelines(message, config);
-
     return message;
-  }
-
-  private async runClassificationPipelines(message: Message, config: RunConfig) {
-    if (message.content === '__SKIP__') {
-      return;
-    }
-    const tasks: Promise<void>[] = [this.performSentiment(message, config)];
-    if (config.visualization?.enableStanceChart) {
-      tasks.push(this.performStanceScoring(message, config));
-    }
-    await Promise.all(tasks);
-  }
-
-  private async performSentiment(message: Message, config: RunConfig) {
-    const sentimentSetting = config.sentiment;
-    if (!sentimentSetting.enabled) return;
-
-    const labels = resolveSentimentLabels(sentimentSetting);
-    if (labels.length < 2) return;
-
-    const baseModelConfig = sentimentSetting.modelConfigOverride ?? this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Sentiment] 缺少情感分类模型的 API Key，跳过。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildSentimentPrompt(labels);
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-      );
-      const parsed = safeJsonParse(result);
-      if (parsed?.label && labels.includes(parsed.label)) {
-        this.appStore.getState().updateMessage(message.id, (msg) => {
-          msg.sentiment = {
-            label: parsed.label,
-            confidence: typeof parsed.confidence === 'number' ? clamp(parsed.confidence, 0, 1) : undefined,
-          };
-        });
-      }
-    } catch (error) {
-      console.warn('[Sentiment] 分类失败：', error);
-    }
-  }
-
-  private async performStanceScoring(message: Message, config: RunConfig) {
-    const baseModelConfig = this.resolveFallbackModelConfig(config);
-    const apiKey = this.resolveApiKey(baseModelConfig);
-    if (!apiKey) {
-      console.warn('[Stance] 缺少模型 API Key，跳过立场评分。');
-      return;
-    }
-    const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
-
-    try {
-      const { system, user } = buildStancePrompt();
-      const result = await chatStream(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: `${user}\n\n消息内容：${message.content}` },
-        ],
-        modelConfig,
-        { temperature: modelConfig.temperature, maxTokens: modelConfig.max_output_tokens },
-      );
-      const parsed = safeJsonParse(result);
-      if (typeof parsed?.score === 'number') {
-        this.appStore.getState().updateMessage(message.id, (msg) => {
-          msg.stance = {
-            score: clamp(parsed.score, -1, 1),
-            note: typeof parsed.note === 'string' ? parsed.note : undefined,
-          };
-        });
-      }
-    } catch (error) {
-      console.warn('[Stance] 立场评分失败：', error);
-    }
   }
 
   private updateStatusAfterMessage(message: Message) {
@@ -417,6 +357,37 @@ class ConversationRunner {
       return context;
     }
 
+    private processSelfReportedStance(
+      content: string,
+      discussion: RunConfig['discussion'],
+    ): { content: string; stance?: { score: number; note?: string } } {
+      const trimmed = content.trim();
+      const ratingRegex = /(?:\(|（)\s*情感[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
+      const match = trimmed.match(ratingRegex);
+      if (!match) {
+        return { content: trimmed };
+      }
+      const size = normalizeScaleSize(discussion?.stanceScaleSize);
+      const maxLevel = Math.floor(Math.max(3, size) / 2);
+      let score = Number(match[1]);
+      if (!Number.isFinite(score)) {
+        return { content: trimmed };
+      }
+      score = Math.max(-maxLevel, Math.min(maxLevel, score));
+      const positiveDesc = discussion.positiveDefinition?.trim() || '倾向正向立场';
+      const negativeDesc = discussion.negativeDefinition?.trim() || '倾向负向立场';
+      const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
+      const sanitizedContent = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
+      const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
+      return {
+        content: displayContent,
+        stance: {
+          score,
+          note,
+        },
+      };
+    }
+
     private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
     if (config.useGlobalModelConfig && config.globalModelConfig) {
       return { ...config.globalModelConfig };
@@ -425,10 +396,6 @@ class ConversationRunner {
       return { ...agent.modelConfig };
     }
     // fallback to default global
-    return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
-  }
-
-  private resolveFallbackModelConfig(config: RunConfig): ModelConfig {
     return config.globalModelConfig ? { ...config.globalModelConfig } : defaultFallbackModel();
   }
 
@@ -469,23 +436,6 @@ class ConversationRunner {
   }
 }
 
-const safeJsonParse = (content: string): any => {
-  try {
-    const trimmed = content.trim();
-    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-};
-
-const clamp = (value: number, min: number, max: number) => {
-  return Math.min(max, Math.max(min, value));
-};
-
 const defaultFallbackModel = (): ModelConfig => ({
   vendor: 'openai',
   baseUrl: '',
@@ -494,3 +444,9 @@ const defaultFallbackModel = (): ModelConfig => ({
   temperature: 0.7,
   top_p: 0.95,
 });
+
+const normalizeScaleSize = (value: number | undefined): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 3;
+  const atLeastThree = Math.max(3, numeric);
+  return atLeastThree % 2 === 0 ? atLeastThree + 1 : atLeastThree;
+};

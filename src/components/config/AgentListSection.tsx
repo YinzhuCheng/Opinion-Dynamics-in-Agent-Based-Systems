@@ -197,6 +197,8 @@ const TrustMatrixEditor = () => {
   const trustMatrix = useAppStore((state) => state.runState.config.trustMatrix);
   const setTrustValue = useAppStore((state) => state.setTrustValue);
   const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
+  const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
+  const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
 
   if (agents.length === 0) {
     return null;
@@ -265,6 +267,14 @@ const TrustMatrixEditor = () => {
             ))}
           </tbody>
         </table>
+      </div>
+      <div className="trust-matrix-actions">
+        <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
+          随机初始化
+        </button>
+        <button type="button" className="button ghost" onClick={uniformTrustMatrix}>
+          均匀初始化
+        </button>
       </div>
     </div>
   );

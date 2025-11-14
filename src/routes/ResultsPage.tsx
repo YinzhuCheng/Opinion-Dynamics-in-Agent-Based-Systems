@@ -68,24 +68,27 @@ export function ResultsPage() {
               </p>
               <p>摘要：{result.summary || '尚未生成摘要。'}</p>
               <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
-              <div className="results-actions">
+                <div className="results-actions">
                   <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
                     下载精简版 .txt
                   </button>
                   <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                     下载完整版（含提示词）
                   </button>
-                {stanceChartOption ? (
-                  <>
-                    <button type="button" className="button secondary" onClick={() => handleExportChart('png')}>
-                      导出 PNG
-                    </button>
-                    <button type="button" className="button secondary" onClick={() => handleExportChart('svg')}>
-                      导出 SVG
-                    </button>
-                  </>
-                ) : null}
-              </div>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => stanceChartOption && handleExportChart('png')}
+                    disabled={!stanceChartOption}
+                    title={
+                      stanceChartOption
+                        ? '导出当前的观点演化曲线（PNG）'
+                        : '需在配置页启用“观点演化图”后才能导出'
+                    }
+                  >
+                    导出观点演化图（PNG）
+                  </button>
+                </div>
             </div>
           ) : (
             <div className="empty-state">
@@ -208,7 +211,6 @@ const buildTranscriptText = (
   } else {
     lines.push('使用自由模型配置');
   }
-  lines.push(`情感分类：${result.configSnapshot.sentiment.enabled ? '启用' : '关闭'}`);
   const stanceEnabled = result.configSnapshot.visualization?.enableStanceChart ?? false;
   lines.push(`观点曲线：${stanceEnabled ? '启用' : '关闭'}`);
   const discussion = result.configSnapshot.discussion;
@@ -229,16 +231,7 @@ const buildTranscriptText = (
     );
     if (message.content !== '__SKIP__') {
       lines.push(message.content);
-      if (message.sentiment) {
-        lines.push(
-          `  情感：${message.sentiment.label}${
-            typeof message.sentiment.confidence === 'number'
-              ? `（置信度 ${message.sentiment.confidence.toFixed(2)}）`
-              : ''
-          }`,
-        );
-      }
-      if (message.stance && stanceEnabled) {
+      if (message.stance) {
         lines.push(
           `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
         );
