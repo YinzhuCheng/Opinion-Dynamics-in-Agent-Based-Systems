@@ -42,6 +42,7 @@ export function RunSettingsSection() {
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
 
   const runConfig = useAppStore((state) => state.runState.config);
+  const discussion = useAppStore((state) => state.runState.config.discussion);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
   const setVendorModel = useAppStore((state) => state.setVendorModel);
@@ -51,6 +52,8 @@ export function RunSettingsSection() {
   const setMaxMessages = useAppStore((state) => state.setMaxMessages);
   const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
   const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
+  const setDiscussionTopic = useAppStore((state) => state.setDiscussionTopic);
+  const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -119,6 +122,15 @@ export function RunSettingsSection() {
   const handleTestMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     setTestMessage(event.target.value);
     setTestState({ status: 'idle' });
+  };
+
+  const handleTopicChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setDiscussionTopic(event.target.value);
+  };
+
+  const handleScaleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setStanceScaleSize(Number.isNaN(value) ? 3 : value);
   };
 
     const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
@@ -263,6 +275,32 @@ export function RunSettingsSection() {
               </select>
             </label>
           </div>
+
+            <div className="discussion-block">
+              <label className="form-field">
+                <span>对话主题</span>
+                <input
+                  type="text"
+                  value={discussion.topic}
+                  onChange={handleTopicChange}
+                  placeholder="例如：苹果新品 Vision Pro 的定价是否合理？"
+                />
+                <p className="form-hint">所有 Agent 必须围绕该主题展开，留空将无法开始对话。</p>
+              </label>
+              <label className="form-field">
+                <span>立场/情感刻度粒度</span>
+                <input
+                  type="number"
+                  min={3}
+                  step={2}
+                  value={discussion.stanceScaleSize}
+                  onChange={handleScaleChange}
+                />
+                <p className="form-hint">
+                  请输入一个 ≥3 的奇数，如 3、5、7。系统会要求每次发言在末尾输出 [-{(discussion.stanceScaleSize - 1) / 2}, {(discussion.stanceScaleSize - 1) / 2}] 之间的整数评分。
+                </p>
+              </label>
+            </div>
 
           {runConfig.useGlobalModelConfig && (
             <div className="global-model-card">

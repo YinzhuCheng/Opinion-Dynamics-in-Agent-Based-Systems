@@ -6,15 +6,19 @@ interface AgentPromptOptions {
   mode: DialogueMode;
   round: number;
   turn: number;
-  previousBatch: Message[];
+  contextMessages: Message[];
   agentNames: Record<string, string>;
   trustWeights: Array<{ agentName: string; weight: number }>;
+  topic: string;
+  stanceScaleSize: number;
 }
 
 export const buildAgentSystemPrompt = ({
   agent,
   mode,
   trustWeights,
+  topic,
+  stanceScaleSize,
 }: AgentPromptOptions): string => {
   const personaDescription = describePersona(agent.persona);
   const trustSection =
@@ -23,6 +27,9 @@ export const buildAgentSystemPrompt = ({
 ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).join('\n')}
 权重越大代表越信任，回答时优先回应权重高的对象。`
       : '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。';
+  const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
+  const topicLine = topic ? `固定议题：${topic}` : '固定议题：请围绕用户设定的话题展开。';
+  const ratingLine = `在作答末尾添加一行“情感评分：<值>”，其中 <值> 必须为整数，范围 [-${maxLevel}, +${maxLevel}]，负值越小说明越负面，正值越大越正面，0 表示中立。`;
 
   const skipInstruction =
     mode === 'free'
@@ -33,6 +40,7 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
     `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
     personaDescription,
     trustSection,
+    topicLine,
     `核心职责：
 - 在轮到你发言时，根据角色视角提出观点、论据或对他人观点的回应。
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
@@ -42,7 +50,8 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
-- 如需提出后续行动建议或结论，请在末尾表达。`,
+- 如需提出后续行动建议或结论，请在末尾表达。
+- ${ratingLine}`,
   ].join('\n\n');
 };
 
@@ -51,18 +60,20 @@ export const buildAgentUserPrompt = ({
   mode,
   round,
   turn,
-  previousBatch,
+  contextMessages,
   agentNames,
+  topic,
+  stanceScaleSize,
 }: AgentPromptOptions): string => {
-  const dialogueTranscripts = previousBatch.length
-    ? previousBatch
+  const dialogueTranscripts = contextMessages.length
+    ? contextMessages
         .map((message) => {
           const content = message.content === '__SKIP__' ? '(跳过本轮)' : message.content;
           const speaker = agentNames[message.agentId] ?? message.agentId;
           return `${speaker}: ${content}`;
         })
         .join('\n')
-    : '上一批次暂无对话，这可能是首轮发言。';
+    : '上一批次暂无对话（可能是首轮或你是该轮首个发言者）。';
 
   const modeHint =
     mode === 'round_robin'
@@ -72,13 +83,18 @@ export const buildAgentUserPrompt = ({
   const initialOpinionHint = agent.initialOpinion
     ? `该角色的初始观点：${agent.initialOpinion}`
     : '若你尚未明确立场，请在本轮给出立场与理由。';
+  const topicHint = topic ? `固定议题：${topic}` : '请围绕用户提供的唯一议题展开。';
+  const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
+  const ratingHint = `请在回答末尾添加“情感评分：X”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数（负值更负面，正值更正面，0 表示中立）。`;
 
   return [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
-    `上一批次对话（仅供参考）：\n${dialogueTranscripts}`,
-    '请仅基于上一批次讨论与信任度矩阵给出回应（或跳过），无需回顾更早轮次。',
+    topicHint,
+    `上一批次对话 + 上一位发言者内容（仅供参考）：\n${dialogueTranscripts}`,
+    '请仅基于上一批次讨论、上一个发言者内容与信任度矩阵给出回应（或跳过），无需回顾更早轮次。',
+    ratingHint,
   ].join('\n\n');
 };
 

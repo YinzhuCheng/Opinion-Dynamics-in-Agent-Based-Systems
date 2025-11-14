@@ -66,6 +66,22 @@ class ConversationRunner {
       return;
     }
 
+      const topic = config.discussion?.topic?.trim();
+      if (!topic) {
+        this.appStore.getState().setRunStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请先在配置页填写对话主题，所有 Agent 将围绕该主题展开。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
+
     this.appStore.getState().resetMessages();
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
@@ -192,28 +208,33 @@ class ConversationRunner {
     }
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-      const previousBatch = this.collectPreviousBatch(round);
-      this.appStore.getState().setVisibleWindow(previousBatch);
+      const contextMessages = this.collectDialogueContext(round, agent.id);
+      this.appStore.getState().setVisibleWindow(contextMessages);
       const agentNames = this.getAgentNameMap();
       const trustWeights = this.buildTrustContext(agent.id);
+      const discussion = this.appStore.getState().runState.config.discussion;
 
       const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        previousBatch,
+        contextMessages,
         agentNames,
         trustWeights,
+        topic: discussion.topic,
+        stanceScaleSize: discussion.stanceScaleSize,
       });
       const userPrompt = buildAgentUserPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        previousBatch,
+        contextMessages,
         agentNames,
         trustWeights,
+        topic: discussion.topic,
+        stanceScaleSize: discussion.stanceScaleSize,
       });
 
     const messages: ChatMessage[] = [
@@ -253,6 +274,8 @@ class ConversationRunner {
         ts: Date.now(),
         round,
         turn,
+        systemPrompt,
+        userPrompt,
       };
 
     this.appStore.getState().appendMessage(message);
@@ -356,15 +379,21 @@ class ConversationRunner {
     private buildTrustContext(agentId: string): Array<{ agentName: string; weight: number }> {
       const state = this.appStore.getState();
       const trustRow = state.runState.config.trustMatrix[agentId];
-      return state.runState.agents.map((agent) => ({
-        agentName: agent.name,
-        weight:
+      const entries = state.runState.agents.map((agent) => {
+        const raw =
           typeof trustRow?.[agent.id] === 'number'
             ? Number(trustRow[agent.id])
             : agent.id === agentId
               ? 1
-              : 0,
-      }));
+              : 0;
+        return { agentName: agent.name, weight: Math.max(0, raw) };
+      });
+      const total = entries.reduce((sum, entry) => sum + entry.weight, 0);
+      if (total <= 0) {
+        const uniform = entries.length > 0 ? 1 / entries.length : 0;
+        return entries.map((entry) => ({ ...entry, weight: Number(uniform.toFixed(3)) }));
+      }
+      return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
 
     private getAgentNameMap(): Record<string, string> {
@@ -375,12 +404,17 @@ class ConversationRunner {
       }, {});
     }
 
-    private collectPreviousBatch(round: number): Message[] {
-      if (round <= 1) {
-        return [];
-      }
+    private collectDialogueContext(round: number, agentId: string): Message[] {
       const messages = this.appStore.getState().runState.messages;
-      return messages.filter((message) => message.round === round - 1);
+      const context: Message[] = [];
+      if (round > 1) {
+        context.push(...messages.filter((message) => message.round === round - 1));
+      }
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId) {
+        context.push(lastMessage);
+      }
+      return context;
     }
 
     private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {

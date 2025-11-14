@@ -107,6 +107,12 @@ const normalizeTrustRowValues = (row: Record<string, number>): Record<string, nu
   }, {});
 };
 
+const sanitizeStanceScaleSize = (value: number | undefined): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 3;
+  const atLeastThree = Math.max(3, numeric);
+  return atLeastThree % 2 === 0 ? atLeastThree + 1 : atLeastThree;
+};
+
 const createDefaultRunConfig = (): RunConfig => ({
   mode: 'round_robin',
   maxRounds: 4,
@@ -121,6 +127,10 @@ const createDefaultRunConfig = (): RunConfig => ({
     enableStanceChart: false,
   },
   trustMatrix: {},
+  discussion: {
+    topic: '',
+    stanceScaleSize: 3,
+  },
 });
 
 const createEmptyRunState = (): RunState => {
@@ -205,6 +215,8 @@ export interface AppStore {
   ) => void;
   setTrustValue: (sourceId: string, targetId: string, value: number) => void;
   normalizeTrustRow: (sourceId: string) => void;
+  setDiscussionTopic: (topic: string) => void;
+  setStanceScaleSize: (size: number) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -453,6 +465,18 @@ export const useAppStore = create<AppStore>((set) => ({
             return;
           }
           state.runState.config.trustMatrix[sourceId] = normalizeTrustRowValues(row);
+        }),
+      ),
+    setDiscussionTopic: (topic) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.topic = topic;
+        }),
+      ),
+    setStanceScaleSize: (size) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
         }),
       ),
   setRunStatus: (updater) =>

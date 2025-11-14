@@ -17,14 +17,15 @@ export function ResultsPage() {
     return buildStanceChartOption(result, agentNameMap);
   }, [result, agentNameMap]);
 
-  const handleDownloadTranscript = () => {
+  const handleDownloadTranscript = (mode: 'standard' | 'full') => {
     if (!result) return;
-    const text = buildTranscriptText(result, agentNameMap);
+    const text = buildTranscriptText(result, agentNameMap, mode);
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `conversation-${new Date(result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    const suffix = mode === 'full' ? '-full' : '-standard';
+    link.download = `conversation${suffix}-${new Date(result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -68,9 +69,12 @@ export function ResultsPage() {
               <p>摘要：{result.summary || '尚未生成摘要。'}</p>
               <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
               <div className="results-actions">
-                <button type="button" className="button primary" onClick={handleDownloadTranscript}>
-                  下载 .txt
-                </button>
+                  <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
+                    下载精简版 .txt
+                  </button>
+                  <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
+                    下载完整版（含提示词）
+                  </button>
                 {stanceChartOption ? (
                   <>
                     <button type="button" className="button secondary" onClick={() => handleExportChart('png')}>
@@ -190,7 +194,11 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
   };
 };
 
-const buildTranscriptText = (result: SessionResult, agentNameMap: Record<string, string>): string => {
+const buildTranscriptText = (
+  result: SessionResult,
+  agentNameMap: Record<string, string>,
+  mode: 'standard' | 'full' = 'standard',
+): string => {
   const lines: string[] = [];
   lines.push(`会话结束时间：${new Date(result.finishedAt).toLocaleString()}`);
   lines.push(`模式：${translateMode(result.configSnapshot.mode)}`);
@@ -203,6 +211,11 @@ const buildTranscriptText = (result: SessionResult, agentNameMap: Record<string,
   lines.push(`情感分类：${result.configSnapshot.sentiment.enabled ? '启用' : '关闭'}`);
   const stanceEnabled = result.configSnapshot.visualization?.enableStanceChart ?? false;
   lines.push(`观点曲线：${stanceEnabled ? '启用' : '关闭'}`);
+  const discussion = result.configSnapshot.discussion;
+  lines.push(`讨论主题：${discussion?.topic || '（未设置）'}`);
+  if (discussion) {
+    lines.push(`立场/情感刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
+  }
   lines.push('');
   lines.push('【摘要】');
   lines.push(result.summary || '无摘要');
@@ -229,6 +242,16 @@ const buildTranscriptText = (result: SessionResult, agentNameMap: Record<string,
         lines.push(
           `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
         );
+      }
+      if (mode === 'full') {
+        if (message.systemPrompt) {
+          lines.push('  [System Prompt]');
+          lines.push(`  ${message.systemPrompt.replace(/\n/g, '\n  ')}`);
+        }
+        if (message.userPrompt) {
+          lines.push('  [User Prompt]');
+          lines.push(`  ${message.userPrompt.replace(/\n/g, '\n  ')}`);
+        }
       }
     }
     lines.push('');

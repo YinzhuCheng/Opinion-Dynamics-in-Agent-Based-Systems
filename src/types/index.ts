@@ -82,6 +82,10 @@ export interface RunConfig {
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
   trustMatrix: TrustMatrix;
+  discussion: {
+    topic: string;
+    stanceScaleSize: number;
+  };
   visualization: {
     enableStanceChart: boolean;
   };
@@ -97,6 +101,8 @@ export interface Message {
   ts: number;
   round: number;
   turn: number;
+  systemPrompt?: string;
+  userPrompt?: string;
   sentiment?: { label: string; confidence?: number };
   stance?: { score: number; note?: string };
 }

@@ -509,6 +509,13 @@
   font-weight: 600;
 }
 
+.discussion-block {
+  margin-top: 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
 .waiting-indicator {
   margin: 1rem 0;
   font-weight: 600;
