@@ -1,26 +1,45 @@
 import { describePersona } from './persona';
-import type { AgentSpec, DialogueMode, Message } from '../types';
+import type { AgentSpec, DialogueMode } from '../types';
+
+export interface TrustEntry {
+  agentName: string;
+  weight: number;
+}
+
+export interface BatchTranscript {
+  agentName: string;
+  content: string;
+}
 
 interface AgentPromptOptions {
   agent: AgentSpec;
-  summary: string;
-  visibleWindow: Message[];
   mode: DialogueMode;
   round: number;
   turn: number;
+  previousBatchLabel: string;
+  previousBatch: BatchTranscript[];
+  trustEntries: TrustEntry[];
 }
+
+const formatTrustEntries = (entries: TrustEntry[]): string => {
+  if (!entries.length) {
+    return '信任度参考：尚未设置，默认等权参考所有人。';
+  }
+  const lines = entries.map(
+    (entry) => `- ${entry.agentName}: ${entry.weight.toFixed(2).replace(/\.?0+$/, '')}`,
+  );
+  return [
+    '信任度参考（当前行表示你采纳上一批观点时的权重，建议相加≈1）：',
+    ...lines,
+  ].join('\n');
+};
 
 export const buildAgentSystemPrompt = ({
   agent,
-  summary,
   mode,
+  trustEntries,
 }: AgentPromptOptions): string => {
   const personaDescription = describePersona(agent.persona);
-  const summarySection = summary
-    ? `历史摘要（供参考，可在回答中引用要点）：
-${summary}`
-    : '历史摘要：暂无摘要或无需引用。';
-
   const skipInstruction =
     mode === 'free'
       ? '若判断本轮没有新的观点或信息，请输出 "__SKIP__" 表示跳过发言。'
@@ -29,10 +48,10 @@ ${summary}`
   return [
     `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
     personaDescription,
-    summarySection,
+    formatTrustEntries(trustEntries),
     `核心职责：
 - 在轮到你发言时，根据角色视角提出观点、论据或对他人观点的回应。
-- 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
+- 参考上一批讨论结果，并按照信任度权重吸收他人观点（DeGroot 模型思想）。
 - 保持条理清晰、专业且尊重的表达方式。
 - 如需引用数据或假设，请明确指出来源或不确定性。`,
     `输出要求：
@@ -45,19 +64,20 @@ ${summary}`
 
 export const buildAgentUserPrompt = ({
   agent,
-  visibleWindow,
   mode,
   round,
   turn,
-}: AgentPromptOptions & { visibleWindow: Message[] }): string => {
-  const dialogueTranscripts = visibleWindow.length
-    ? visibleWindow
+  previousBatch,
+  previousBatchLabel,
+}: AgentPromptOptions): string => {
+  const dialogueTranscripts = previousBatch.length
+    ? previousBatch
         .map((message) => {
-          const content = message.content === '__SKIP__' ? '(跳过本轮)' : message.content;
-          return `${message.agentId}: ${content}`;
+          const content = message.content === '__SKIP__' ? '(上一批选择跳过)' : message.content;
+          return `${message.agentName}: ${content}`;
         })
         .join('\n')
-    : '尚无对话历史，这可能是首轮发言。';
+    : '上一批尚无对话，请以初始观点为主。';
 
   const modeHint =
     mode === 'round_robin'
@@ -72,8 +92,8 @@ export const buildAgentUserPrompt = ({
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
-    `最近可见对话：\n${dialogueTranscripts}`,
-    '请基于以上内容给出你的回应（或跳过）。',
+    `上一批讨论（${previousBatchLabel}）：\n${dialogueTranscripts}`,
+    '请依据信任度权重综合上一批观点，给出你的新一轮发言（或 "__SKIP__" 表示跳过）。',
   ].join('\n\n');
 };
 

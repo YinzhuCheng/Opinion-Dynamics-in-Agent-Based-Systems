@@ -1,5 +1,3 @@
-/* eslint-disable no-console */
-
 interface UnifiedRequest {
   vendor: 'openai' | 'anthropic' | 'gemini';
   baseUrl?: string;
@@ -41,7 +39,7 @@ const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 
 export default {
-  async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: DEFAULT_HEADERS });
     }
@@ -52,9 +50,9 @@ export default {
 
     const url = new URL(request.url);
 
-    if (url.pathname === '/api/llm' || url.pathname === '/api/llm/') {
-      return this.handleLLMRequest(request);
-    }
+      if (url.pathname === '/api/llm' || url.pathname === '/api/llm/') {
+        return this.handleLLMRequest(request);
+      }
 
     if (url.pathname === '/api/llm/test') {
       return this.handleTestRequest(request);
@@ -63,83 +61,86 @@ export default {
     return json({ ok: false, error: { code: 'NOT_FOUND', message: 'Route not found' } }, 404);
   },
 
-  async handleLLMRequest(request: Request): Promise<Response> {
-    try {
-      const payload = await this.parseRequest(request);
-      if (!payload) {
-        return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid JSON payload' } }, 400);
-      }
-
-      if (payload.stream && payload.vendor === 'openai') {
-        try {
-          return await proxyOpenAIStream(payload);
-        } catch (error: any) {
-          return json(
-            {
-              ok: false,
-              error: {
-                code: error?.code ?? 'UPSTREAM_ERROR',
-                message: error?.message ?? 'Unknown error',
-                details: sanitizeError(error),
-              },
-            },
-            typeof error?.status === 'number' ? error.status : 500,
-          );
+    async handleLLMRequest(request: Request): Promise<Response> {
+      try {
+        const payload = await this.parseRequest(request);
+        if (!payload) {
+          return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid JSON payload' } }, 400);
         }
-      }
 
-      const result = await withRetries(() => callVendor(payload), 3);
-      return json(result);
-    } catch (error: any) {
-      return json(
-        {
-          ok: false,
-          error: {
-            code: error?.code ?? 'UPSTREAM_ERROR',
-            message: error?.message ?? 'Unknown error',
-            details: sanitizeError(error),
-          },
-        },
-        500,
-      );
-    }
-  },
+        if (payload.stream && payload.vendor === 'openai') {
+          try {
+            return await proxyOpenAIStream(payload);
+          } catch (error: unknown) {
+            const info = toErrorLike(error);
+            return json(
+              {
+                ok: false,
+                error: {
+                  code: info.code ?? 'UPSTREAM_ERROR',
+                  message: info.message ?? 'Unknown error',
+                  details: sanitizeError(error),
+                },
+              },
+              typeof info.status === 'number' ? info.status : 500,
+            );
+          }
+        }
 
-  async handleTestRequest(request: Request): Promise<Response> {
-    try {
-      const payload = await this.parseRequest(request);
-      if (!payload) {
-        return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid JSON payload' } }, 400);
-      }
-      const testPayload: UnifiedRequest = {
-        ...payload,
-        messages:
-          payload.messages && payload.messages.length > 0
-            ? payload.messages
-            : [
-                { role: 'system', content: 'You are a connectivity probe. Reply with the word "pong".' },
-                { role: 'user', content: 'ping' },
-              ],
-        temperature: payload.temperature ?? 0,
-        max_output_tokens: Math.min(payload.max_output_tokens ?? 32, 64),
-        stream: false,
-      };
-      const result = await withRetries(() => callVendor(testPayload), 2);
-      return json(result);
-    } catch (error: any) {
-      return json(
-        {
-          ok: false,
-          error: {
-            code: error?.code ?? 'UPSTREAM_ERROR',
-            message: error?.message ?? 'Unknown error',
-            details: sanitizeError(error),
+        const result = await withRetries(() => callVendor(payload), 3);
+        return json(result);
+      } catch (error: unknown) {
+        const info = toErrorLike(error);
+        return json(
+          {
+            ok: false,
+            error: {
+              code: info.code ?? 'UPSTREAM_ERROR',
+              message: info.message ?? 'Unknown error',
+              details: sanitizeError(error),
+            },
           },
-        },
-        500,
-      );
-    }
-  },
+          typeof info.status === 'number' ? info.status : 500,
+        );
+      }
+    },
+
+    async handleTestRequest(request: Request): Promise<Response> {
+      try {
+        const payload = await this.parseRequest(request);
+        if (!payload) {
+          return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid JSON payload' } }, 400);
+        }
+        const testPayload: UnifiedRequest = {
+          ...payload,
+          messages:
+            payload.messages && payload.messages.length > 0
+              ? payload.messages
+              : [
+                  { role: 'system', content: 'You are a connectivity probe. Reply with the word "pong".' },
+                  { role: 'user', content: 'ping' },
+                ],
+          temperature: payload.temperature ?? 0,
+          max_output_tokens: Math.min(payload.max_output_tokens ?? 32, 64),
+          stream: false,
+        };
+        const result = await withRetries(() => callVendor(testPayload), 2);
+        return json(result);
+      } catch (error: unknown) {
+        const info = toErrorLike(error);
+        return json(
+          {
+            ok: false,
+            error: {
+              code: info.code ?? 'UPSTREAM_ERROR',
+              message: info.message ?? 'Unknown error',
+              details: sanitizeError(error),
+            },
+          },
+          typeof info.status === 'number' ? info.status : 500,
+        );
+      }
+    },
 
   async parseRequest(request: Request): Promise<UnifiedRequest | null> {
     try {
@@ -346,7 +347,18 @@ function json(data: UnifiedResponse, status = 200): Response {
   });
 }
 
-async function safeJson(response: Response): Promise<any> {
+type ErrorLike = {
+  code?: string;
+  message?: string;
+  status?: number;
+  httpStatus?: number;
+  details?: unknown;
+};
+
+const toErrorLike = (error: unknown): ErrorLike =>
+  typeof error === 'object' && error !== null ? (error as ErrorLike) : {};
+
+async function safeJson(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
   try {
@@ -358,7 +370,7 @@ async function safeJson(response: Response): Promise<any> {
 
 async function withRetries<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let attempt = 0;
-  let lastError: any;
+  let lastError: unknown;
   while (attempt < maxRetries) {
     try {
       return await fn();
@@ -374,21 +386,25 @@ async function withRetries<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> 
   throw lastError;
 }
 
-const isFatalError = (error: any) => {
-  if (!error || typeof error !== 'object') return false;
-  const status = error.status ?? error.httpStatus;
-  return status >= 400 && status < 500 && status !== 429;
+const isFatalError = (error: unknown) => {
+  const info = toErrorLike(error);
+  const status = info.status ?? info.httpStatus;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
 };
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function normalizeError(vendor: string, status: number, body: any) {
+function normalizeError(vendor: string, status: number, body: unknown) {
+  const structuredBody =
+    typeof body === 'object' && body !== null
+      ? (body as { error?: { message?: string }; message?: string })
+      : undefined;
   const code = mapErrorCode(status);
   const message =
-    body?.error?.message ||
-    body?.message ||
+    structuredBody?.error?.message ||
+    structuredBody?.message ||
     `Upstream ${vendor} request failed with status ${status}`;
-  const error: any = new Error(message);
+  const error = new Error(message) as Error & ErrorLike;
   error.code = code;
   error.status = status;
   error.details = body;
@@ -404,8 +420,10 @@ function mapErrorCode(status: number): string {
   return 'INVALID_REQUEST';
 }
 
-function sanitizeError(error: any) {
-  if (!error || typeof error !== 'object') return undefined;
-  const { status, code, details } = error;
-  return { status, code, details };
+function sanitizeError(error: unknown) {
+  const info = toErrorLike(error);
+  if (!info.code && !info.status && info.details === undefined) {
+    return undefined;
+  }
+  return { status: info.status ?? info.httpStatus, code: info.code, details: info.details };
 }

@@ -81,12 +81,7 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
-  memory: {
-    summarizationEnabled: boolean;
-    minWindowPct: number;
-    maxWindowPct: number;
-    growthRate: number;
-  };
+  trustMatrix: number[][];
   visualization: {
     enableStanceChart: boolean;
   };
@@ -106,7 +101,6 @@ export interface RunState {
   agents: AgentSpec[];
   config: RunConfig;
   messages: Message[];
-  summary: string;
   visibleWindow: Message[];
   status: RunStatus;
   stopRequested: boolean;
@@ -115,7 +109,6 @@ export interface RunState {
 export interface SessionResult {
   messages: Message[];
   finishedAt: number;
-  summary: string;
   configSnapshot: RunConfig;
   status: RunStatus;
 }

@@ -46,9 +46,11 @@ export async function chatStream(
       },
       body: JSON.stringify(body),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     handlers?.onStatus?.('done');
-    throw new Error(error?.message ?? '无法连接到 LLM 服务');
+    const message =
+      error instanceof Error ? error.message : '无法连接到 LLM 服务';
+    throw new Error(message);
   }
 
   if (!response.ok) {

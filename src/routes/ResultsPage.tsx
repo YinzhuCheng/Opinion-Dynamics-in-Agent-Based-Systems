@@ -65,7 +65,6 @@ export function ResultsPage() {
                 已完成会话，结束时间：{new Date(result.finishedAt).toLocaleString()}。共计{' '}
                 {countVisibleMessages(result.messages)} 条有效消息。
               </p>
-              <p>摘要：{result.summary || '尚未生成摘要。'}</p>
               <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
               <div className="results-actions">
                 <button type="button" className="button primary" onClick={handleDownloadTranscript}>
@@ -91,16 +90,15 @@ export function ResultsPage() {
         </div>
       </section>
 
-      <section className="card">
-        <header className="card__header">
-          <h2>当前会话状态</h2>
-        </header>
-        <div className="card__body">
-          <p>当前消息数：{runState.messages.length}</p>
-          <p>长期摘要长度：{runState.summary.length} 字符</p>
-          <p>可见窗口：{runState.visibleWindow.length} 条消息</p>
-        </div>
-      </section>
+        <section className="card">
+          <header className="card__header">
+            <h2>当前会话状态</h2>
+          </header>
+          <div className="card__body">
+            <p>当前消息数：{runState.messages.length}</p>
+            <p>上一批可见消息：{runState.visibleWindow.length} 条（当前提供给各 Agent 的 DeGroot 窗口）</p>
+          </div>
+        </section>
 
       {stanceChartOption ? (
         <section className="card">
@@ -142,52 +140,52 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
     dataByAgent.get(message.agentId)!.data.push({ value: [index, message.stance.score], message });
   }
 
-  return {
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: any) => {
-        if (!Array.isArray(params) || params.length === 0) return '';
-        return params
-          .map((item) => {
-            const data = item.data as { value: [number, number]; message: Message };
-            const time = new Date(data.message.ts).toLocaleTimeString();
-            return [
-              `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
-              `<div>消息序号：${data.value[0]} ｜ 时间：${time}</div>`,
-              `<div>立场：${data.value[1].toFixed(2)}</div>`,
-              data.message.stance?.note ? `<div>说明：${data.message.stance.note}</div>` : '',
-              `<div>内容：${escapeHtml(data.message.content)}</div>`,
-            ]
-              .filter(Boolean)
-              .join('');
-          })
-          .join('<hr/>');
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          if (!Array.isArray(params) || params.length === 0) return '';
+          return params
+            .map((item) => {
+              const data = item.data as { value: [number, number]; message: Message };
+              const time = new Date(data.message.ts).toLocaleTimeString();
+              return [
+                `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
+                `<div>消息序号：${data.value[0]} ｜ 时间：${time}</div>`,
+                `<div>立场：${data.value[1].toFixed(2)}</div>`,
+                data.message.stance?.note ? `<div>说明：${data.message.stance.note}</div>` : '',
+                `<div>内容：${escapeHtml(data.message.content)}</div>`,
+              ]
+                .filter(Boolean)
+                .join('');
+            })
+            .join('<hr/>');
+        },
       },
-    },
-    grid: { left: 40, right: 24, top: 35, bottom: 40 },
-    xAxis: {
-      type: 'value',
-      name: '消息序号',
-      min: 1,
-    },
-    yAxis: {
-      type: 'value',
-      min: -1,
-      max: 1,
-      name: '立场强度',
-    },
-    series: Array.from(dataByAgent.values()).map((series) => ({
-      type: 'line',
-      name: series.name,
-      smooth: true,
-      data: series.data,
-      symbol: 'circle',
-      symbolSize: 8,
-      emphasis: {
-        focus: 'series',
+      grid: { left: 40, right: 24, top: 35, bottom: 40 },
+      xAxis: {
+        type: 'value',
+        name: '消息序号',
+        min: 1,
       },
-    })),
-  };
+      yAxis: {
+        type: 'value',
+        min: -1,
+        max: 1,
+        name: '立场强度',
+      },
+      series: Array.from(dataByAgent.values()).map((series) => ({
+        type: 'line',
+        name: series.name,
+        smooth: true,
+        data: series.data,
+        symbol: 'circle',
+        symbolSize: 8,
+        emphasis: {
+          focus: 'series',
+        },
+      })),
+    };
 };
 
 const buildTranscriptText = (result: SessionResult, agentNameMap: Record<string, string>): string => {
@@ -203,10 +201,6 @@ const buildTranscriptText = (result: SessionResult, agentNameMap: Record<string,
   lines.push(`情感分类：${result.configSnapshot.sentiment.enabled ? '启用' : '关闭'}`);
   const stanceEnabled = result.configSnapshot.visualization?.enableStanceChart ?? false;
   lines.push(`观点曲线：${stanceEnabled ? '启用' : '关闭'}`);
-  lines.push('');
-  lines.push('【摘要】');
-  lines.push(result.summary || '无摘要');
-  lines.push('');
   lines.push('【对话记录】');
   result.messages.forEach((message, idx) => {
     const agentName = agentNameMap[message.agentId] ?? message.agentId;
