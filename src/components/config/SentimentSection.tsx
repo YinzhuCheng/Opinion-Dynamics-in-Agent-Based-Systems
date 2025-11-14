@@ -12,7 +12,7 @@ type ConnectionTestState = {
 const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
   },
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
@@ -61,12 +61,12 @@ export function SentimentSection() {
     }
     setSentimentModelConfig((current?: ModelConfig) => {
       if (current) return current;
-      return {
-        vendor: 'openai',
-        model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
-        apiKey: vendorDefaults.openai.apiKey ?? '',
-        baseUrl: vendorDefaults.openai.baseUrl,
-      };
+        return {
+          vendor: 'openai',
+          model: vendorDefaults.openai.model ?? 'gpt-4o',
+          apiKey: vendorDefaults.openai.apiKey ?? '',
+          baseUrl: vendorDefaults.openai.baseUrl,
+        };
     });
   };
 

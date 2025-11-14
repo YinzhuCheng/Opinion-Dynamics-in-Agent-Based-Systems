@@ -3,23 +3,26 @@ import type { AgentSpec, DialogueMode, Message } from '../types';
 
 interface AgentPromptOptions {
   agent: AgentSpec;
-  summary: string;
-  visibleWindow: Message[];
   mode: DialogueMode;
   round: number;
   turn: number;
+  previousBatch: Message[];
+  agentNames: Record<string, string>;
+  trustWeights: Array<{ agentName: string; weight: number }>;
 }
 
 export const buildAgentSystemPrompt = ({
   agent,
-  summary,
   mode,
+  trustWeights,
 }: AgentPromptOptions): string => {
   const personaDescription = describePersona(agent.persona);
-  const summarySection = summary
-    ? `历史摘要（供参考，可在回答中引用要点）：
-${summary}`
-    : '历史摘要：暂无摘要或无需引用。';
+  const trustSection =
+    trustWeights.length > 0
+      ? `信任度矩阵（上一批次发言的参考权重，符合 DeGroot 聚合思路）：
+${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).join('\n')}
+权重越大代表越信任，回答时优先回应权重高的对象。`
+      : '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。';
 
   const skipInstruction =
     mode === 'free'
@@ -29,12 +32,12 @@ ${summary}`
   return [
     `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
     personaDescription,
-    summarySection,
+    trustSection,
     `核心职责：
 - 在轮到你发言时，根据角色视角提出观点、论据或对他人观点的回应。
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
 - 保持条理清晰、专业且尊重的表达方式。
-- 如需引用数据或假设，请明确指出来源或不确定性。`,
+- 如需引用数据或假设，请明确说明来源或不确定性。`,
     `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
@@ -45,19 +48,21 @@ ${summary}`
 
 export const buildAgentUserPrompt = ({
   agent,
-  visibleWindow,
   mode,
   round,
   turn,
-}: AgentPromptOptions & { visibleWindow: Message[] }): string => {
-  const dialogueTranscripts = visibleWindow.length
-    ? visibleWindow
+  previousBatch,
+  agentNames,
+}: AgentPromptOptions): string => {
+  const dialogueTranscripts = previousBatch.length
+    ? previousBatch
         .map((message) => {
           const content = message.content === '__SKIP__' ? '(跳过本轮)' : message.content;
-          return `${message.agentId}: ${content}`;
+          const speaker = agentNames[message.agentId] ?? message.agentId;
+          return `${speaker}: ${content}`;
         })
         .join('\n')
-    : '尚无对话历史，这可能是首轮发言。';
+    : '上一批次暂无对话，这可能是首轮发言。';
 
   const modeHint =
     mode === 'round_robin'
@@ -72,8 +77,8 @@ export const buildAgentUserPrompt = ({
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
-    `最近可见对话：\n${dialogueTranscripts}`,
-    '请基于以上内容给出你的回应（或跳过）。',
+    `上一批次对话（仅供参考）：\n${dialogueTranscripts}`,
+    '请仅基于上一批次讨论与信任度矩阵给出回应（或跳过），无需回顾更早轮次。',
   ].join('\n\n');
 };
 
@@ -95,15 +100,3 @@ export const buildStancePrompt = (): { system: string; user: string } => {
   };
 };
 
-export const buildSummarizationPrompt = (
-  existingSummary: string,
-  chunkTranscripts: string,
-): { system: string; user: string } => {
-  const system = `你是一名对话总结助手，请在保留关键信息的前提下，用简洁条列或段落更新对话摘要。若已有摘要，请合并新的对话要点。输出应为简洁的中文段落或项目符号列表。`;
-  const user = [
-    existingSummary ? `【现有摘要】：\n${existingSummary}` : '【现有摘要】：暂无',
-    `【新增对话】：\n${chunkTranscripts}`,
-    '请更新完整摘要。',
-  ].join('\n\n');
-  return { system, user };
-};

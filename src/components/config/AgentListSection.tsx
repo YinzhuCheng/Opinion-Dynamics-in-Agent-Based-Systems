@@ -27,7 +27,7 @@ type ConnectionTestState = {
 const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
   },
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
@@ -61,35 +61,33 @@ export function AgentListSection() {
   const addAgent = useAppStore((state) => state.addAgent);
   const updateAgent = useAppStore((state) => state.updateAgent);
   const removeAgent = useAppStore((state) => state.removeAgent);
-  const memory = useAppStore((state) => state.runState.config.memory);
-  const updateMemoryConfig = useAppStore((state) => state.updateMemoryConfig);
 
-  useEffect(() => {
-    if (!runConfig.useGlobalModelConfig) {
-      const fallback: ModelConfig =
-        runConfig.globalModelConfig ??
-        ({
-          vendor: 'openai',
-          baseUrl: vendorDefaults.openai.baseUrl ?? '',
-          apiKey: vendorDefaults.openai.apiKey ?? '',
-          model: vendorDefaults.openai.model ?? 'gpt-4.1-mini',
-          temperature: 0.7,
-          top_p: 0.95,
-          max_output_tokens: 2048,
-        } satisfies ModelConfig);
-      agents.forEach((agent) => {
-        if (!agent.modelConfig) {
-          updateAgent(agent.id, { modelConfig: { ...fallback } });
-        }
-      });
-    }
-  }, [
-    agents,
-    runConfig.useGlobalModelConfig,
-    runConfig.globalModelConfig,
-    updateAgent,
-    vendorDefaults,
-  ]);
+    useEffect(() => {
+      if (!runConfig.useGlobalModelConfig) {
+        const fallback: ModelConfig =
+          runConfig.globalModelConfig ??
+          ({
+            vendor: 'openai',
+            baseUrl: vendorDefaults.openai.baseUrl ?? '',
+            apiKey: vendorDefaults.openai.apiKey ?? '',
+            model: vendorDefaults.openai.model ?? 'gpt-4o',
+            temperature: 0.7,
+            top_p: 0.95,
+            max_output_tokens: 2048,
+          } satisfies ModelConfig);
+        agents.forEach((agent) => {
+          if (!agent.modelConfig) {
+            updateAgent(agent.id, { modelConfig: { ...fallback } });
+          }
+        });
+      }
+    }, [
+      agents,
+      runConfig.useGlobalModelConfig,
+      runConfig.globalModelConfig,
+      updateAgent,
+      vendorDefaults,
+    ]);
 
   const handlePersonaTypeChange =
     (agent: AgentSpec) => (event: ChangeEvent<HTMLSelectElement>) => {
@@ -187,59 +185,90 @@ export function AgentListSection() {
               <AgentModelConfigEditor agent={agent} onChange={updateAgent} vendorDefaults={vendorDefaults} />
             )}
           </div>
-        ))}
-        <div className="agent-memory-block">
-          <h4>记忆窗口管理（动态）</h4>
-          <p className="form-hint">
-            前几轮仅保留少量上下文，随着讨论深入逐步扩大可见窗口，其余内容会被摘要保存在长期记忆中。
-          </p>
-          <div className="grid three-columns memory-grid">
-            <label className="form-field">
-              <span>初始可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.minWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ minWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">对话开场时用于保留的新消息比例，建议 10–30。</p>
-            </label>
-            <label className="form-field">
-              <span>最大可见窗口（%）</span>
-              <input
-                type="number"
-                min={5}
-                max={90}
-                value={memory.maxWindowPct}
-                onChange={(event) =>
-                  updateMemoryConfig({ maxWindowPct: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">讨论后期可使用的最大比例，建议不超过 70。</p>
-            </label>
-            <label className="form-field">
-              <span>增长速率</span>
-              <input
-                type="number"
-                min={0.2}
-                max={5}
-                step={0.1}
-                value={memory.growthRate}
-                onChange={(event) =>
-                  updateMemoryConfig({ growthRate: Number(event.target.value) })
-                }
-              />
-              <p className="form-hint">数值越大，窗口扩张越快；0.5 慢速，2.0 较激进。</p>
-            </label>
-          </div>
-        </div>
+          ))}
+        <TrustMatrixEditor />
       </div>
     </section>
   );
 }
+
+const TrustMatrixEditor = () => {
+  const agents = useAppStore((state) => state.runState.agents);
+  const trustMatrix = useAppStore((state) => state.runState.config.trustMatrix);
+  const setTrustValue = useAppStore((state) => state.setTrustValue);
+  const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
+
+  if (agents.length === 0) {
+    return null;
+  }
+
+  const exampleSource = agents[0]?.name ?? 'A1';
+  const exampleTarget = agents[1]?.name ?? agents[0]?.name ?? 'A1';
+  const exampleText =
+    agents.length > 1
+      ? `例如：若 ${exampleSource} 对 ${exampleTarget} 的信任度填入 0.7，表示在整合上一轮观点时会以 70% 权重参考 ${exampleTarget} 的发言。`
+      : '当前仅有 1 名 Agent，系统会默认将自身观点的权重设为 1。';
+
+  const handleCellChange =
+    (sourceId: string, targetId: string) => (event: ChangeEvent<HTMLInputElement>) => {
+      const raw = event.target.value;
+      const numeric = raw === '' ? 0 : Number(raw);
+      setTrustValue(sourceId, targetId, Number.isNaN(numeric) ? 0 : numeric);
+    };
+
+  return (
+    <div className="trust-matrix-block">
+      <h4>信任度矩阵（DeGroot）</h4>
+      <p className="form-hint">
+        {exampleText}
+        <br />
+        每一行代表“该 Agent 聚合上一轮观点时如何加权他人”，数值范围建议 0–1，可点击“归一化”让该行加总为 1。
+      </p>
+      <div className="trust-matrix-table-wrapper">
+        <table className="trust-matrix-table">
+          <thead>
+            <tr>
+              <th scope="col">来源 \\ 目标</th>
+              {agents.map((agent) => (
+                <th scope="col" key={`trust-target-${agent.id}`}>
+                  {agent.name}
+                </th>
+              ))}
+              <th scope="col">行操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {agents.map((source) => (
+              <tr key={`trust-row-${source.id}`}>
+                <th scope="row">{source.name}</th>
+                {agents.map((target) => {
+                  const value = trustMatrix[source.id]?.[target.id] ?? (source.id === target.id ? 1 : 0);
+                  return (
+                    <td key={`trust-cell-${source.id}-${target.id}`}>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={value}
+                        onChange={handleCellChange(source.id, target.id)}
+                      />
+                    </td>
+                  );
+                })}
+                <td>
+                  <button type="button" className="button ghost" onClick={() => normalizeTrustRow(source.id)}>
+                    归一化
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 
 const PersonaEditor = ({ agent }: { agent: AgentSpec }) => {
   if (agent.persona.type === 'big5') {

@@ -81,16 +81,13 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   sentiment: SentimentSetting;
-  memory: {
-    summarizationEnabled: boolean;
-    minWindowPct: number;
-    maxWindowPct: number;
-    growthRate: number;
-  };
+  trustMatrix: TrustMatrix;
   visualization: {
     enableStanceChart: boolean;
   };
 }
+
+export type TrustMatrix = Record<string, Record<string, number>>;
 
 export interface Message {
   id: string;
@@ -98,6 +95,8 @@ export interface Message {
   role: 'assistant';
   content: string;
   ts: number;
+  round: number;
+  turn: number;
   sentiment?: { label: string; confidence?: number };
   stance?: { score: number; note?: string };
 }
