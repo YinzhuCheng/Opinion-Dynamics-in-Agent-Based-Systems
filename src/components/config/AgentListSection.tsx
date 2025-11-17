@@ -290,8 +290,8 @@ const TrustMatrixEditor = () => {
               />
             </label>
             <p className="form-hint">
-              数学：W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵，保证行和=1）。心理：α 越大代表 Agent
-              越坚持自我，随机人际信任占比越低；α 越小则表示更容易受他人影响。
+              数学：取值 α ∈ [0, 1]，计算公式 W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵，保证每行权重之和为 1）。
+              心理：α 越接近 1，Agent 越坚持自我观点；α 越接近 0，Agent 越容易被随机人际信任所影响。
             </p>
           </div>
           <div className="trust-matrix-buttons">

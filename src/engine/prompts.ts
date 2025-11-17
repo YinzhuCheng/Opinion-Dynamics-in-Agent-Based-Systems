@@ -46,7 +46,7 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
   const stanceLine = `当前仅讨论一组对立立场：
 - 正向：${positiveDesc}
 - 负向：${negativeDesc}`;
-  const ratingLine = `正文末尾必须紧跟“（情感：X）”，X 属于 [-${maxLevel}, +${maxLevel}] 的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。不得另起一句解释评分。`;
+  const ratingLine = `正文末尾必须紧跟“（立场：X）”，X 属于 [-${maxLevel}, +${maxLevel}] 的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。不得另起一句解释评分。`;
   const coverageHint = `刻度示例：${scaleValues.join(' / ')}。负值对应“${negativeDesc}”，正值对应“${positiveDesc}”。多轮对话中请主动探索不同强度，而不是永远停在单一取值。`;
   const continuityGuidelines = `对话策略：
 - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
@@ -60,13 +60,13 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
   const psychologyGuidelines = `心理模型机制：
 - 将上一批次所有 Agent 的观点综合成“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由），并关联自身固有立场。
 - 你的发言需由“上一轮心理沉淀 + 上一位发言者的触发点”共同驱动。
-- 输出顺序：正文 → （情感：X） → [[PSY]]隐含块。隐含块必须写成 2~3 句，依次交代：你的固有立场/上一轮心理余韵、上一位发言者带来的刺激、上一轮各 Agent 气氛对你的影响。不要在正文里提到“心理模型”或方括号。
+- 输出顺序：正文 → （立场：X） → [[PSY]]隐含块。隐含块必须写成 2~3 句，依次交代：你的固有立场/上一轮心理余韵、上一位发言者带来的刺激、上一轮各 Agent 气氛对你的影响。不要在正文里提到“心理模型”或方括号。
 - [[PSY]] 仅供系统记录，正文不可泄露这些元信息。`;
   const naturalGuidelines = [
     '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
     '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
     '避免模板化句式或编号，拆成两三句短句更自然。',
-    '不要在输出里提到“信任度矩阵”“情感评分”等内部术语。',
+    '不要在输出里提到“信任度矩阵”“立场评分”等内部术语。',
   ].join('\n- ');
 
   const skipInstruction =
@@ -148,13 +148,13 @@ export const buildAgentUserPrompt = ({
   const positiveDesc = ensurePositiveViewpoint(positiveViewpoint);
   const negativeDesc = ensureNegativeViewpoint(negativeViewpoint);
   const viewpointHint = `仅需在这两种立场之间展开拉扯：正向 = ${positiveDesc} ｜ 负向 = ${negativeDesc}。`;
-  const ratingHint = `回答末尾必须添加“（情感：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
+  const ratingHint = `回答末尾必须添加“（立场：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
   const followHint =
     '优先承接上一位发言者的情绪或论点继续推进，只有在能自然衔接时才开启新的话题。上一批次的内容更多是潜在影响，正文里不要频繁提“上一轮”。';
   const styleHint =
     '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
   const psychologyHint =
-    '输出格式：正文 + （情感：X） + [[PSY]]隐含块。隐含块需至少 2~3 句话，依次说明你的固有立场/上一轮心理余韵、上一位发言者带来的触发点、上一轮群体氛围对你的影响；正文里不要解释这些。';
+    '输出格式：正文 + （立场：X） + [[PSY]]隐含块。隐含块需至少 2~3 句话，依次说明你的固有立场/上一轮心理余韵、上一位发言者带来的触发点、上一轮群体氛围对你的影响；正文里不要解释这些。';
 
   return [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,

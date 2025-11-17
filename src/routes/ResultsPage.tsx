@@ -10,11 +10,13 @@ import {
   ensurePositiveViewpoint,
 } from '../constants/discussion';
 
+type ReactEChartsInstance = InstanceType<typeof ReactECharts>;
+
 export function ResultsPage() {
   const result = useAppStore((state) => state.currentResult);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
-  const chartRef = useRef<ReactECharts | null>(null);
+  const chartRef = useRef<ReactEChartsInstance | null>(null);
     const discussionSnapshot = result?.configSnapshot.discussion;
     const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
     const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
@@ -43,9 +45,15 @@ export function ResultsPage() {
   };
 
   const handleExportChart = (type: 'png' | 'svg') => {
-    if (!stanceChartOption) return;
+    if (!stanceChartOption) {
+      window.alert('暂无可导出的立场曲线。');
+      return;
+    }
     const instance = chartRef.current?.getEchartsInstance();
-    if (!instance) return;
+    if (!instance) {
+      window.alert('图表尚未渲染完成，请稍后再试。');
+      return;
+    }
     const dataUrl = instance.getDataURL({
       type,
       pixelRatio: type === 'png' ? 2 : 1,
@@ -122,16 +130,23 @@ export function ResultsPage() {
         </div>
       </section>
 
-      {stanceChartOption ? (
         <section className="card">
           <header className="card__header">
             <h2>观点演化曲线</h2>
           </header>
           <div className="card__body">
-            <ReactECharts ref={chartRef} option={stanceChartOption} notMerge={true} style={{ height: 360 }} />
+            {stanceChartOption ? (
+              <>
+                <ReactECharts ref={chartRef} option={stanceChartOption} notMerge={true} style={{ height: 360 }} />
+                <p className="form-hint">提示：点击上方图例可单独查看某位 Agent 的立场轨迹，导出 PNG 将保留当前显示状态。</p>
+              </>
+            ) : (
+              <div className="empty-state">
+                <p>暂无可绘制的立场分数。完成至少一条包含“（立场：X）”的发言后即可生成曲线。</p>
+              </div>
+            )}
           </div>
         </section>
-      ) : null}
     </div>
   );
 }
@@ -239,10 +254,10 @@ const buildTranscriptText = (
   const discussion = result.configSnapshot.discussion;
   const positiveView = ensurePositiveViewpoint(discussion?.positiveViewpoint);
   const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-  lines.push(`正观点：${positiveView}`);
-  lines.push(`负观点：${negativeView}`);
+    lines.push(`正观点：${positiveView}`);
+    lines.push(`负观点：${negativeView}`);
     if (discussion) {
-      lines.push(`立场/情感刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
+      lines.push(`立场刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
     }
   lines.push('');
   lines.push('【摘要】');

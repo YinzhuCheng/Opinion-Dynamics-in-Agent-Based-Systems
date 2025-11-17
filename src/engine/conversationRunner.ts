@@ -388,7 +388,7 @@ class ConversationRunner {
       discussion: RunConfig['discussion'],
     ): { content: string; stance?: { score: number; note?: string } } {
       const trimmed = content.trim();
-      const ratingRegex = /(?:\(|（)\s*情感[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
+        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
       const match = trimmed.match(ratingRegex);
       if (!match) {
         return { content: trimmed };
