@@ -30,10 +30,10 @@ export function DialoguePage() {
   };
   const isRunning = status.phase === 'running';
   const isPaused = status.phase === 'paused';
-  const startLabel = isRunning || isPaused ? '重启对话' : '开始对话';
+  const hasHistory = messages.length > 0 || status.phase !== 'idle';
+  const startLabel = hasHistory ? '重启对话' : '开始对话';
   const stopButtonDisabled = !isRunning && !isPaused;
   const stopButtonLabel = isPaused ? '继续对话' : '停止';
-  const hasHistory = messages.length > 0;
   const canRefresh = hasHistory && status.phase === 'error';
   const refreshButtonText = isRefreshing ? '刷新中…' : '刷新';
 
