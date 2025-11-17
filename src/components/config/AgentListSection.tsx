@@ -226,6 +226,8 @@ const TrustMatrixEditor = () => {
   const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
   const trustRandomAlpha = useAppStore((state) => state.runState.config.trustRandomAlpha);
   const setTrustRandomAlpha = useAppStore((state) => state.setTrustRandomAlpha);
+  const lastRandomMatrix = useAppStore((state) => state.runState.lastRandomMatrix);
+  const [matrixFolded, setMatrixFolded] = useState({ W: false, R: true });
 
   if (agents.length === 0) {
     return null;
@@ -251,6 +253,13 @@ const TrustMatrixEditor = () => {
   };
 
 
+  const handleSummaryToggle =
+    (key: 'W' | 'R') => (event: React.MouseEvent<HTMLElement>) => {
+      if ((event.target as HTMLElement).tagName === 'SUMMARY') {
+        event.preventDefault();
+        setMatrixFolded((prev) => ({ ...prev, [key]: !prev[key] }));
+      }
+    };
   return (
     <div className="trust-matrix-block">
       <h4>信任度矩阵（DeGroot）</h4>
@@ -301,33 +310,42 @@ const TrustMatrixEditor = () => {
           </tbody>
         </table>
       </div>
-        <div className="trust-matrix-actions">
-          <div className="trust-alpha-control">
-            <label className="form-field">
-              <span>随机自信系数 α</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={trustRandomAlpha}
-                onChange={handleAlphaChange}
-              />
-            </label>
-            <p className="form-hint">
-              数学：取值 α ∈ [0, 1]，计算公式 W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵，保证每行权重之和为 1）。
-              心理：α 越接近 1，Agent 越坚持自我观点；α 越接近 0，Agent 越容易被随机人际信任所影响。
-            </p>
-          </div>
-          <div className="trust-matrix-buttons">
-            <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
-              随机初始化
-            </button>
-            <button type="button" className="button ghost" onClick={uniformTrustMatrix}>
-              均匀初始化
-            </button>
-          </div>
+      <div className="trust-matrix-actions">
+        <div className="trust-alpha-control">
+          <label className="form-field">
+            <span>自信系数 α</span>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={trustRandomAlpha}
+              onChange={handleAlphaChange}
+            />
+          </label>
+          <p className="form-hint">
+            数学：取值 α ∈ [0, 1]，计算公式 W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵）。心理：α 越接近 1 表示越信任自己，α 越低表示越容易受他人影响。
+          </p>
         </div>
+        <div className="trust-matrix-buttons">
+          <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
+            随机初始化
+          </button>
+          <button type="button" className="button ghost" onClick={uniformTrustMatrix}>
+            均匀初始化
+          </button>
+        </div>
+      </div>
+      <details className="trust-matrix-preview" open={!matrixFolded.W} onClick={handleSummaryToggle('W')}>
+        <summary>W：最终信任矩阵（当前使用）</summary>
+        <pre>{JSON.stringify(trustMatrix, null, 2)}</pre>
+      </details>
+      {lastRandomMatrix ? (
+        <details className="trust-matrix-preview" open={!matrixFolded.R} onClick={handleSummaryToggle('R')}>
+          <summary>R：随机矩阵（归一化后）</summary>
+          <pre>{JSON.stringify(lastRandomMatrix, null, 2)}</pre>
+        </details>
+      ) : null}
     </div>
   );
 };

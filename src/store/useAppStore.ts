@@ -144,6 +144,7 @@ const createEmptyRunState = (): RunState => {
     visibleWindow: [],
     status: createInitialStatus(),
     stopRequested: false,
+    lastRandomMatrix: undefined,
   };
 };
 
@@ -213,7 +214,8 @@ export interface AppStore {
   setStanceScaleSize: (size: number) => void;
   setPositiveViewpoint: (text: string) => void;
   setNegativeViewpoint: (text: string) => void;
-  randomizeTrustMatrix: () => void;
+    randomizeTrustMatrix: () => void;
+    lastRandomMatrix?: TrustMatrix;
   uniformTrustMatrix: () => void;
   setTrustRandomAlpha: (value: number) => void;
     configureAgentGroup: (distribution: Record<number, number>) => void;
@@ -446,31 +448,33 @@ export const useAppStore = create<AppStore>((set) => ({
           state.runState.config.discussion.negativeViewpoint = text;
         }),
       ),
-      randomizeTrustMatrix: () =>
-        set(
-          produce((state: AppStore) => {
-            const agentIds = state.runState.agents.map((agent) => agent.id);
-            const nextMatrix: TrustMatrix = {};
-          const alphaRaw = state.runState.config.trustRandomAlpha;
-          const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
-            agentIds.forEach((sourceId) => {
-              const rawRow: Record<string, number> = {};
-              agentIds.forEach((targetId) => {
+        randomizeTrustMatrix: () =>
+          set(
+            produce((state: AppStore) => {
+              const agentIds = state.runState.agents.map((agent) => agent.id);
+              const randomMatrix: TrustMatrix = {};
+              const finalMatrix: TrustMatrix = {};
+              const alphaRaw = state.runState.config.trustRandomAlpha;
+              const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
+              agentIds.forEach((sourceId) => {
+                const rawRow: Record<string, number> = {};
+                agentIds.forEach((targetId) => {
                   rawRow[targetId] = Math.random() + 0.01;
-              });
+                });
                 const normalizedRow = normalizeTrustRowValues(rawRow);
+                randomMatrix[sourceId] = normalizedRow;
                 const finalRow: Record<string, number> = {};
                 agentIds.forEach((targetId) => {
                   const identity = sourceId === targetId ? 1 : 0;
                   const randomWeight = normalizedRow[targetId] ?? 0;
-                  finalRow[targetId] =
-                    (1 - alpha) * randomWeight + alpha * identity;
+                  finalRow[targetId] = Number(((1 - alpha) * randomWeight + alpha * identity).toFixed(3));
                 });
-                nextMatrix[sourceId] = finalRow;
-            });
-            state.runState.config.trustMatrix = nextMatrix;
-          }),
-        ),
+                finalMatrix[sourceId] = finalRow;
+              });
+              state.runState.lastRandomMatrix = randomMatrix;
+              state.runState.config.trustMatrix = finalMatrix;
+            }),
+          ),
       uniformTrustMatrix: () =>
         set(
           produce((state: AppStore) => {

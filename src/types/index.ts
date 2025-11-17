@@ -106,6 +106,7 @@ export interface RunState {
   visibleWindow: Message[];
   status: RunStatus;
   stopRequested: boolean;
+  lastRandomMatrix?: TrustMatrix;
 }
 
 export interface SessionResult {
