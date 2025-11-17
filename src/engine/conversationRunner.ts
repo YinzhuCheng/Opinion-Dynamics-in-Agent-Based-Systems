@@ -462,6 +462,7 @@ class ConversationRunner {
         )) || '';
     } catch (error: any) {
       if (this.isAbortError(error)) {
+        this.inflightControllers.delete(controller);
         return undefined;
       }
       throw error;
