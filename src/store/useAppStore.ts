@@ -5,7 +5,7 @@ import type {
   AgentSpec,
   Message,
   ModelConfig,
-  Persona,
+  PersonaFree,
   RunConfig,
   RunState,
     SessionResult,
@@ -14,6 +14,10 @@ import type {
   RunStatus,
   TrustMatrix,
 } from '../types';
+import {
+  DEFAULT_NEGATIVE_VIEWPOINT,
+  DEFAULT_POSITIVE_VIEWPOINT,
+} from '../constants/discussion';
 
 const defaultModelConfig: ModelConfig = {
   vendor: 'openai',
@@ -22,24 +26,23 @@ const defaultModelConfig: ModelConfig = {
   model: 'gpt-4o',
 };
 
-const defaultPersona: Persona = {
+const createFreePersona = (): PersonaFree => ({
   type: 'free',
-  description: 'A neutral analyst focused on balanced arguments.',
-};
+  description: '',
+});
+
+const buildAgent = (index: number, overrides?: Partial<AgentSpec>): AgentSpec => ({
+  id: nanoid(),
+  name: `A${index + 1}`,
+  persona: overrides?.persona ?? createFreePersona(),
+  initialOpinion: overrides?.initialOpinion ?? '',
+  initialStance: overrides?.initialStance,
+  modelConfig: overrides?.modelConfig,
+});
 
 const createDefaultAgents = (): AgentSpec[] => [
-  {
-    id: nanoid(),
-    name: 'A1',
-    persona: { ...defaultPersona },
-    initialOpinion: '',
-  },
-  {
-    id: nanoid(),
-    name: 'A2',
-    persona: { ...defaultPersona, description: 'A challenger who questions assumptions.' },
-    initialOpinion: '',
-  },
+  buildAgent(0),
+  buildAgent(1),
 ];
 
 const clampTrustValue = (value: number): number => {
@@ -113,7 +116,7 @@ const sanitizeStanceScaleSize = (value: number | undefined): number => {
 };
 
 const createDefaultRunConfig = (): RunConfig => ({
-  mode: 'round_robin',
+  mode: 'random',
   maxRounds: 4,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
@@ -121,11 +124,11 @@ const createDefaultRunConfig = (): RunConfig => ({
     enableStanceChart: true,
   },
   trustMatrix: {},
+  trustRandomAlpha: 0.8,
   discussion: {
-    topic: '',
     stanceScaleSize: 3,
-    positiveDefinition: '',
-    negativeDefinition: '',
+    positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
+    negativeViewpoint: DEFAULT_NEGATIVE_VIEWPOINT,
   },
 });
 
@@ -141,10 +144,11 @@ const createEmptyRunState = (): RunState => {
     visibleWindow: [],
     status: createInitialStatus(),
     stopRequested: false,
+    lastRandomMatrix: undefined,
   };
 };
 
-const createInitialStatus = (mode: DialogueMode = 'round_robin'): RunStatus => ({
+const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
   phase: 'idle',
   mode,
   currentRound: 0,
@@ -207,12 +211,14 @@ export interface AppStore {
   ) => void;
   setTrustValue: (sourceId: string, targetId: string, value: number) => void;
   normalizeTrustRow: (sourceId: string) => void;
-  setDiscussionTopic: (topic: string) => void;
   setStanceScaleSize: (size: number) => void;
-    setPositiveDefinition: (text: string) => void;
-    setNegativeDefinition: (text: string) => void;
+  setPositiveViewpoint: (text: string) => void;
+  setNegativeViewpoint: (text: string) => void;
     randomizeTrustMatrix: () => void;
-    uniformTrustMatrix: () => void;
+    lastRandomMatrix?: TrustMatrix;
+  uniformTrustMatrix: () => void;
+  setTrustRandomAlpha: (value: number) => void;
+    configureAgentGroup: (distribution: Record<number, number>) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -242,23 +248,17 @@ export const useAppStore = create<AppStore>((set) => ({
           );
         }),
       ),
-    addAgent: (agent) =>
-      set(
-        produce((state: AppStore) => {
-          const nextIndex = state.runState.agents.length + 1;
-          state.runState.agents.push({
-            id: nanoid(),
-            name: `A${nextIndex}`,
-            persona: { ...defaultPersona },
-            initialOpinion: '',
-            ...agent,
-          });
-          state.runState.config.trustMatrix = ensureTrustMatrix(
-            state.runState.agents,
-            state.runState.config.trustMatrix,
-          );
-        }),
-      ),
+      addAgent: (agent) =>
+        set(
+          produce((state: AppStore) => {
+            const nextIndex = state.runState.agents.length;
+            state.runState.agents.push(buildAgent(nextIndex, agent));
+            state.runState.config.trustMatrix = ensureTrustMatrix(
+              state.runState.agents,
+              state.runState.config.trustMatrix,
+            );
+          }),
+        ),
   updateAgent: (agentId, updater) =>
     set(
       produce((state: AppStore) => {
@@ -272,14 +272,9 @@ export const useAppStore = create<AppStore>((set) => ({
       set(
         produce((state: AppStore) => {
           state.runState.agents = state.runState.agents.filter((a) => a.id !== agentId);
-          if (state.runState.agents.length === 0) {
-            state.runState.agents.push({
-              id: nanoid(),
-              name: 'A1',
-              persona: { ...defaultPersona },
-              initialOpinion: '',
-            });
-          }
+            if (state.runState.agents.length === 0) {
+              state.runState.agents.push(buildAgent(0));
+            }
           state.runState.config.trustMatrix = ensureTrustMatrix(
             state.runState.agents,
             state.runState.config.trustMatrix,
@@ -367,19 +362,16 @@ export const useAppStore = create<AppStore>((set) => ({
           }
         }),
       ),
-  setRunMode: (mode) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.config.mode = mode;
-        state.runState.status.mode = mode;
-        if (mode === 'round_robin' && !state.runState.config.maxRounds) {
-          state.runState.config.maxRounds = 4;
-        }
-        if (mode === 'free' && !state.runState.config.maxMessages) {
-          state.runState.config.maxMessages = 12;
-        }
-      }),
-    ),
+    setRunMode: (mode) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.mode = mode;
+          state.runState.status.mode = mode;
+          if (!state.runState.config.maxRounds) {
+            state.runState.config.maxRounds = 4;
+          }
+        }),
+      ),
   setMaxRounds: (value) =>
     set(
       produce((state: AppStore) => {
@@ -438,45 +430,51 @@ export const useAppStore = create<AppStore>((set) => ({
           state.runState.config.trustMatrix[sourceId] = normalizeTrustRowValues(row);
         }),
       ),
-    setDiscussionTopic: (topic) =>
-      set(
-        produce((state: AppStore) => {
-          state.runState.config.discussion.topic = topic;
-        }),
-      ),
-    setStanceScaleSize: (size) =>
-      set(
-        produce((state: AppStore) => {
-          state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
-        }),
-      ),
-      setPositiveDefinition: (text) =>
+      setStanceScaleSize: (size) =>
         set(
           produce((state: AppStore) => {
-            state.runState.config.discussion.positiveDefinition = text;
+            state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
           }),
         ),
-      setNegativeDefinition: (text) =>
-        set(
-          produce((state: AppStore) => {
-            state.runState.config.discussion.negativeDefinition = text;
-          }),
-        ),
-      randomizeTrustMatrix: () =>
-        set(
-          produce((state: AppStore) => {
-            const agentIds = state.runState.agents.map((agent) => agent.id);
-            const nextMatrix: TrustMatrix = {};
-            agentIds.forEach((sourceId) => {
-              const rawRow: Record<string, number> = {};
-              agentIds.forEach((targetId) => {
-                rawRow[targetId] = Math.random() + 0.01;
+    setPositiveViewpoint: (text) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.positiveViewpoint = text;
+        }),
+      ),
+    setNegativeViewpoint: (text) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.negativeViewpoint = text;
+        }),
+      ),
+        randomizeTrustMatrix: () =>
+          set(
+            produce((state: AppStore) => {
+              const agentIds = state.runState.agents.map((agent) => agent.id);
+              const randomMatrix: TrustMatrix = {};
+              const finalMatrix: TrustMatrix = {};
+              const alphaRaw = state.runState.config.trustRandomAlpha;
+              const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
+              agentIds.forEach((sourceId) => {
+                const rawRow: Record<string, number> = {};
+                agentIds.forEach((targetId) => {
+                  rawRow[targetId] = Math.random() + 0.01;
+                });
+                const normalizedRow = normalizeTrustRowValues(rawRow);
+                randomMatrix[sourceId] = normalizedRow;
+                const finalRow: Record<string, number> = {};
+                agentIds.forEach((targetId) => {
+                  const identity = sourceId === targetId ? 1 : 0;
+                  const randomWeight = normalizedRow[targetId] ?? 0;
+                  finalRow[targetId] = Number(((1 - alpha) * randomWeight + alpha * identity).toFixed(3));
+                });
+                finalMatrix[sourceId] = finalRow;
               });
-              nextMatrix[sourceId] = normalizeTrustRowValues(rawRow);
-            });
-            state.runState.config.trustMatrix = nextMatrix;
-          }),
-        ),
+              state.runState.lastRandomMatrix = randomMatrix;
+              state.runState.config.trustMatrix = finalMatrix;
+            }),
+          ),
       uniformTrustMatrix: () =>
         set(
           produce((state: AppStore) => {
@@ -492,6 +490,47 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.config.trustMatrix = nextMatrix;
           }),
         ),
+    setTrustRandomAlpha: (value) =>
+      set(
+        produce((state: AppStore) => {
+          const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.8));
+          state.runState.config.trustRandomAlpha = Number(clamped.toFixed(2));
+        }),
+      ),
+    configureAgentGroup: (distribution) =>
+      set(
+        produce((state: AppStore) => {
+          const normalizedSize = sanitizeStanceScaleSize(state.runState.config.discussion.stanceScaleSize);
+          const maxLevel = Math.floor(Math.max(3, normalizedSize) / 2);
+          const entries = Object.entries(distribution ?? {});
+          const agents: AgentSpec[] = [];
+          entries.forEach(([label, rawCount]) => {
+            const numericLabel = Number(label);
+            if (!Number.isFinite(numericLabel)) return;
+            const clampedLabel = Math.max(-maxLevel, Math.min(maxLevel, Math.round(numericLabel)));
+            const count = Math.max(0, Math.min(50, Math.floor(Number(rawCount) || 0)));
+            for (let i = 0; i < count; i += 1) {
+              agents.push(
+                buildAgent(agents.length, {
+                  initialStance: clampedLabel,
+                }),
+              );
+            }
+          });
+          if (agents.length === 0) {
+            agents.push(
+              buildAgent(0, {
+                initialStance: 0,
+              }),
+            );
+          }
+          state.runState.agents = agents;
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
+        }),
+      ),
   setRunStatus: (updater) =>
     set(
       produce((state: AppStore) => {

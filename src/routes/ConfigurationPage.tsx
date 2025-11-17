@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { RunSettingsSection } from '../components/config/RunSettingsSection';
+import { GroupSettingsSection } from '../components/config/GroupSettingsSection';
 import { AgentListSection } from '../components/config/AgentListSection';
-import { SentimentSection } from '../components/config/SentimentSection';
 import { useAppStore } from '../store/useAppStore';
 
 export function ConfigurationPage() {
@@ -12,15 +12,15 @@ export function ConfigurationPage() {
   return (
     <div className="page page--configuration">
       <RunSettingsSection />
+      <GroupSettingsSection />
       <AgentListSection />
-      <SentimentSection />
 
       <section className="card">
         <header className="card__header">
           <div>
             <h2>准备就绪</h2>
             <p className="card__subtitle">
-              当前配置：{runConfig.mode === 'round_robin' ? '轮询模式' : '自由模式'}，Agent 数量 {agents.length} 个。
+              当前配置：{runConfig.mode === 'sequential' ? '依次发言' : '随机顺序发言'}，Agent 数量 {agents.length} 个。
             </p>
           </div>
           <div className="card__actions">

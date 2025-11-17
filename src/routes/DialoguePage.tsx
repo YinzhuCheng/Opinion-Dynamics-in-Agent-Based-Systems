@@ -93,32 +93,44 @@ export function DialoguePage() {
             <div className="empty-state">
               <p>当前尚未有对话记录。配置完成后点击“开始对话”即可查看进展。</p>
             </div>
-          ) : (
-            <ul className="message-timeline">
-              {visibleMessages.map((message) => {
-                const agentName = agentNameMap[message.agentId] ?? message.agentId;
-                return (
-                  <li key={message.id} className="message-timeline__item">
-                    <header>
-                      <span className="badge">{agentName}</span>
-                      <span className="timestamp">{new Date(message.ts).toLocaleTimeString()}</span>
-                    </header>
-                    <p className="message-content">{message.content}</p>
-                    {message.stance && (
-                      <div className="message-meta">
-                          <span className={`stance-tag ${stanceClass(message.stance.score)}`}>
-                            {message.stance.score > 0 ? `+${message.stance.score}` : message.stance.score}
-                          </span>
+            ) : (
+              <ul className="message-timeline">
+                {visibleMessages.map((message) => {
+                  const agentName = message.agentName ?? agentNameMap[message.agentId] ?? message.agentId;
+                  const stanceValue =
+                    typeof message.stance?.score === 'number'
+                      ? message.stance.score > 0
+                        ? `+${message.stance.score}`
+                        : message.stance.score
+                      : undefined;
+                  return (
+                    <li key={message.id} className="message-timeline__item">
+                      <header>
+                        <span className="badge">{agentName}</span>
+                        <span className="timestamp">{new Date(message.ts).toLocaleTimeString()}</span>
+                      </header>
+                      <div className="message-psychology">
+                        <span className="message-section-label">心理：</span>
+                        <p>{message.psychology || '（未显式说明心理状态）'}</p>
+                      </div>
+                      <div className="message-body">
+                        <span className="message-section-label">发言：</span>
+                        <p className="message-content">{message.content}</p>
+                      </div>
+                      {message.stance && (
+                        <div className="message-meta">
+                          <span className="message-section-label">立场：</span>
+                          <span className={`stance-tag ${stanceClass(message.stance.score)}`}>{stanceValue}</span>
                           {message.stance.note ? (
                             <span className="meta-secondary">{message.stance.note}</span>
                           ) : null}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
         </div>
       </section>
     </div>

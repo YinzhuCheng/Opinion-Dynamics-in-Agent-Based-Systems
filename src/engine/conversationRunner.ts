@@ -4,6 +4,10 @@ import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../t
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
+import {
+  ensureNegativeViewpoint,
+  ensurePositiveViewpoint,
+} from '../constants/discussion';
 
 let activeRunner: ConversationRunner | undefined;
 
@@ -46,47 +50,15 @@ class ConversationRunner {
   }
 
   async run() {
-    const state = this.appStore.getState();
-    const { runState } = state;
-    const { agents, config } = runState;
+      const state = this.appStore.getState();
+      const { runState } = state;
+      const { agents, config } = runState;
 
-    if (agents.length === 0) {
-      this.appStore.getState().setRunStatus({
-        phase: 'error',
-        mode: config.mode,
-        error: '请至少配置 1 名 Agent 后再开始对话。',
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-      });
-      return;
-    }
-
-      const topic = config.discussion?.topic?.trim();
-      if (!topic) {
+      if (agents.length === 0) {
         this.appStore.getState().setRunStatus({
           phase: 'error',
           mode: config.mode,
-          error: '请先在配置页填写对话主题，所有 Agent 将围绕该主题展开。',
-          currentRound: 0,
-          currentTurn: 0,
-          totalMessages: 0,
-          summarizedCount: 0,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-        });
-        return;
-      }
-      const positiveDefinition = config.discussion?.positiveDefinition?.trim();
-      const negativeDefinition = config.discussion?.negativeDefinition?.trim();
-      if (!positiveDefinition || !negativeDefinition) {
-        this.appStore.getState().setRunStatus({
-          phase: 'error',
-          mode: config.mode,
-          error: '请完善“正值代表 / 负值代表”的含义，方便模型给出对应立场。',
+          error: '请至少配置 1 名 Agent 后再开始对话。',
           currentRound: 0,
           currentTurn: 0,
           totalMessages: 0,
@@ -117,11 +89,11 @@ class ConversationRunner {
     });
 
     try {
-      if (config.mode === 'round_robin') {
-        await this.runRoundRobin(agents, config);
-      } else {
-        await this.runFreeDialogue(agents, config);
-      }
+        if (config.mode === 'sequential') {
+          await this.runSequentialOrder(agents, config);
+        } else {
+          await this.runRandomOrder(agents, config);
+        }
       const { status } = this.appStore.getState().runState;
         if (!this.stopped && status.phase !== 'error') {
           this.setStatus({
@@ -157,13 +129,13 @@ class ConversationRunner {
     }
   }
 
-  private async runRoundRobin(agents: AgentSpec[], config: RunConfig) {
+    private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
     const maxRounds = config.maxRounds ?? 3;
     for (let round = 1; round <= maxRounds; round += 1) {
       if (this.shouldStop()) break;
-      for (let turn = 0; turn < agents.length; turn += 1) {
+        for (let turn = 0; turn < agents.length; turn += 1) {
         if (this.shouldStop()) break;
-        const agent = agents[turn];
+          const agent = agents[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
@@ -175,44 +147,24 @@ class ConversationRunner {
     }
   }
 
-  private async runFreeDialogue(agents: AgentSpec[], config: RunConfig) {
-    const maxMessages = config.maxMessages ?? 20;
-    let producedMessages = 0;
-    let round = 0;
-    let consecutiveSkipRounds = 0;
-
-    while (producedMessages < maxMessages && !this.shouldStop()) {
-      round += 1;
-      let skipsThisRound = 0;
-
-      for (let turn = 0; turn < agents.length; turn += 1) {
-        if (this.shouldStop() || producedMessages >= maxMessages) break;
-        const agent = agents[turn];
-        this.setStatus((status) => ({
-          ...status,
-          currentRound: round,
-          currentTurn: turn + 1,
-          lastAgentId: agent.id,
-        }));
-        const message = await this.executeAgentTurn(agent, round, turn + 1, config);
-        if (message?.content === '__SKIP__') {
-          skipsThisRound += 1;
-        } else if (message) {
-          producedMessages += 1;
+    private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
+      const maxRounds = config.maxRounds ?? 3;
+      for (let round = 1; round <= maxRounds; round += 1) {
+        if (this.shouldStop()) break;
+        const roundOrder = this.shuffleAgentsList(agents);
+        for (let turn = 0; turn < roundOrder.length; turn += 1) {
+          if (this.shouldStop()) break;
+          const agent = roundOrder[turn];
+          this.setStatus((status) => ({
+            ...status,
+            currentRound: round,
+            currentTurn: turn + 1,
+            lastAgentId: agent.id,
+          }));
+          await this.executeAgentTurn(agent, round, turn + 1, config);
         }
-      }
-
-      if (skipsThisRound === agents.length) {
-        consecutiveSkipRounds += 1;
-        if (consecutiveSkipRounds >= 2) {
-          // all agents consistently skip, end early
-          break;
-        }
-      } else {
-        consecutiveSkipRounds = 0;
       }
     }
-  }
 
     private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
     const baseModelConfig = this.resolveModelConfig(agent, config);
@@ -223,37 +175,45 @@ class ConversationRunner {
     }
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-      const contextMessages = this.collectDialogueContext(round, agent.id);
-      this.appStore.getState().setVisibleWindow(contextMessages);
-      const agentNames = this.getAgentNameMap();
+        const agentNames = this.getAgentNameMap();
+        const { previousRoundMessages, lastSpeakerMessage } = this.buildRoundContext(round, agent.id);
+        const visibleWindow = [...previousRoundMessages];
+        if (lastSpeakerMessage) {
+          visibleWindow.push(lastSpeakerMessage);
+        }
+        this.appStore.getState().setVisibleWindow(visibleWindow);
       const trustWeights = this.buildTrustContext(agent.id);
       const discussion = this.appStore.getState().runState.config.discussion;
+        const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+        const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+        const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
 
       const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        contextMessages,
-        agentNames,
+          agentNames,
         trustWeights,
-        topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
-        positiveDefinition: discussion.positiveDefinition,
-        negativeDefinition: discussion.negativeDefinition,
+          positiveViewpoint,
+            negativeViewpoint,
+            previousRoundMessages,
+          previousPsychology,
       });
       const userPrompt = buildAgentUserPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        contextMessages,
         agentNames,
         trustWeights,
-        topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
-        positiveDefinition: discussion.positiveDefinition,
-        negativeDefinition: discussion.negativeDefinition,
+          positiveViewpoint,
+          negativeViewpoint,
+          previousRoundMessages,
+          lastSpeakerMessage,
+          previousPsychology,
       });
 
     const messages: ChatMessage[] = [
@@ -283,14 +243,25 @@ class ConversationRunner {
       this.setAwaiting(undefined);
     }
 
-    content = content.trim() || '__SKIP__';
+      content = content.trim() || '__SKIP__';
 
-      const stanceResult = this.processSelfReportedStance(content, discussion);
-      content = stanceResult.content;
+      let psychology: string | undefined;
+      if (content !== '__SKIP__') {
+        const psychologyResult = this.extractPsychology(content);
+        psychology = psychologyResult.psychology;
+        content = psychologyResult.content.trim() || '__SKIP__';
+      }
+      if (content === '__SKIP__') {
+        psychology = undefined;
+      }
+
+        const stanceResult = this.processSelfReportedStance(content, discussion);
+        content = stanceResult.content;
 
     const message: Message = {
       id: nanoid(),
       agentId: agent.id,
+        agentName: agent.name,
       role: 'assistant',
       content,
       ts: Date.now(),
@@ -298,6 +269,7 @@ class ConversationRunner {
       turn,
       systemPrompt,
       userPrompt,
+        psychology,
     };
     if (stanceResult.stance) {
       message.stance = stanceResult.stance;
@@ -336,34 +308,69 @@ class ConversationRunner {
       return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
 
-    private getAgentNameMap(): Record<string, string> {
-      const agents = this.appStore.getState().runState.agents;
-      return agents.reduce<Record<string, string>>((map, agent) => {
-        map[agent.id] = agent.name;
-        return map;
-      }, {});
+      private getAgentNameMap(): Record<string, string> {
+        const agents = this.appStore.getState().runState.agents;
+        return agents.reduce<Record<string, string>>((map, agent) => {
+          map[agent.id] = agent.name;
+          return map;
+        }, {});
+      }
+
+      private buildRoundContext(
+        round: number,
+        agentId: string,
+      ): { previousRoundMessages: Message[]; lastSpeakerMessage?: Message } {
+        const messages = this.appStore.getState().runState.messages;
+        const previousRoundMessages =
+          round > 1 ? messages.filter((message) => message.round === round - 1) : [];
+        const lastMessage = messages[messages.length - 1];
+        const lastSpeakerMessage =
+          lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId
+            ? lastMessage
+            : undefined;
+        return { previousRoundMessages, lastSpeakerMessage };
+      }
+
+      private collectPreviousPsychology(
+        round: number,
+        agentNames: Record<string, string>,
+      ): Array<{ agentName: string; psychology: string }> {
+        if (round <= 0) return [];
+        const messages = this.appStore.getState().runState.messages;
+        return messages
+          .filter(
+            (message) =>
+              message.round === round &&
+              typeof message.psychology === 'string' &&
+              message.psychology.trim().length > 0,
+          )
+          .map((message) => ({
+            agentName: agentNames[message.agentId] ?? message.agentId,
+            psychology: (message.psychology ?? '').trim(),
+          }));
+      }
+
+    private extractPsychology(content: string): { content: string; psychology?: string } {
+      const regex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]\s*$/;
+      const match = content.match(regex);
+      if (!match || typeof match.index !== 'number') {
+        return { content };
+      }
+      const trimmedContent = content.slice(0, match.index).trimEnd();
+      const psychology = match[1].trim();
+      return {
+        content: trimmedContent,
+        psychology: psychology.length > 0 ? psychology : undefined,
+      };
     }
 
-    private collectDialogueContext(round: number, agentId: string): Message[] {
-      const messages = this.appStore.getState().runState.messages;
-      const context: Message[] = [];
-      if (round > 1) {
-        context.push(...messages.filter((message) => message.round === round - 1));
-      }
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId) {
-        context.push(lastMessage);
-      }
-      return context;
-    }
-
-    private processSelfReportedStance(
+      private processSelfReportedStance(
       content: string,
       discussion: RunConfig['discussion'],
     ): { content: string; stance?: { score: number; note?: string } } {
       const trimmed = content.trim();
-      const ratingRegex = /(?:\(|（)\s*情感[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
-      const match = trimmed.match(ratingRegex);
+        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)/i;
+        const match = trimmed.match(ratingRegex);
       if (!match) {
         return { content: trimmed };
       }
@@ -374,10 +381,10 @@ class ConversationRunner {
         return { content: trimmed };
       }
       score = Math.max(-maxLevel, Math.min(maxLevel, score));
-      const positiveDesc = discussion.positiveDefinition?.trim() || '倾向正向立场';
-      const negativeDesc = discussion.negativeDefinition?.trim() || '倾向负向立场';
+        const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
+        const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
       const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
-      const sanitizedContent = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
+        const sanitizedContent = trimmed.replace(match[0], '').trim();
       const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
       return {
         content: displayContent,
@@ -434,6 +441,15 @@ class ConversationRunner {
       status,
     });
   }
+
+    private shuffleAgentsList(agents: AgentSpec[]): AgentSpec[] {
+      const order = [...agents];
+      for (let i = order.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      return order;
+    }
 }
 
 const defaultFallbackModel = (): ModelConfig => ({

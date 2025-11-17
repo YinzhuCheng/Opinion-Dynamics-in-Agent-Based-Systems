@@ -20,8 +20,6 @@ export interface PersonaBig5 {
   E: number;
   A: number;
   N: number;
-  templateKey?: string;
-  notes?: string;
 }
 
 export type MBTICode =
@@ -45,8 +43,6 @@ export type MBTICode =
 export interface PersonaMBTI {
   type: 'mbti';
   mbti: MBTICode;
-  templateKey?: string;
-  notes?: string;
 }
 
 export interface PersonaFree {
@@ -61,10 +57,11 @@ export interface AgentSpec {
   name: string;
   persona: Persona;
   initialOpinion?: string;
+  initialStance?: number;
   modelConfig?: ModelConfig;
 }
 
-export type DialogueMode = 'round_robin' | 'free';
+export type DialogueMode = 'random' | 'sequential';
 
 export interface RunConfig {
   mode: DialogueMode;
@@ -73,11 +70,11 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   trustMatrix: TrustMatrix;
+  trustRandomAlpha: number;
   discussion: {
-    topic: string;
     stanceScaleSize: number;
-    positiveDefinition: string;
-    negativeDefinition: string;
+    positiveViewpoint: string;
+    negativeViewpoint: string;
   };
   visualization: {
     enableStanceChart: boolean;
@@ -89,6 +86,7 @@ export type TrustMatrix = Record<string, Record<string, number>>;
 export interface Message {
   id: string;
   agentId: string;
+  agentName?: string;
   role: 'assistant';
   content: string;
   ts: number;
@@ -97,6 +95,7 @@ export interface Message {
   systemPrompt?: string;
   userPrompt?: string;
   stance?: { score: number; note?: string };
+  psychology?: string;
 }
 
 export interface RunState {
@@ -107,6 +106,7 @@ export interface RunState {
   visibleWindow: Message[];
   status: RunStatus;
   stopRequested: boolean;
+  lastRandomMatrix?: TrustMatrix;
 }
 
 export interface SessionResult {
