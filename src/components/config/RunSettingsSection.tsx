@@ -5,8 +5,8 @@ import { useAppStore } from '../../store/useAppStore';
 import { chatStream } from '../../utils/llmAdapter';
 
 const modeOptions: Array<{ value: DialogueMode; label: string; description: string }> = [
-  { value: 'round_robin', label: '轮询对话', description: '严格按 Agent 顺序轮流发言，适合结构化讨论。' },
-  { value: 'free', label: '自由对话', description: '按顺序轮询，但 Agent 可选择跳过发言，节奏更灵活。' },
+  { value: 'random', label: '随机顺序发言', description: '每轮开始前随机抽签决定出场顺序，所有 Agent 必须发言一次。' },
+  { value: 'sequential', label: '依次发言', description: '固定按照列表顺序发言，每轮循环一次，适合结构化讨论。' },
 ];
 
 const vendorLabels: Record<Vendor, string> = {
@@ -49,7 +49,6 @@ export function RunSettingsSection() {
   const setVendorApiKey = useAppStore((state) => state.setVendorApiKey);
   const setRunMode = useAppStore((state) => state.setRunMode);
   const setMaxRounds = useAppStore((state) => state.setMaxRounds);
-  const setMaxMessages = useAppStore((state) => state.setMaxMessages);
   const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
   const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
   const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
@@ -63,11 +62,6 @@ export function RunSettingsSection() {
   const handleMaxRoundsChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setMaxRounds(value ? Number(value) : undefined);
-  };
-
-  const handleMaxMessagesChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value;
-    setMaxMessages(value ? Number(value) : undefined);
   };
 
   const handleVendorChange = (event: ChangeEvent<HTMLSelectElement>) => {
@@ -246,29 +240,16 @@ export function RunSettingsSection() {
           </div>
 
             <div className="grid two-columns">
-              {runConfig.mode === 'round_robin' ? (
-                <label className="form-field">
-                  <span>最大轮数</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={runConfig.maxRounds ?? ''}
-                    placeholder="例如 6"
-                    onChange={handleMaxRoundsChange}
-                  />
-                </label>
-              ) : (
-                <label className="form-field">
-                  <span>最大消息数</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={runConfig.maxMessages ?? ''}
-                    placeholder="例如 20"
-                    onChange={handleMaxMessagesChange}
-                  />
-                </label>
-              )}
+              <label className="form-field">
+                <span>最大轮数</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={runConfig.maxRounds ?? ''}
+                  placeholder="例如 6"
+                  onChange={handleMaxRoundsChange}
+                />
+              </label>
               <label className="form-field">
                 <span>模型配置模式</span>
                 <select

@@ -89,11 +89,11 @@ class ConversationRunner {
     });
 
     try {
-      if (config.mode === 'round_robin') {
-        await this.runRoundRobin(agents, config);
-      } else {
-        await this.runFreeDialogue(agents, config);
-      }
+        if (config.mode === 'sequential') {
+          await this.runSequentialOrder(agents, config);
+        } else {
+          await this.runRandomOrder(agents, config);
+        }
       const { status } = this.appStore.getState().runState;
         if (!this.stopped && status.phase !== 'error') {
           this.setStatus({
@@ -129,14 +129,13 @@ class ConversationRunner {
     }
   }
 
-  private async runRoundRobin(agents: AgentSpec[], config: RunConfig) {
+    private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
     const maxRounds = config.maxRounds ?? 3;
     for (let round = 1; round <= maxRounds; round += 1) {
       if (this.shouldStop()) break;
-        const roundOrder = this.shuffleAgentsList(agents);
-        for (let turn = 0; turn < roundOrder.length; turn += 1) {
+        for (let turn = 0; turn < agents.length; turn += 1) {
         if (this.shouldStop()) break;
-          const agent = roundOrder[turn];
+          const agent = agents[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
@@ -148,45 +147,24 @@ class ConversationRunner {
     }
   }
 
-  private async runFreeDialogue(agents: AgentSpec[], config: RunConfig) {
-    const maxMessages = config.maxMessages ?? 20;
-    let producedMessages = 0;
-    let round = 0;
-    let consecutiveSkipRounds = 0;
-
-    while (producedMessages < maxMessages && !this.shouldStop()) {
-      round += 1;
-      let skipsThisRound = 0;
-
+    private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
+      const maxRounds = config.maxRounds ?? 3;
+      for (let round = 1; round <= maxRounds; round += 1) {
+        if (this.shouldStop()) break;
         const roundOrder = this.shuffleAgentsList(agents);
         for (let turn = 0; turn < roundOrder.length; turn += 1) {
-        if (this.shouldStop() || producedMessages >= maxMessages) break;
+          if (this.shouldStop()) break;
           const agent = roundOrder[turn];
-        this.setStatus((status) => ({
-          ...status,
-          currentRound: round,
-          currentTurn: turn + 1,
-          lastAgentId: agent.id,
-        }));
-        const message = await this.executeAgentTurn(agent, round, turn + 1, config);
-        if (message?.content === '__SKIP__') {
-          skipsThisRound += 1;
-        } else if (message) {
-          producedMessages += 1;
+          this.setStatus((status) => ({
+            ...status,
+            currentRound: round,
+            currentTurn: turn + 1,
+            lastAgentId: agent.id,
+          }));
+          await this.executeAgentTurn(agent, round, turn + 1, config);
         }
-      }
-
-      if (skipsThisRound === agents.length) {
-        consecutiveSkipRounds += 1;
-        if (consecutiveSkipRounds >= 2) {
-          // all agents consistently skip, end early
-          break;
-        }
-      } else {
-        consecutiveSkipRounds = 0;
       }
     }
-  }
 
     private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
     const baseModelConfig = this.resolveModelConfig(agent, config);

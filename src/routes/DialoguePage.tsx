@@ -111,7 +111,7 @@ export function DialoguePage() {
                       </header>
                       {message.psychology ? (
                         <div className="message-psychology">
-                          <span className="message-section-label">心理状态：</span>
+                          <span className="message-section-label">心理：</span>
                           <p>{message.psychology}</p>
                         </div>
                       ) : null}

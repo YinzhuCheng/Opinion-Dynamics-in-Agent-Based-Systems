@@ -61,7 +61,8 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
 - 将上一批次所有 Agent 的观点综合成“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由），并关联自身固有立场。
 - 你的发言需由“上一轮心理沉淀 + 上一位发言者的触发点”共同驱动。
 - 输出顺序：正文 → （立场：X） → [[PSY]]隐含块。隐含块必须写成 2~3 句，依次交代：你的固有立场/上一轮心理余韵、上一位发言者带来的刺激、上一轮各 Agent 气氛对你的影响。不要在正文里提到“心理模型”或方括号。
-- [[PSY]] 仅供系统记录，正文不可泄露这些元信息。`;
+- [[PSY]] 仅供系统记录，正文不可泄露这些元信息。
+- 进行心理推导时，请显式权衡：上一轮的内心旁白、依据信任矩阵加权的上一轮发言集合、上一位发言者的即时刺激。`;
   const naturalGuidelines = [
     '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
     '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
@@ -70,9 +71,9 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
   ].join('\n- ');
 
   const skipInstruction =
-    mode === 'free'
-      ? '若判断本轮没有新的观点或信息，请输出 "__SKIP__" 表示跳过发言。'
-      : '必须在每一轮给出观点与理由，可基于已有讨论提出补充或质询。';
+    mode === 'random'
+      ? '本轮采用随机顺序发言，你仍需给出明确观点与论据，不得跳过。'
+      : '本轮按固定顺序发言，请确保提供有效观点或补充，而不是跳过。';
 
   return [
     `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
@@ -136,9 +137,9 @@ export const buildAgentUserPrompt = ({
       : '上一轮尚未形成可引用的心理模型，你可自行推断整体情绪。';
 
   const modeHint =
-    mode === 'round_robin'
-      ? '当前为轮询模式，请确保本轮提供有效观点或对已有观点的回应。'
-      : '当前为自由对话模式，你可根据判断选择发言或跳过。';
+    mode === 'sequential'
+      ? '当前为依次发言模式，请紧扣固定顺序提供有效观点或补充。'
+      : '当前为随机顺序发言模式，请在出场机会内明确表达立场与理由。';
 
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
@@ -159,6 +160,8 @@ export const buildAgentUserPrompt = ({
     '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
   const psychologyHint =
     '输出格式：正文 + （立场：X） + [[PSY]]隐含块。隐含块需至少 2~3 句话，依次说明你的固有立场/上一轮心理余韵、上一位发言者带来的触发点、上一轮群体氛围对你的影响；正文里不要解释这些。';
+  const trustWeightHint =
+    '请在心理推导中说明你如何平衡“上一轮的内心旁白 + 依据信任矩阵加权的上一轮集体发言 + 上一位发言者”的影响力。';
 
   return [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
@@ -169,6 +172,7 @@ export const buildAgentUserPrompt = ({
     `上一轮对话（供你潜意识参考）：\n${previousRoundTranscript}`,
     `上一位发言者（需优先回应）：\n${lastSpeakerLine}`,
     previousPsychologyHint,
+    trustWeightHint,
     SYNTHESIS_HINT,
     followHint,
     styleHint,

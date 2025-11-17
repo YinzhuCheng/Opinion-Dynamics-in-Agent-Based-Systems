@@ -61,7 +61,7 @@ export interface AgentSpec {
   modelConfig?: ModelConfig;
 }
 
-export type DialogueMode = 'round_robin' | 'free';
+export type DialogueMode = 'random' | 'sequential';
 
 export interface RunConfig {
   mode: DialogueMode;

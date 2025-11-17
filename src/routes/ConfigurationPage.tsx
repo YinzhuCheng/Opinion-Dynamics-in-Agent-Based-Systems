@@ -19,9 +19,9 @@ export function ConfigurationPage() {
         <header className="card__header">
           <div>
             <h2>准备就绪</h2>
-            <p className="card__subtitle">
-              当前配置：{runConfig.mode === 'round_robin' ? '轮询模式' : '自由模式'}，Agent 数量 {agents.length} 个。
-            </p>
+              <p className="card__subtitle">
+                当前配置：{runConfig.mode === 'sequential' ? '依次发言' : '随机顺序发言'}，Agent 数量 {agents.length} 个。
+              </p>
           </div>
           <div className="card__actions">
             <button type="button" className="button ghost" onClick={resetRunState}>

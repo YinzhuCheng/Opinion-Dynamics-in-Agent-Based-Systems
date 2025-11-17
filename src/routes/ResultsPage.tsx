@@ -177,7 +177,8 @@ export function ResultsPage() {
   );
 }
 
-const translateMode = (mode: string) => (mode === 'round_robin' ? '轮询对话' : '自由对话');
+const translateMode = (mode: string) =>
+  mode === 'sequential' ? '依次发言' : '随机顺序发言';
 
 const describeModelConfig = (config: RunConfig): string => {
   if (config.useGlobalModelConfig && config.globalModelConfig) {
@@ -269,27 +270,25 @@ const buildIndividualStanceChartOption = (dataset: StanceDataset): EChartsOption
   }));
 
   return {
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: any) => {
-        if (!Array.isArray(params) || params.length === 0) return '';
-        return params
-          .map((item) => {
-            const data = item.data as { value: [number, number]; message: Message };
-            const time = new Date(data.message.ts).toLocaleTimeString();
-            return [
-              `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
-              `<div>轮次：第 ${data.value[0]} 轮 ｜ 时间：${time}</div>`,
-              `<div>立场：${data.value[1].toFixed(2)}</div>`,
-              data.message.stance?.note ? `<div>说明：${data.message.stance.note}</div>` : '',
-              `<div>内容：${escapeHtml(data.message.content)}</div>`,
-            ]
-              .filter(Boolean)
-              .join('');
-          })
-          .join('<hr/>');
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          if (!Array.isArray(params) || params.length === 0) return '';
+          return params
+            .map((item) => {
+              const data = item.data as { value: [number, number]; message?: Message };
+              const note = data.message?.stance?.note;
+              return [
+                `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
+                `<div>轮次：第 ${data.value[0]} 轮 ｜ 立场：${data.value[1].toFixed(2)}</div>`,
+                note ? `<div>备注：${escapeHtml(note)}</div>` : '',
+              ]
+                .filter(Boolean)
+                .join('');
+            })
+            .join('<hr/>');
+        },
       },
-    },
     legend:
       legendData.length > 0
         ? { type: 'scroll' as const, data: legendData, top: 0 }

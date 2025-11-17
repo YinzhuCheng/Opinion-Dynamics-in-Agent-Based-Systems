@@ -116,7 +116,7 @@ const sanitizeStanceScaleSize = (value: number | undefined): number => {
 };
 
 const createDefaultRunConfig = (): RunConfig => ({
-  mode: 'round_robin',
+  mode: 'random',
   maxRounds: 4,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
@@ -147,7 +147,7 @@ const createEmptyRunState = (): RunState => {
   };
 };
 
-const createInitialStatus = (mode: DialogueMode = 'round_robin'): RunStatus => ({
+const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
   phase: 'idle',
   mode,
   currentRound: 0,
@@ -216,7 +216,7 @@ export interface AppStore {
   randomizeTrustMatrix: () => void;
   uniformTrustMatrix: () => void;
   setTrustRandomAlpha: (value: number) => void;
-  configureAgentGroup: (count: number, stanceTemplate: number[]) => void;
+    configureAgentGroup: (distribution: Record<number, number>) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -360,19 +360,16 @@ export const useAppStore = create<AppStore>((set) => ({
           }
         }),
       ),
-  setRunMode: (mode) =>
-    set(
-      produce((state: AppStore) => {
-        state.runState.config.mode = mode;
-        state.runState.status.mode = mode;
-        if (mode === 'round_robin' && !state.runState.config.maxRounds) {
-          state.runState.config.maxRounds = 4;
-        }
-        if (mode === 'free' && !state.runState.config.maxMessages) {
-          state.runState.config.maxMessages = 12;
-        }
-      }),
-    ),
+    setRunMode: (mode) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.mode = mode;
+          state.runState.status.mode = mode;
+          if (!state.runState.config.maxRounds) {
+            state.runState.config.maxRounds = 4;
+          }
+        }),
+      ),
   setMaxRounds: (value) =>
     set(
       produce((state: AppStore) => {
@@ -496,22 +493,30 @@ export const useAppStore = create<AppStore>((set) => ({
           state.runState.config.trustRandomAlpha = Number(clamped.toFixed(2));
         }),
       ),
-    configureAgentGroup: (count, stanceTemplate) =>
+    configureAgentGroup: (distribution) =>
       set(
-          produce((state: AppStore) => {
-            const normalizedSize = sanitizeStanceScaleSize(state.runState.config.discussion.stanceScaleSize);
-            const maxLevel = Math.floor(Math.max(3, normalizedSize) / 2);
-          const sanitizedTemplate = stanceTemplate
-            .filter((value) => typeof value === 'number' && Number.isFinite(value))
-            .map((value) => Math.max(-maxLevel, Math.min(maxLevel, Math.round(value))));
-          const effectiveTemplate = sanitizedTemplate.length > 0 ? sanitizedTemplate : [0];
-          const safeCount = Math.max(1, Math.min(50, Math.floor(count)));
+        produce((state: AppStore) => {
+          const normalizedSize = sanitizeStanceScaleSize(state.runState.config.discussion.stanceScaleSize);
+          const maxLevel = Math.floor(Math.max(3, normalizedSize) / 2);
+          const entries = Object.entries(distribution ?? {});
           const agents: AgentSpec[] = [];
-          for (let i = 0; i < safeCount; i += 1) {
-            const stance = effectiveTemplate[i % effectiveTemplate.length];
+          entries.forEach(([label, rawCount]) => {
+            const numericLabel = Number(label);
+            if (!Number.isFinite(numericLabel)) return;
+            const clampedLabel = Math.max(-maxLevel, Math.min(maxLevel, Math.round(numericLabel)));
+            const count = Math.max(0, Math.min(50, Math.floor(Number(rawCount) || 0)));
+            for (let i = 0; i < count; i += 1) {
+              agents.push(
+                buildAgent(agents.length, {
+                  initialStance: clampedLabel,
+                }),
+              );
+            }
+          });
+          if (agents.length === 0) {
             agents.push(
-              buildAgent(i, {
-                initialStance: stance,
+              buildAgent(0, {
+                initialStance: 0,
               }),
             );
           }
