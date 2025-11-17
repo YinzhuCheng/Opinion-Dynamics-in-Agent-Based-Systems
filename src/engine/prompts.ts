@@ -132,10 +132,26 @@ export const buildAgentUserPrompt = ({
         .map((message) => {
           const content = message.content === '__SKIP__' ? '(跳过)' : message.content;
           const speaker = agentNames[message.agentId] ?? message.agentId;
-          return `${speaker}: ${content}`;
+          const stanceNote =
+            typeof message.stance?.score === 'number'
+              ? `（立场：${formatStance(message.stance.score)}｜${message.stance.note ?? '未注明'}）`
+              : '';
+          return `${speaker}: ${content}${stanceNote}`;
         })
         .join('\n')
-    : '上一轮暂无对话（可能是首轮或上一轮全部跳过）。';
+      : '上一轮暂无对话（可能是首轮或上一轮全部跳过）。';
+  const previousRoundStanceSummary = previousRoundMessages.length
+    ? `上一轮立场速记：\n${previousRoundMessages
+        .map((message) => {
+          const speaker = agentNames[message.agentId] ?? message.agentId;
+          if (typeof message.stance?.score === 'number') {
+            const note = message.stance.note ? `｜${message.stance.note}` : '';
+            return `- ${speaker}: 立场 ${formatStance(message.stance.score)}${note}`;
+          }
+          return `- ${speaker}: 未提供立场刻度`;
+        })
+        .join('\n')}`
+    : '上一轮立场速记：暂无记录。';
   const lastSpeakerLine = lastSpeakerMessage
     ? `${agentNames[lastSpeakerMessage.agentId] ?? lastSpeakerMessage.agentId}: ${
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
@@ -183,8 +199,9 @@ export const buildAgentUserPrompt = ({
     initialOpinionHint,
     initialStanceHint,
     viewpointHint,
-    `上一轮对话（供你潜意识参考）：\n${previousRoundTranscript}`,
-    `上一位发言者（需优先回应）：\n${lastSpeakerLine}`,
+    `上一轮对话（主要用于影响心理，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
+    previousRoundStanceSummary,
+    `上一位发言者（影响心理和发言内容，但也不必每次都提及上一位发言者内容，允许开启新话题）：\n${lastSpeakerLine}`,
     previousPsychologyHint,
     trustWeightHint,
     SYNTHESIS_HINT,
