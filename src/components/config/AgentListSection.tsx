@@ -312,10 +312,6 @@ const TrustMatrixEditor = () => {
           </button>
         </div>
       </div>
-      <details className="trust-matrix-preview" open={!matrixFolded.W} onClick={handleSummaryToggle('W')}>
-        <summary>W：最终信任矩阵（当前使用）</summary>
-        <pre>{JSON.stringify(trustMatrix, null, 2)}</pre>
-      </details>
       {lastRandomMatrix ? (
         <details className="trust-matrix-preview" open={!matrixFolded.R} onClick={handleSummaryToggle('R')}>
           <summary>R：随机矩阵（归一化后）</summary>
