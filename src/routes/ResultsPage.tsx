@@ -20,8 +20,13 @@ export function ResultsPage() {
     const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
 
   const stanceChartOption = useMemo<EChartsOption | null>(() => {
-    if (!result?.configSnapshot.visualization.enableStanceChart) return null;
-    return buildStanceChartOption(result, agentNameMap);
+    if (!result) return null;
+    const option = buildStanceChartOption(result, agentNameMap);
+    const series = (option?.series as Array<{ data?: unknown[] }> | undefined) ?? [];
+    if (series.length === 0 || series.every((item) => !item.data || item.data.length === 0)) {
+      return null;
+    }
+    return option;
   }, [result, agentNameMap]);
 
   const handleDownloadTranscript = (mode: 'standard' | 'full') => {
@@ -75,7 +80,7 @@ export function ResultsPage() {
               </p>
               <p>摘要：{result.summary || '尚未生成摘要。'}</p>
                 <p>立场基准：正向 = {positiveViewpointLabel} ｜ 负向 = {negativeViewpointLabel}</p>
-              <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
+                <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
                 <div className="results-actions">
                   <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
                     下载精简版 .txt
@@ -83,17 +88,17 @@ export function ResultsPage() {
                   <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                     下载完整版（含提示词）
                   </button>
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={() => stanceChartOption && handleExportChart('png')}
-                    disabled={!stanceChartOption}
-                    title={
-                      stanceChartOption
-                        ? '导出当前的观点演化曲线（PNG）'
-                        : '需在配置页启用“观点演化图”后才能导出'
-                    }
-                  >
+                    <button
+                      type="button"
+                      className="button secondary"
+                      onClick={() => stanceChartOption && handleExportChart('png')}
+                      disabled={!stanceChartOption}
+                      title={
+                        stanceChartOption
+                          ? '导出当前的观点演化曲线（PNG）'
+                          : '暂无足够的立场数据可绘制曲线'
+                      }
+                    >
                     导出观点演化图（PNG）
                   </button>
                 </div>
@@ -157,6 +162,19 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
     dataByAgent.get(message.agentId)!.data.push({ value: [index, message.stance.score], message });
   }
 
+  const series = Array.from(dataByAgent.values()).map((series) => ({
+    type: 'line' as const,
+    name: series.name,
+    smooth: true,
+    data: series.data,
+    symbol: 'circle',
+    symbolSize: 8,
+    emphasis: {
+      focus: 'series' as const,
+    },
+  }));
+  const legendData = series.map((item) => item.name);
+
   return {
     tooltip: {
       trigger: 'axis',
@@ -179,7 +197,14 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
           .join('<hr/>');
       },
     },
-    grid: { left: 40, right: 24, top: 35, bottom: 40 },
+    legend:
+      legendData.length > 0
+        ? {
+            data: legendData,
+            top: 0,
+          }
+        : undefined,
+    grid: { left: 40, right: 24, top: legendData.length > 0 ? 60 : 35, bottom: 40 },
     xAxis: {
       type: 'value',
       name: '消息序号',
@@ -191,17 +216,7 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
       max: 1,
       name: '立场强度',
     },
-    series: Array.from(dataByAgent.values()).map((series) => ({
-      type: 'line',
-      name: series.name,
-      smooth: true,
-      data: series.data,
-      symbol: 'circle',
-      symbolSize: 8,
-      emphasis: {
-        focus: 'series',
-      },
-    })),
+    series,
   };
 };
 
@@ -219,8 +234,7 @@ const buildTranscriptText = (
   } else {
     lines.push('使用自由模型配置');
   }
-  const stanceEnabled = result.configSnapshot.visualization?.enableStanceChart ?? false;
-  lines.push(`观点曲线：${stanceEnabled ? '启用' : '关闭'}`);
+    lines.push('观点曲线：默认启用');
   const discussion = result.configSnapshot.discussion;
   const positiveView = ensurePositiveViewpoint(discussion?.positiveViewpoint);
   const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);

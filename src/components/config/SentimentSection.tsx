@@ -1,27 +1,16 @@
 import { useState } from 'react';
-import { useAppStore } from '../../store/useAppStore';
 
 export function SentimentSection() {
   const [collapsed, setCollapsed] = useState(false);
-  const visualization = useAppStore((state) => state.runState.config.visualization);
-  const updateRunConfig = useAppStore((state) => state.updateRunConfig);
-
-  const handleVisualizationToggle = (checked: boolean) => {
-    updateRunConfig((config) => ({
-      ...config,
-      visualization: {
-        ...config.visualization,
-        enableStanceChart: checked,
-      },
-    }));
-  };
 
   return (
     <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
         <div>
           <h2>观点演化图</h2>
-          <p className="card__subtitle">基于各 Agent 自报的立场分数绘制走势，并在结果页一键导出 PNG。</p>
+          <p className="card__subtitle">
+            基于各 Agent 自报的立场分数绘制走势，并在结果页一键导出 PNG。
+          </p>
         </div>
         <div className="card__actions">
           <button
@@ -36,21 +25,12 @@ export function SentimentSection() {
       </header>
       {!collapsed && (
         <div className="card__body column-gap">
-          <label className="form-field checkbox-field">
-            <span>启用观点演化曲线</span>
-            <div className="checkbox-description">
-              <input
-                type="checkbox"
-                checked={visualization.enableStanceChart}
-                onChange={(event) => handleVisualizationToggle(event.target.checked)}
-              />
-              <p className="form-hint">
-                勾选后，结果页会显示立场折线图，并提供“导出观点演化图（PNG）”按钮一键保存。
-              </p>
-            </div>
-          </label>
           <p className="form-hint">
-            立场分数来自各 Agent 在发言末尾自动给出的情绪/态度评分，因此无需再启用额外的情感分类 Agent。
+            系统现已<strong>默认绘制</strong>观点演化曲线，无需手动勾选。只要 Agent
+            在发言末尾填写“（情感：X）”，结果页就会自动显示立场折线图，并提供“导出观点演化图（PNG）”按钮。
+          </p>
+          <p className="form-hint">
+            小提示：曲线的颜色与图例一一对应，方便观察不同 Agent 的情绪/立场收敛轨迹。
           </p>
         </div>
       )}
