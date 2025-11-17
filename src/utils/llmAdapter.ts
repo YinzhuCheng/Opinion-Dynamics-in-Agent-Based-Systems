@@ -22,19 +22,20 @@ export async function chatStream(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!config.apiKey || !config.apiKey.trim()) {
     throw new Error('请先为所选供应商填写 API Key。');
   }
   const vendor = config.vendor;
   if (vendor === 'openai') {
-    return callOpenAIChat(messages, config, extra, handlers);
+    return callOpenAIChat(messages, config, extra, handlers, signal);
   }
   if (vendor === 'anthropic') {
-    return callAnthropicMessages(messages, config, extra, handlers);
+    return callAnthropicMessages(messages, config, extra, handlers, signal);
   }
   if (vendor === 'gemini') {
-    return callGemini(messages, config, extra, handlers);
+    return callGemini(messages, config, extra, handlers, signal);
   }
   throw new Error(`暂不支持的供应商：${vendor}`);
 }
@@ -52,6 +53,7 @@ async function callOpenAIChat(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   const base = tidyBase(config.baseUrl) || defaultBases.openai;
@@ -65,15 +67,16 @@ async function callOpenAIChat(
     stream: true,
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify(body),
-  }).catch((error: any) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(body),
+      signal,
+    }).catch((error: any) => {
     handlers?.onStatus?.('done');
     throw new Error(error?.message ?? '无法连接到 OpenAI');
   });
@@ -139,6 +142,7 @@ async function callAnthropicMessages(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   handlers?.onStatus?.('thinking');
@@ -167,6 +171,7 @@ async function callAnthropicMessages(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
+    signal,
   }).catch((error: any) => {
     handlers?.onStatus?.('done');
     throw new Error(error?.message ?? '无法连接到 Anthropic');
@@ -198,6 +203,7 @@ async function callGemini(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   handlers?.onStatus?.('thinking');
@@ -221,6 +227,7 @@ async function callGemini(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   }).catch((error: any) => {
     handlers?.onStatus?.('done');
     throw new Error(error?.message ?? '无法连接到 Gemini');

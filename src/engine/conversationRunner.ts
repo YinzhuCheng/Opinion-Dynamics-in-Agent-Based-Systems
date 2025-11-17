@@ -65,6 +65,7 @@ class ConversationRunner {
   private readonly appStore = useAppStore;
   private readonly runMode: RunnerMode;
   private sequentialOrder?: string[];
+  private inflightControllers = new Set<AbortController>();
 
   constructor(runMode: RunnerMode = 'fresh') {
     this.runMode = runMode;
@@ -113,6 +114,8 @@ class ConversationRunner {
     if (this.stopped) return;
     this.stopped = true;
     this.pauseRequested = false;
+    this.inflightControllers.forEach((controller) => controller.abort());
+    this.inflightControllers.clear();
     if (this.resumeResolver) {
       const resolver = this.resumeResolver;
       this.resumeResolver = undefined;
@@ -334,7 +337,7 @@ class ConversationRunner {
     }
   }
 
-    private async runRandomOrder(
+  private async runRandomOrder(
       agents: AgentSpec[],
       config: RunConfig,
       progress?: ConversationProgress,
@@ -371,7 +374,12 @@ class ConversationRunner {
     }
     }
 
-    private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
+  private async executeAgentTurn(
+    agent: AgentSpec,
+    round: number,
+    turn: number,
+    config: RunConfig,
+  ): Promise<Message | undefined> {
     const baseModelConfig = this.resolveModelConfig(agent, config);
     const apiKey = this.resolveApiKey(baseModelConfig);
 
@@ -430,22 +438,36 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
+    const controller = new AbortController();
+    this.inflightControllers.add(controller);
     let content = '';
     try {
       content =
-        (await chatStream(messages, modelConfig, extra, {
-          onStatus: (status) => {
-            if (status === 'waiting_response' || status === 'responding') {
-              this.setAwaiting('response');
-            } else if (status === 'thinking') {
-              this.setAwaiting('thinking');
-            } else if (status === 'done') {
-              this.setAwaiting(undefined);
-            }
+        (await chatStream(
+          messages,
+          modelConfig,
+          extra,
+          {
+            onStatus: (status) => {
+              if (status === 'waiting_response' || status === 'responding') {
+                this.setAwaiting('response');
+              } else if (status === 'thinking') {
+                this.setAwaiting('thinking');
+              } else if (status === 'done') {
+                this.setAwaiting(undefined);
+              }
+            },
           },
-        })) || '';
+          controller.signal,
+        )) || '';
+    } catch (error: any) {
+      if (this.isAbortError(error)) {
+        return undefined;
+      }
+      throw error;
     } finally {
       this.setAwaiting(undefined);
+      this.inflightControllers.delete(controller);
     }
 
       content = content.trim() || '__SKIP__';
@@ -484,6 +506,14 @@ class ConversationRunner {
     this.updateStatusAfterMessage(message);
 
     return message;
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (!error) return false;
+    if (typeof error === 'object' && (error as any).name === 'AbortError') {
+      return true;
+    }
+    return String(error).includes('AbortError');
   }
 
   private updateStatusAfterMessage(message: Message) {
