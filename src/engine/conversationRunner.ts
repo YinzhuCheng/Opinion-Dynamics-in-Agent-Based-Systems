@@ -350,19 +350,31 @@ class ConversationRunner {
           }));
       }
 
-    private extractPsychology(content: string): { content: string; psychology?: string } {
-      const regex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]\s*$/;
-      const match = content.match(regex);
-      if (!match || typeof match.index !== 'number') {
-        return { content };
-      }
-      const trimmedContent = content.slice(0, match.index).trimEnd();
-      const psychology = match[1].trim();
+  private extractPsychology(content: string): { content: string; psychology?: string } {
+    const blockRegex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]/;
+    const blockMatch = content.match(blockRegex);
+    if (blockMatch && typeof blockMatch.index === 'number') {
+      const before = content.slice(0, blockMatch.index);
+      const after = content.slice(blockMatch.index + blockMatch[0].length);
+      const remaining = `${before}${after}`.trim();
+      const psychology = blockMatch[1].trim();
+      return {
+        content: remaining,
+        psychology: psychology.length > 0 ? psychology : undefined,
+      };
+    }
+    const legacyRegex = /\[\[PSY\]\]([\s\S]*?)$/;
+    const legacyMatch = content.match(legacyRegex);
+    if (legacyMatch && typeof legacyMatch.index === 'number') {
+      const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
+      const psychology = legacyMatch[1].trim();
       return {
         content: trimmedContent,
         psychology: psychology.length > 0 ? psychology : undefined,
       };
     }
+    return { content };
+  }
 
       private processSelfReportedStance(
       content: string,

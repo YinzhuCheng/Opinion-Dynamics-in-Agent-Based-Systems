@@ -224,8 +224,6 @@ const TrustMatrixEditor = () => {
   const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
   const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
   const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
-  const trustRandomAlpha = useAppStore((state) => state.runState.config.trustRandomAlpha);
-  const setTrustRandomAlpha = useAppStore((state) => state.setTrustRandomAlpha);
   const lastRandomMatrix = useAppStore((state) => state.runState.lastRandomMatrix);
   const [matrixFolded, setMatrixFolded] = useState({ W: false, R: true });
 
@@ -246,12 +244,6 @@ const TrustMatrixEditor = () => {
       const numeric = raw === '' ? 0 : Number(raw);
       setTrustValue(sourceId, targetId, Number.isNaN(numeric) ? 0 : numeric);
     };
-
-  const handleAlphaChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = Number(event.target.value);
-    setTrustRandomAlpha(Number.isNaN(value) ? 0.8 : value);
-  };
-
 
   const handleSummaryToggle =
     (key: 'W' | 'R') => (event: React.MouseEvent<HTMLElement>) => {
@@ -311,22 +303,6 @@ const TrustMatrixEditor = () => {
         </table>
       </div>
       <div className="trust-matrix-actions">
-        <div className="trust-alpha-control">
-          <label className="form-field">
-            <span>自信系数 α</span>
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              value={trustRandomAlpha}
-              onChange={handleAlphaChange}
-            />
-          </label>
-          <p className="form-hint">
-            数学：取值 α ∈ [0, 1]，计算公式 W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵）。心理：α 越接近 1 表示越信任自己，α 越低表示越容易受他人影响。
-          </p>
-        </div>
         <div className="trust-matrix-buttons">
           <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
             随机初始化
