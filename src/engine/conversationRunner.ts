@@ -525,7 +525,11 @@ class ConversationRunner {
       ): { previousRoundMessages: Message[]; lastSpeakerMessage?: Message } {
         const messages = this.appStore.getState().runState.messages;
         const previousRoundMessages =
-          round > 1 ? messages.filter((message) => message.round === round - 1) : [];
+      round > 1
+        ? messages.filter(
+            (message) => message.round === round - 1 && message.agentId !== agentId,
+          )
+        : [];
         const lastMessage = messages[messages.length - 1];
         const lastSpeakerMessage =
           lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId
