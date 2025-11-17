@@ -51,7 +51,8 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
   const continuityGuidelines = `对话策略：
 - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
 - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
-- 引用他人时只提名字，点到为止。`;
+- 引用他人时只提名字，点到为止。
+- 遇到观点冲突可直接反驳或追问，不必刻意礼貌，可带一点争执语气以保持真实感。`;
   const previousPsychologySection =
     previousPsychology.length > 0
       ? `上一轮心理模型快照（仅供你内化，不要在正文里引用）：
@@ -155,7 +156,7 @@ export const buildAgentUserPrompt = ({
   const viewpointHint = `仅需在这两种立场之间展开拉扯：正向 = ${positiveDesc} ｜ 负向 = ${negativeDesc}。`;
   const ratingHint = `回答末尾必须添加“（立场：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
   const followHint =
-    '优先承接上一位发言者的情绪或论点继续推进，只有在能自然衔接时才开启新的话题。上一批次的内容更多是潜在影响，正文里不要频繁提“上一轮”。';
+    '优先承接上一位发言者的情绪或论点继续推进，需要时可以直接质疑或顶撞对方，不必过度客气；只有在能自然衔接时才开启新的话题。上一批次的内容更多是潜在影响，正文里不要频繁提“上一轮”。';
   const styleHint =
     '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
   const psychologyHint =

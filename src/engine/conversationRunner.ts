@@ -9,13 +9,24 @@ import {
   ensurePositiveViewpoint,
 } from '../constants/discussion';
 
+type RunnerMode = 'fresh' | 'resume';
+type ConversationProgress = {
+  startRound: number;
+  startTurnIndex: number;
+  spokenMap: Map<number, string[]>;
+  pendingAgentId?: string;
+};
+
 let activeRunner: ConversationRunner | undefined;
 
-export const startConversation = async () => {
+const runConversation = async (mode: RunnerMode) => {
   if (activeRunner) {
     activeRunner.forceStop();
   }
-  const runner = new ConversationRunner();
+  if (mode === 'fresh') {
+    useAppStore.getState().setResult(undefined);
+  }
+  const runner = new ConversationRunner(mode);
   activeRunner = runner;
   try {
     await runner.run();
@@ -24,6 +35,18 @@ export const startConversation = async () => {
       activeRunner = undefined;
     }
   }
+};
+
+export const startConversation = async () => {
+  await runConversation('fresh');
+};
+
+export const refreshConversation = async () => {
+  const state = useAppStore.getState();
+  if (state.runState.messages.length === 0) {
+    throw new Error('暂无可刷新内容，请先开始一次对话。');
+  }
+  await runConversation('resume');
 };
 
 export const stopConversation = () => {
@@ -40,6 +63,11 @@ class ConversationRunner {
   private pauseRequested = false;
   private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
+  private readonly runMode: RunnerMode;
+
+  constructor(runMode: RunnerMode = 'fresh') {
+    this.runMode = runMode;
+  }
 
   requestPause() {
     if (this.stopped || this.paused || this.pauseRequested) {
@@ -96,48 +124,67 @@ class ConversationRunner {
       const { runState } = state;
       const { agents, config } = runState;
 
-      if (agents.length === 0) {
-        this.appStore.getState().setRunStatus({
-          phase: 'error',
-          mode: config.mode,
-          error: '请至少配置 1 名 Agent 后再开始对话。',
-          currentRound: 0,
-          currentTurn: 0,
-          totalMessages: 0,
-          summarizedCount: 0,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-        });
-        return;
-      }
+    if (agents.length === 0) {
+      this.appStore.getState().setRunStatus({
+        phase: 'error',
+        mode: config.mode,
+        error: '请至少配置 1 名 Agent 后再开始对话。',
+        currentRound: 0,
+        currentTurn: 0,
+        totalMessages: 0,
+        summarizedCount: 0,
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+      });
+      return;
+    }
 
-    this.appStore.getState().resetMessages();
+    const preserveHistory = this.runMode === 'resume';
+
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
     this.pauseRequested = false;
     this.paused = false;
     this.resumeResolver = undefined;
 
-    const startedAt = Date.now();
-    this.setStatus({
-      phase: 'running',
-      mode: config.mode,
-      currentRound: 0,
-      currentTurn: 0,
-      totalMessages: 0,
-      summarizedCount: 0,
-      startedAt,
-      finishedAt: undefined,
-      error: undefined,
-      lastAgentId: undefined,
-      awaitingLabel: undefined,
-    });
+    let startedAt = runState.status.startedAt ?? Date.now();
+
+    if (!preserveHistory) {
+      this.appStore.getState().resetMessages();
+      startedAt = Date.now();
+      this.setStatus({
+        phase: 'running',
+        mode: config.mode,
+        currentRound: 0,
+        currentTurn: 0,
+        totalMessages: 0,
+        summarizedCount: 0,
+        startedAt,
+        finishedAt: undefined,
+        error: undefined,
+        lastAgentId: undefined,
+        awaitingLabel: undefined,
+      });
+    } else {
+      const currentStatus = this.appStore.getState().runState.status;
+      startedAt = currentStatus.startedAt ?? startedAt;
+      this.setStatus({
+        ...currentStatus,
+        phase: 'running',
+        startedAt,
+        finishedAt: undefined,
+        error: undefined,
+        awaitingLabel: undefined,
+      });
+    }
+
+    const progress = preserveHistory ? this.analyzeProgress(agents.map((agent) => agent.id)) : undefined;
 
     try {
         if (config.mode === 'sequential') {
-          await this.runSequentialOrder(agents, config);
+          await this.runSequentialOrder(agents, config, progress);
         } else {
-          await this.runRandomOrder(agents, config);
+          await this.runRandomOrder(agents, config, progress);
         }
       const { status } = this.appStore.getState().runState;
         if (!this.stopped && status.phase !== 'error') {
@@ -174,12 +221,75 @@ class ConversationRunner {
     }
   }
 
-    private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
+    private analyzeProgress(agentIds: string[]): ConversationProgress {
+      const messages = this.appStore.getState().runState.messages;
+      const spokenMap = new Map<number, string[]>();
+      if (messages.length === 0) {
+        return { startRound: 1, startTurnIndex: 0, spokenMap };
+      }
+      let lastRound = 1;
+      let lastTurnIndex = 0;
+      messages.forEach((message) => {
+        const round = Math.max(1, message.round || 1);
+        if (!spokenMap.has(round)) {
+          spokenMap.set(round, []);
+        }
+        const list = spokenMap.get(round)!;
+        if (!list.includes(message.agentId)) {
+          list.push(message.agentId);
+        }
+        const rawTurn =
+          typeof message.turn === 'number' && Number.isFinite(message.turn) ? message.turn : list.length;
+        if (round > lastRound || (round === lastRound && rawTurn >= lastTurnIndex)) {
+          lastRound = round;
+          lastTurnIndex = rawTurn;
+        }
+      });
+      const agentCount = Math.max(1, agentIds.length);
+      let startRound = Math.max(1, lastRound);
+      let startTurnIndex = Math.max(0, lastTurnIndex);
+      if (lastTurnIndex >= agentCount) {
+        startRound = lastRound + 1;
+        startTurnIndex = 0;
+      }
+      const statusSnapshot = this.appStore.getState().runState.status;
+      const spokenInStartRound = spokenMap.get(startRound) ?? [];
+      const shouldPrioritize =
+        statusSnapshot.lastAgentId &&
+        statusSnapshot.currentRound === startRound &&
+        typeof statusSnapshot.currentTurn === 'number' &&
+        statusSnapshot.currentTurn === spokenInStartRound.length + 1 &&
+        !spokenInStartRound.includes(statusSnapshot.lastAgentId);
+      const pendingAgentId = shouldPrioritize ? statusSnapshot.lastAgentId : undefined;
+      return {
+        startRound,
+        startTurnIndex,
+        spokenMap,
+        pendingAgentId,
+      };
+    }
+
+    private async runSequentialOrder(
+      agents: AgentSpec[],
+      config: RunConfig,
+      progress?: ConversationProgress,
+    ) {
     const maxRounds = config.maxRounds ?? 3;
+      const startRound = progress?.startRound ?? 1;
+      const normalizedStartTurn = progress
+        ? Math.min(agents.length, Math.max(0, progress.startTurnIndex))
+        : 0;
     for (let round = 1; round <= maxRounds; round += 1) {
+        if (round < startRound) {
+          continue;
+        }
       await this.waitIfPaused();
       if (this.shouldStop()) break;
-        for (let turn = 0; turn < agents.length; turn += 1) {
+        const turnStart = round === startRound ? normalizedStartTurn : 0;
+        if (turnStart >= agents.length) {
+          continue;
+        }
+        for (let turn = turnStart; turn < agents.length; turn += 1) {
         await this.waitIfPaused();
         if (this.shouldStop()) break;
           const agent = agents[turn];
@@ -195,26 +305,41 @@ class ConversationRunner {
     }
   }
 
-    private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
+    private async runRandomOrder(
+      agents: AgentSpec[],
+      config: RunConfig,
+      progress?: ConversationProgress,
+    ) {
       const maxRounds = config.maxRounds ?? 3;
-        for (let round = 1; round <= maxRounds; round += 1) {
+      const startRound = progress?.startRound ?? 1;
+      const spokenMap = progress?.spokenMap ?? new Map<number, string[]>();
+      for (let round = 1; round <= maxRounds; round += 1) {
+        if (round < startRound) {
+          continue;
+        }
+        await this.waitIfPaused();
+        if (this.shouldStop()) break;
+        const spokenIds = spokenMap.get(round) ?? [];
+        const priorityId = round === startRound ? progress?.pendingAgentId : undefined;
+        const roundOrder = this.buildRoundOrderForRandom(agents, spokenIds, priorityId);
+        const turnStart = round === startRound ? Math.min(spokenIds.length, roundOrder.length) : 0;
+        if (turnStart >= roundOrder.length) {
+          continue;
+        }
+        for (let turn = turnStart; turn < roundOrder.length; turn += 1) {
           await this.waitIfPaused();
           if (this.shouldStop()) break;
-          const roundOrder = this.shuffleAgentsList(agents);
-          for (let turn = 0; turn < roundOrder.length; turn += 1) {
-            await this.waitIfPaused();
-            if (this.shouldStop()) break;
-            const agent = roundOrder[turn];
-            this.setStatus((status) => ({
-              ...status,
-              currentRound: round,
-              currentTurn: turn + 1,
-              lastAgentId: agent.id,
-            }));
-            await this.executeAgentTurn(agent, round, turn + 1, config);
-            if (this.shouldStop()) break;
-          }
+          const agent = roundOrder[turn];
+          this.setStatus((status) => ({
+            ...status,
+            currentRound: round,
+            currentTurn: turn + 1,
+            lastAgentId: agent.id,
+          }));
+          await this.executeAgentTurn(agent, round, turn + 1, config);
+          if (this.shouldStop()) break;
         }
+    }
     }
 
     private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
@@ -337,6 +462,33 @@ class ConversationRunner {
       ...status,
       totalMessages: status.totalMessages + (message.content === '__SKIP__' ? 0 : 1),
     }));
+  }
+
+  private buildRoundOrderForRandom(
+    agents: AgentSpec[],
+    spokenIds: string[],
+    priorityId?: string,
+  ): AgentSpec[] {
+    if (spokenIds.length === 0 && !priorityId) {
+      return this.shuffleAgentsList(agents);
+    }
+    const spokenSet = new Set(spokenIds);
+    const spokenAgents = spokenIds
+      .map((id) => agents.find((agent) => agent.id === id))
+      .filter((agent): agent is AgentSpec => Boolean(agent));
+    const remainingAgents = agents.filter((agent) => !spokenSet.has(agent.id));
+    let priorityAgent: AgentSpec | undefined;
+    const others: AgentSpec[] = [];
+    remainingAgents.forEach((agent) => {
+      if (priorityId && agent.id === priorityId) {
+        priorityAgent = agent;
+      } else {
+        others.push(agent);
+      }
+    });
+    const shuffledOthers = this.shuffleAgentsList(others);
+    const orderedTail = priorityAgent ? [priorityAgent, ...shuffledOthers] : shuffledOthers;
+    return [...spokenAgents, ...orderedTail];
   }
 
     private buildTrustContext(agentId: string): Array<{ agentName: string; weight: number }> {

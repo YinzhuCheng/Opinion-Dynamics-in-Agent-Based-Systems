@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
+import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
 import { resolveAgentNameMap } from '../utils/names';
 
 export function DialoguePage() {
@@ -9,6 +9,7 @@ export function DialoguePage() {
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const agentNameMap = resolveAgentNameMap(agents);
 
@@ -29,10 +30,24 @@ export function DialoguePage() {
   };
   const isRunning = status.phase === 'running';
   const isPaused = status.phase === 'paused';
-  const startDisabled = isRunning || isPaused;
-  const startLabel = startDisabled ? '对话进行中' : '开始对话';
+  const startLabel = isRunning || isPaused ? '重启对话' : '开始对话';
   const stopButtonDisabled = !isRunning && !isPaused;
   const stopButtonLabel = isPaused ? '继续对话' : '停止';
+  const hasHistory = messages.length > 0;
+  const canRefresh = hasHistory && status.phase === 'error';
+  const refreshButtonText = isRefreshing ? '刷新中…' : '刷新';
+
+  const handleRefresh = async () => {
+    if (!canRefresh || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshConversation();
+    } catch (error) {
+      console.error('Failed to refresh conversation', error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     if (!status.awaitingLabel) {
@@ -59,7 +74,6 @@ export function DialoguePage() {
                 type="button"
                 className="button primary"
                 onClick={handleStart}
-                disabled={startDisabled}
               >
                 {startLabel}
               </button>
@@ -70,6 +84,14 @@ export function DialoguePage() {
                 disabled={stopButtonDisabled}
               >
                 {stopButtonLabel}
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleRefresh}
+                disabled={!canRefresh || isRefreshing}
+              >
+                {refreshButtonText}
               </button>
             <Link to="/" className="button secondary">
               返回配置
