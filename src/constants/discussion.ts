@@ -1,4 +1,4 @@
-export const DEFAULT_POSITIVE_VIEWPOINT = '大预言模型的发展会造福人类';
+export const DEFAULT_POSITIVE_VIEWPOINT = '大语言模型的发展会造福人类';
 export const DEFAULT_NEGATIVE_VIEWPOINT = '大语言模型的发展会威胁人类';
 
 export const ensurePositiveViewpoint = (value?: string) =>

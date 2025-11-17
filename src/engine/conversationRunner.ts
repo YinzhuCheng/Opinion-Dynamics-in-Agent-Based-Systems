@@ -12,8 +12,8 @@ import {
 let activeRunner: ConversationRunner | undefined;
 
 export const startConversation = async () => {
-  if (activeRunner?.isRunning()) {
-    activeRunner.requestStop();
+  if (activeRunner) {
+    activeRunner.forceStop();
   }
   const runner = new ConversationRunner();
   activeRunner = runner;
@@ -27,26 +27,68 @@ export const startConversation = async () => {
 };
 
 export const stopConversation = () => {
-  activeRunner?.requestStop();
+  activeRunner?.requestPause();
+};
+
+export const resumeConversation = () => {
+  activeRunner?.resume();
 };
 
 class ConversationRunner {
   private stopped = false;
+  private paused = false;
+  private pauseRequested = false;
+  private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
 
-  isRunning() {
-    const { phase } = this.appStore.getState().runState.status;
-    return phase === 'running' || phase === 'stopping';
-  }
-
-  requestStop() {
-    this.stopped = true;
+  requestPause() {
+    if (this.stopped || this.paused || this.pauseRequested) {
+      return;
+    }
+    this.pauseRequested = true;
     this.appStore.getState().setStopRequested(true);
-    this.appStore.getState().setRunStatus((status) => ({
+    this.setStatus((status) => ({
       ...status,
-      phase: status.phase === 'running' ? 'stopping' : status.phase,
+      phase: 'paused',
       awaitingLabel: undefined,
     }));
+  }
+
+  resume() {
+    if (this.stopped) {
+      return;
+    }
+    if (this.paused && this.resumeResolver) {
+      const resolver = this.resumeResolver;
+      this.resumeResolver = undefined;
+      this.paused = false;
+      this.appStore.getState().setStopRequested(false);
+      this.setStatus((status) => ({
+        ...status,
+        phase: 'running',
+      }));
+      resolver();
+      return;
+    }
+    if (this.pauseRequested) {
+      this.pauseRequested = false;
+      this.appStore.getState().setStopRequested(false);
+      this.setStatus((status) => ({
+        ...status,
+        phase: 'running',
+      }));
+    }
+  }
+
+  forceStop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.pauseRequested = false;
+    if (this.resumeResolver) {
+      const resolver = this.resumeResolver;
+      this.resumeResolver = undefined;
+      resolver();
+    }
   }
 
   async run() {
@@ -72,6 +114,9 @@ class ConversationRunner {
     this.appStore.getState().resetMessages();
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
+    this.pauseRequested = false;
+    this.paused = false;
+    this.resumeResolver = undefined;
 
     const startedAt = Date.now();
     this.setStatus({
@@ -132,8 +177,10 @@ class ConversationRunner {
     private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
     const maxRounds = config.maxRounds ?? 3;
     for (let round = 1; round <= maxRounds; round += 1) {
+      await this.waitIfPaused();
       if (this.shouldStop()) break;
         for (let turn = 0; turn < agents.length; turn += 1) {
+        await this.waitIfPaused();
         if (this.shouldStop()) break;
           const agent = agents[turn];
         this.setStatus((status) => ({
@@ -143,27 +190,31 @@ class ConversationRunner {
           lastAgentId: agent.id,
         }));
         await this.executeAgentTurn(agent, round, turn + 1, config);
+        if (this.shouldStop()) break;
       }
     }
   }
 
     private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
       const maxRounds = config.maxRounds ?? 3;
-      for (let round = 1; round <= maxRounds; round += 1) {
-        if (this.shouldStop()) break;
-        const roundOrder = this.shuffleAgentsList(agents);
-        for (let turn = 0; turn < roundOrder.length; turn += 1) {
+        for (let round = 1; round <= maxRounds; round += 1) {
+          await this.waitIfPaused();
           if (this.shouldStop()) break;
-          const agent = roundOrder[turn];
-          this.setStatus((status) => ({
-            ...status,
-            currentRound: round,
-            currentTurn: turn + 1,
-            lastAgentId: agent.id,
-          }));
-          await this.executeAgentTurn(agent, round, turn + 1, config);
+          const roundOrder = this.shuffleAgentsList(agents);
+          for (let turn = 0; turn < roundOrder.length; turn += 1) {
+            await this.waitIfPaused();
+            if (this.shouldStop()) break;
+            const agent = roundOrder[turn];
+            this.setStatus((status) => ({
+              ...status,
+              currentRound: round,
+              currentTurn: turn + 1,
+              lastAgentId: agent.id,
+            }));
+            await this.executeAgentTurn(agent, round, turn + 1, config);
+            if (this.shouldStop()) break;
+          }
         }
-      }
     }
 
     private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
@@ -438,8 +489,25 @@ class ConversationRunner {
     }));
   }
 
+  private async waitIfPaused() {
+    if (this.stopped) return;
+    if (!this.pauseRequested && !this.paused) {
+      return;
+    }
+    if (!this.paused) {
+      this.pauseRequested = false;
+      this.paused = true;
+      this.appStore.getState().setStopRequested(false);
+    }
+    await new Promise<void>((resolve) => {
+      this.resumeResolver = resolve;
+    });
+    this.resumeResolver = undefined;
+    this.paused = false;
+  }
+
   private shouldStop() {
-    return this.stopped || this.appStore.getState().runState.stopRequested;
+    return this.stopped;
   }
 
   private captureResultSnapshot() {

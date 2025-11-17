@@ -117,7 +117,7 @@ export interface SessionResult {
 }
 
 export interface RunStatus {
-  phase: 'idle' | 'running' | 'stopping' | 'completed' | 'error' | 'cancelled';
+  phase: 'idle' | 'running' | 'stopping' | 'completed' | 'error' | 'cancelled' | 'paused';
   mode: DialogueMode;
   startedAt?: number;
   finishedAt?: number;
