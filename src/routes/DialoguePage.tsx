@@ -1,31 +1,52 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { startConversation, stopConversation } from '../engine/conversationRunner';
+import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
 import { resolveAgentNameMap } from '../utils/names';
 
 export function DialoguePage() {
-  const { messages, agents, status, stopRequested } = useAppStore((state) => state.runState);
-  const [isStarting, setIsStarting] = useState(false);
+  const { messages, agents, status } = useAppStore((state) => state.runState);
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const agentNameMap = resolveAgentNameMap(agents);
 
   const handleStart = async () => {
-    setIsStarting(true);
     try {
-      await startConversation();
-    } catch (error) {
-      console.error('Failed to start conversation', error);
-    } finally {
-      setIsStarting(false);
-    }
+        await startConversation();
+      } catch (error) {
+        console.error('Failed to start conversation', error);
+      }
   };
 
   const handleStop = () => {
     stopConversation();
+  };
+
+  const handleResume = () => {
+    resumeConversation();
+  };
+  const isRunning = status.phase === 'running';
+  const isPaused = status.phase === 'paused';
+  const hasHistory = messages.length > 0 || status.phase !== 'idle';
+  const startLabel = hasHistory ? '重启对话' : '开始对话';
+  const stopButtonDisabled = !isRunning && !isPaused;
+  const stopButtonLabel = isPaused ? '继续对话' : '停止';
+  const canRefresh = hasHistory && status.phase === 'error';
+  const refreshButtonText = isRefreshing ? '刷新中…' : '刷新';
+
+  const handleRefresh = async () => {
+    if (!canRefresh || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshConversation();
+    } catch (error) {
+      console.error('Failed to refresh conversation', error);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   useEffect(() => {
@@ -48,23 +69,30 @@ export function DialoguePage() {
       <section className="card">
         <header className="card__header">
           <h2>实时对话流</h2>
-          <div className="card__actions">
-            <button
-              type="button"
-              className="button primary"
-              onClick={handleStart}
-              disabled={isStarting || status.phase === 'running'}
-            >
-              {isStarting ? '启动中…' : status.phase === 'running' ? '正在运行' : '开始对话'}
-            </button>
-            <button
-              type="button"
-              className="button secondary"
-              onClick={handleStop}
-              disabled={status.phase !== 'running' || stopRequested}
-            >
-              {stopRequested ? '停止中…' : '停止'}
-            </button>
+            <div className="card__actions">
+              <button
+                type="button"
+                className="button primary"
+                onClick={handleStart}
+              >
+                {startLabel}
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={isPaused ? handleResume : handleStop}
+                disabled={stopButtonDisabled}
+              >
+                {stopButtonLabel}
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleRefresh}
+                disabled={!canRefresh || isRefreshing}
+              >
+                {refreshButtonText}
+              </button>
             <Link to="/" className="button secondary">
               返回配置
             </Link>
@@ -151,6 +179,8 @@ const translatePhase = (phase: string) => {
       return '已中断';
     case 'error':
       return '出错';
+    case 'paused':
+      return '已暂停';
     default:
       return phase;
   }

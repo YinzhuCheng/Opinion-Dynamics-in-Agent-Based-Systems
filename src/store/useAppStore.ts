@@ -124,7 +124,6 @@ const createDefaultRunConfig = (): RunConfig => ({
     enableStanceChart: true,
   },
   trustMatrix: {},
-  trustRandomAlpha: 0.8,
   discussion: {
     stanceScaleSize: 3,
     positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
@@ -217,7 +216,6 @@ export interface AppStore {
     randomizeTrustMatrix: () => void;
     lastRandomMatrix?: TrustMatrix;
   uniformTrustMatrix: () => void;
-  setTrustRandomAlpha: (value: number) => void;
     configureAgentGroup: (distribution: Record<number, number>) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
@@ -452,27 +450,21 @@ export const useAppStore = create<AppStore>((set) => ({
           set(
             produce((state: AppStore) => {
               const agentIds = state.runState.agents.map((agent) => agent.id);
-              const randomMatrix: TrustMatrix = {};
-              const finalMatrix: TrustMatrix = {};
-              const alphaRaw = state.runState.config.trustRandomAlpha;
-              const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
-              agentIds.forEach((sourceId) => {
-                const rawRow: Record<string, number> = {};
-                agentIds.forEach((targetId) => {
-                  rawRow[targetId] = Math.random() + 0.01;
-                });
-                const normalizedRow = normalizeTrustRowValues(rawRow);
-                randomMatrix[sourceId] = normalizedRow;
-                const finalRow: Record<string, number> = {};
-                agentIds.forEach((targetId) => {
-                  const identity = sourceId === targetId ? 1 : 0;
-                  const randomWeight = normalizedRow[targetId] ?? 0;
-                  finalRow[targetId] = Number(((1 - alpha) * randomWeight + alpha * identity).toFixed(3));
-                });
-                finalMatrix[sourceId] = finalRow;
-              });
-              state.runState.lastRandomMatrix = randomMatrix;
-              state.runState.config.trustMatrix = finalMatrix;
+        const randomMatrix: TrustMatrix = {};
+        agentIds.forEach((sourceId) => {
+          const rawRow: Record<string, number> = {};
+          agentIds.forEach((targetId) => {
+            rawRow[targetId] = Math.random() + 0.01;
+          });
+          const normalizedRow = normalizeTrustRowValues(rawRow);
+          randomMatrix[sourceId] = { ...normalizedRow };
+        });
+        const finalMatrix: TrustMatrix = agentIds.reduce<TrustMatrix>((acc, sourceId) => {
+          acc[sourceId] = { ...(randomMatrix[sourceId] ?? {}) };
+          return acc;
+        }, {});
+        state.runState.lastRandomMatrix = randomMatrix;
+        state.runState.config.trustMatrix = finalMatrix;
             }),
           ),
       uniformTrustMatrix: () =>
@@ -490,13 +482,6 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.config.trustMatrix = nextMatrix;
           }),
         ),
-    setTrustRandomAlpha: (value) =>
-      set(
-        produce((state: AppStore) => {
-          const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.8));
-          state.runState.config.trustRandomAlpha = Number(clamped.toFixed(2));
-        }),
-      ),
     configureAgentGroup: (distribution) =>
       set(
         produce((state: AppStore) => {

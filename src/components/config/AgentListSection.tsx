@@ -48,6 +48,16 @@ const defaultMBTIPersona = (): PersonaMBTI => ({
   mbti: 'INTJ',
 });
 
+const buildScaleValues = (size: number): number[] => {
+  const normalized = size % 2 === 0 ? size + 1 : size;
+  const half = Math.max(1, Math.floor(normalized / 2));
+  const values: number[] = [];
+  for (let i = -half; i <= half; i += 1) {
+    values.push(i);
+  }
+  return values;
+};
+
 export function AgentListSection() {
   const [collapsed, setCollapsed] = useState(false);
   const agents = useAppStore((state) => state.runState.agents);
@@ -147,6 +157,7 @@ export function AgentListSection() {
         </div>
       </header>
       <div className="card__body column-gap">
+        <GroupConfigurator />
         {agents.map((agent, index) => (
           <div key={agent.id} className="agent-card">
             <div className="agent-card__header">
@@ -217,6 +228,79 @@ export function AgentListSection() {
   );
 }
 
+const GroupConfigurator = () => {
+  const stanceScaleSize = useAppStore((state) => state.runState.config.discussion.stanceScaleSize);
+  const configureAgentGroup = useAppStore((state) => state.configureAgentGroup);
+  const [counts, setCounts] = useState<Record<number, number>>(() => {
+    const initial: Record<number, number> = {};
+    buildScaleValues(stanceScaleSize).forEach((value) => {
+      initial[value] = 0;
+    });
+    return initial;
+  });
+
+  useEffect(() => {
+    setCounts((prev) => {
+      const next: Record<number, number> = {};
+      buildScaleValues(stanceScaleSize).forEach((value) => {
+        next[value] = prev[value] ?? 0;
+      });
+      return next;
+    });
+  }, [stanceScaleSize]);
+
+  const scaleValues = buildScaleValues(stanceScaleSize);
+
+  const handleCountChange = (value: number, raw: string) => {
+    const numeric = Math.max(0, Math.min(50, Math.floor(Number(raw) || 0)));
+    setCounts((prev) => ({
+      ...prev,
+      [value]: numeric,
+    }));
+  };
+
+  const handleApply = () => {
+    const distribution: Record<number, number> = {};
+    let total = 0;
+    scaleValues.forEach((value) => {
+      const count = Math.max(0, Math.floor(counts[value] ?? 0));
+      distribution[value] = count;
+      total += count;
+    });
+    if (total === 0) {
+      window.alert('请至少为一个立场标签输入人数。');
+      return;
+    }
+    configureAgentGroup(distribution);
+  };
+
+  return (
+    <div className="card-section">
+      <h3 className="card-section-title">群体设置</h3>
+      <p className="form-hint">
+        一次性规划 Agent 数量与整体立场分布，系统会按人数自动生成空白画像。未填写的立场标签默认 0。
+      </p>
+      <div className="grid stance-count-grid">
+        {scaleValues.map((value) => (
+          <label key={value} className="form-field">
+            <span>立场标签 {value > 0 ? `+${value}` : value}</span>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={counts[value] ?? 0}
+              onChange={(event) => handleCountChange(value, event.target.value)}
+            />
+          </label>
+        ))}
+      </div>
+      <button type="button" className="button primary" onClick={handleApply}>
+        应用群体设置
+      </button>
+    </div>
+  );
+};
+
 const TrustMatrixEditor = () => {
   const agents = useAppStore((state) => state.runState.agents);
   const trustMatrix = useAppStore((state) => state.runState.config.trustMatrix);
@@ -224,8 +308,6 @@ const TrustMatrixEditor = () => {
   const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
   const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
   const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
-  const trustRandomAlpha = useAppStore((state) => state.runState.config.trustRandomAlpha);
-  const setTrustRandomAlpha = useAppStore((state) => state.setTrustRandomAlpha);
   const lastRandomMatrix = useAppStore((state) => state.runState.lastRandomMatrix);
   const [matrixFolded, setMatrixFolded] = useState({ W: false, R: true });
 
@@ -247,12 +329,6 @@ const TrustMatrixEditor = () => {
       setTrustValue(sourceId, targetId, Number.isNaN(numeric) ? 0 : numeric);
     };
 
-  const handleAlphaChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = Number(event.target.value);
-    setTrustRandomAlpha(Number.isNaN(value) ? 0.8 : value);
-  };
-
-
   const handleSummaryToggle =
     (key: 'W' | 'R') => (event: React.MouseEvent<HTMLElement>) => {
       if ((event.target as HTMLElement).tagName === 'SUMMARY') {
@@ -266,7 +342,7 @@ const TrustMatrixEditor = () => {
       <p className="form-hint">
         {exampleText}
         <br />
-        每一行代表“该 Agent 聚合上一轮观点时如何加权他人”，数值范围建议 0–1，可点击“归一化”让该行加总为 1。
+          每行展示“这个 Agent 在融合上一轮观点时给各位发言者多少权重”，数值建议填 0–1，可点击“归一化”让该行的权重自动加总为 1。
       </p>
       <div className="trust-matrix-table-wrapper">
         <table className="trust-matrix-table">
@@ -311,22 +387,6 @@ const TrustMatrixEditor = () => {
         </table>
       </div>
       <div className="trust-matrix-actions">
-        <div className="trust-alpha-control">
-          <label className="form-field">
-            <span>自信系数 α</span>
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              value={trustRandomAlpha}
-              onChange={handleAlphaChange}
-            />
-          </label>
-          <p className="form-hint">
-            数学：取值 α ∈ [0, 1]，计算公式 W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵）。心理：α 越接近 1 表示越信任自己，α 越低表示越容易受他人影响。
-          </p>
-        </div>
         <div className="trust-matrix-buttons">
           <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
             随机初始化
@@ -336,10 +396,6 @@ const TrustMatrixEditor = () => {
           </button>
         </div>
       </div>
-      <details className="trust-matrix-preview" open={!matrixFolded.W} onClick={handleSummaryToggle('W')}>
-        <summary>W：最终信任矩阵（当前使用）</summary>
-        <pre>{JSON.stringify(trustMatrix, null, 2)}</pre>
-      </details>
       {lastRandomMatrix ? (
         <details className="trust-matrix-preview" open={!matrixFolded.R} onClick={handleSummaryToggle('R')}>
           <summary>R：随机矩阵（归一化后）</summary>

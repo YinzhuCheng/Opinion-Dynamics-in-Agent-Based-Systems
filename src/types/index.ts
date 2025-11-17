@@ -70,7 +70,6 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   trustMatrix: TrustMatrix;
-  trustRandomAlpha: number;
   discussion: {
     stanceScaleSize: number;
     positiveViewpoint: string;
@@ -118,7 +117,7 @@ export interface SessionResult {
 }
 
 export interface RunStatus {
-  phase: 'idle' | 'running' | 'stopping' | 'completed' | 'error' | 'cancelled';
+  phase: 'idle' | 'running' | 'stopping' | 'completed' | 'error' | 'cancelled' | 'paused';
   mode: DialogueMode;
   startedAt?: number;
   finishedAt?: number;

@@ -9,13 +9,24 @@ import {
   ensurePositiveViewpoint,
 } from '../constants/discussion';
 
+type RunnerMode = 'fresh' | 'resume';
+type ConversationProgress = {
+  startRound: number;
+  startTurnIndex: number;
+  spokenMap: Map<number, string[]>;
+  pendingAgentId?: string;
+};
+
 let activeRunner: ConversationRunner | undefined;
 
-export const startConversation = async () => {
-  if (activeRunner?.isRunning()) {
-    activeRunner.requestStop();
+const runConversation = async (mode: RunnerMode) => {
+  if (activeRunner) {
+    activeRunner.forceStop();
   }
-  const runner = new ConversationRunner();
+  if (mode === 'fresh') {
+    useAppStore.getState().setResult(undefined);
+  }
+  const runner = new ConversationRunner(mode);
   activeRunner = runner;
   try {
     await runner.run();
@@ -26,27 +37,90 @@ export const startConversation = async () => {
   }
 };
 
+export const startConversation = async () => {
+  await runConversation('fresh');
+};
+
+export const refreshConversation = async () => {
+  const state = useAppStore.getState();
+  if (state.runState.messages.length === 0) {
+    throw new Error('暂无可刷新内容，请先开始一次对话。');
+  }
+  await runConversation('resume');
+};
+
 export const stopConversation = () => {
-  activeRunner?.requestStop();
+  activeRunner?.requestPause();
+};
+
+export const resumeConversation = () => {
+  activeRunner?.resume();
 };
 
 class ConversationRunner {
   private stopped = false;
+  private paused = false;
+  private pauseRequested = false;
+  private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
+  private readonly runMode: RunnerMode;
+  private sequentialOrder?: string[];
+  private inflightControllers = new Set<AbortController>();
 
-  isRunning() {
-    const { phase } = this.appStore.getState().runState.status;
-    return phase === 'running' || phase === 'stopping';
+  constructor(runMode: RunnerMode = 'fresh') {
+    this.runMode = runMode;
   }
 
-  requestStop() {
-    this.stopped = true;
+  requestPause() {
+    if (this.stopped || this.paused || this.pauseRequested) {
+      return;
+    }
+    this.pauseRequested = true;
     this.appStore.getState().setStopRequested(true);
-    this.appStore.getState().setRunStatus((status) => ({
+    this.setStatus((status) => ({
       ...status,
-      phase: status.phase === 'running' ? 'stopping' : status.phase,
+      phase: 'paused',
       awaitingLabel: undefined,
     }));
+  }
+
+  resume() {
+    if (this.stopped) {
+      return;
+    }
+    if (this.paused && this.resumeResolver) {
+      const resolver = this.resumeResolver;
+      this.resumeResolver = undefined;
+      this.paused = false;
+      this.appStore.getState().setStopRequested(false);
+      this.setStatus((status) => ({
+        ...status,
+        phase: 'running',
+      }));
+      resolver();
+      return;
+    }
+    if (this.pauseRequested) {
+      this.pauseRequested = false;
+      this.appStore.getState().setStopRequested(false);
+      this.setStatus((status) => ({
+        ...status,
+        phase: 'running',
+      }));
+    }
+  }
+
+  forceStop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.pauseRequested = false;
+    this.inflightControllers.forEach((controller) => controller.abort());
+    this.inflightControllers.clear();
+    if (this.resumeResolver) {
+      const resolver = this.resumeResolver;
+      this.resumeResolver = undefined;
+      resolver();
+    }
   }
 
   async run() {
@@ -54,45 +128,78 @@ class ConversationRunner {
       const { runState } = state;
       const { agents, config } = runState;
 
-      if (agents.length === 0) {
-        this.appStore.getState().setRunStatus({
-          phase: 'error',
-          mode: config.mode,
-          error: '请至少配置 1 名 Agent 后再开始对话。',
-          currentRound: 0,
-          currentTurn: 0,
-          totalMessages: 0,
-          summarizedCount: 0,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-        });
-        return;
-      }
+    if (agents.length === 0) {
+      this.appStore.getState().setRunStatus({
+        phase: 'error',
+        mode: config.mode,
+        error: '请至少配置 1 名 Agent 后再开始对话。',
+        currentRound: 0,
+        currentTurn: 0,
+        totalMessages: 0,
+        summarizedCount: 0,
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+      });
+      return;
+    }
 
-    this.appStore.getState().resetMessages();
+    const preserveHistory = this.runMode === 'resume';
+    if (config.mode === 'sequential' && !preserveHistory) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    } else if (config.mode === 'sequential' && !this.sequentialOrder) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    }
+
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
+    this.pauseRequested = false;
+    this.paused = false;
+    this.resumeResolver = undefined;
 
-    const startedAt = Date.now();
-    this.setStatus({
-      phase: 'running',
-      mode: config.mode,
-      currentRound: 0,
-      currentTurn: 0,
-      totalMessages: 0,
-      summarizedCount: 0,
-      startedAt,
-      finishedAt: undefined,
-      error: undefined,
-      lastAgentId: undefined,
-      awaitingLabel: undefined,
-    });
+    let startedAt = runState.status.startedAt ?? Date.now();
+
+    if (!preserveHistory) {
+      this.appStore.getState().resetMessages();
+      startedAt = Date.now();
+      this.setStatus({
+        phase: 'running',
+        mode: config.mode,
+        currentRound: 0,
+        currentTurn: 0,
+        totalMessages: 0,
+        summarizedCount: 0,
+        startedAt,
+        finishedAt: undefined,
+        error: undefined,
+        lastAgentId: undefined,
+        awaitingLabel: undefined,
+      });
+    } else {
+      const currentStatus = this.appStore.getState().runState.status;
+      startedAt = currentStatus.startedAt ?? startedAt;
+      this.setStatus({
+        ...currentStatus,
+        phase: 'running',
+        startedAt,
+        finishedAt: undefined,
+        error: undefined,
+        awaitingLabel: undefined,
+      });
+    }
+
+    const progress = preserveHistory
+      ? this.analyzeProgress(
+          config.mode === 'sequential'
+            ? this.ensureSequentialOrder(agents).map((agent) => agent.id)
+            : agents.map((agent) => agent.id),
+        )
+      : undefined;
 
     try {
         if (config.mode === 'sequential') {
-          await this.runSequentialOrder(agents, config);
+          await this.runSequentialOrder(agents, config, progress);
         } else {
-          await this.runRandomOrder(agents, config);
+          await this.runRandomOrder(agents, config, progress);
         }
       const { status } = this.appStore.getState().runState;
         if (!this.stopped && status.phase !== 'error') {
@@ -129,13 +236,95 @@ class ConversationRunner {
     }
   }
 
-    private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
+    private analyzeProgress(agentIds: string[]): ConversationProgress {
+      const messages = this.appStore.getState().runState.messages;
+      const spokenMap = new Map<number, string[]>();
+      if (messages.length === 0) {
+        return { startRound: 1, startTurnIndex: 0, spokenMap };
+      }
+      let lastRound = 1;
+      let lastTurnIndex = 0;
+      messages.forEach((message) => {
+        const round = Math.max(1, message.round || 1);
+        if (!spokenMap.has(round)) {
+          spokenMap.set(round, []);
+        }
+        const list = spokenMap.get(round)!;
+        if (!list.includes(message.agentId)) {
+          list.push(message.agentId);
+        }
+        const rawTurn =
+          typeof message.turn === 'number' && Number.isFinite(message.turn) ? message.turn : list.length;
+        if (round > lastRound || (round === lastRound && rawTurn >= lastTurnIndex)) {
+          lastRound = round;
+          lastTurnIndex = rawTurn;
+        }
+      });
+      const agentCount = Math.max(1, agentIds.length);
+      let startRound = Math.max(1, lastRound);
+      let startTurnIndex = Math.max(0, lastTurnIndex);
+      if (lastTurnIndex >= agentCount) {
+        startRound = lastRound + 1;
+        startTurnIndex = 0;
+      }
+      const statusSnapshot = this.appStore.getState().runState.status;
+      const spokenInStartRound = spokenMap.get(startRound) ?? [];
+      const shouldPrioritize =
+        statusSnapshot.lastAgentId &&
+        statusSnapshot.currentRound === startRound &&
+        typeof statusSnapshot.currentTurn === 'number' &&
+        statusSnapshot.currentTurn === spokenInStartRound.length + 1 &&
+        !spokenInStartRound.includes(statusSnapshot.lastAgentId);
+      const pendingAgentId = shouldPrioritize ? statusSnapshot.lastAgentId : undefined;
+      return {
+        startRound,
+        startTurnIndex,
+        spokenMap,
+        pendingAgentId,
+      };
+    }
+
+  private ensureSequentialOrder(agents: AgentSpec[]): AgentSpec[] {
+    if (!this.sequentialOrder) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    }
+    const existingSet = new Set(this.sequentialOrder);
+    agents.forEach((agent) => {
+      if (!existingSet.has(agent.id)) {
+        this.sequentialOrder!.push(agent.id);
+        existingSet.add(agent.id);
+      }
+    });
+    const agentMap = new Map(agents.map((agent) => [agent.id, agent]));
+    this.sequentialOrder = this.sequentialOrder.filter((id) => agentMap.has(id));
+    return this.sequentialOrder.map((id) => agentMap.get(id)!).filter((agent): agent is AgentSpec => Boolean(agent));
+  }
+
+  private async runSequentialOrder(
+    agents: AgentSpec[],
+    config: RunConfig,
+    progress?: ConversationProgress,
+  ) {
+    const orderedAgents = this.ensureSequentialOrder(agents);
     const maxRounds = config.maxRounds ?? 3;
+    const startRound = progress?.startRound ?? 1;
+    const normalizedStartTurn = progress
+      ? Math.min(orderedAgents.length, Math.max(0, progress.startTurnIndex))
+      : 0;
     for (let round = 1; round <= maxRounds; round += 1) {
+      if (round < startRound) {
+        continue;
+      }
+      await this.waitIfPaused();
       if (this.shouldStop()) break;
-        for (let turn = 0; turn < agents.length; turn += 1) {
+      const turnStart = round === startRound ? normalizedStartTurn : 0;
+      if (turnStart >= orderedAgents.length) {
+        continue;
+      }
+      for (let turn = turnStart; turn < orderedAgents.length; turn += 1) {
+        await this.waitIfPaused();
         if (this.shouldStop()) break;
-          const agent = agents[turn];
+        const agent = orderedAgents[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
@@ -143,16 +332,34 @@ class ConversationRunner {
           lastAgentId: agent.id,
         }));
         await this.executeAgentTurn(agent, round, turn + 1, config);
+        if (this.shouldStop()) break;
       }
     }
   }
 
-    private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
+  private async runRandomOrder(
+      agents: AgentSpec[],
+      config: RunConfig,
+      progress?: ConversationProgress,
+    ) {
       const maxRounds = config.maxRounds ?? 3;
+      const startRound = progress?.startRound ?? 1;
+      const spokenMap = progress?.spokenMap ?? new Map<number, string[]>();
       for (let round = 1; round <= maxRounds; round += 1) {
+        if (round < startRound) {
+          continue;
+        }
+        await this.waitIfPaused();
         if (this.shouldStop()) break;
-        const roundOrder = this.shuffleAgentsList(agents);
-        for (let turn = 0; turn < roundOrder.length; turn += 1) {
+        const spokenIds = spokenMap.get(round) ?? [];
+        const priorityId = round === startRound ? progress?.pendingAgentId : undefined;
+        const roundOrder = this.buildRoundOrderForRandom(agents, spokenIds, priorityId);
+        const turnStart = round === startRound ? Math.min(spokenIds.length, roundOrder.length) : 0;
+        if (turnStart >= roundOrder.length) {
+          continue;
+        }
+        for (let turn = turnStart; turn < roundOrder.length; turn += 1) {
+          await this.waitIfPaused();
           if (this.shouldStop()) break;
           const agent = roundOrder[turn];
           this.setStatus((status) => ({
@@ -162,11 +369,17 @@ class ConversationRunner {
             lastAgentId: agent.id,
           }));
           await this.executeAgentTurn(agent, round, turn + 1, config);
+          if (this.shouldStop()) break;
         }
-      }
+    }
     }
 
-    private async executeAgentTurn(agent: AgentSpec, round: number, turn: number, config: RunConfig) {
+  private async executeAgentTurn(
+    agent: AgentSpec,
+    round: number,
+    turn: number,
+    config: RunConfig,
+  ): Promise<Message | undefined> {
     const baseModelConfig = this.resolveModelConfig(agent, config);
     const apiKey = this.resolveApiKey(baseModelConfig);
 
@@ -176,7 +389,10 @@ class ConversationRunner {
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
         const agentNames = this.getAgentNameMap();
-        const { previousRoundMessages, lastSpeakerMessage } = this.buildRoundContext(round, agent.id);
+        const { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage } = this.buildRoundContext(
+          round,
+          agent.id,
+        );
         const visibleWindow = [...previousRoundMessages];
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
@@ -188,7 +404,7 @@ class ConversationRunner {
         const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
         const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
 
-      const systemPrompt = buildAgentSystemPrompt({
+        const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
@@ -201,20 +417,21 @@ class ConversationRunner {
             previousRoundMessages,
           previousPsychology,
       });
-      const userPrompt = buildAgentUserPrompt({
-        agent,
-        mode: config.mode,
-        round,
-        turn,
-        agentNames,
-        trustWeights,
-        stanceScaleSize: discussion.stanceScaleSize,
+        const userPrompt = buildAgentUserPrompt({
+          agent,
+          mode: config.mode,
+          round,
+          turn,
+          agentNames,
+          trustWeights,
+          stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
           previousPsychology,
-      });
+          selfPreviousMessage,
+        });
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -225,22 +442,37 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
+    const controller = new AbortController();
+    this.inflightControllers.add(controller);
     let content = '';
     try {
       content =
-        (await chatStream(messages, modelConfig, extra, {
-          onStatus: (status) => {
-            if (status === 'waiting_response' || status === 'responding') {
-              this.setAwaiting('response');
-            } else if (status === 'thinking') {
-              this.setAwaiting('thinking');
-            } else if (status === 'done') {
-              this.setAwaiting(undefined);
-            }
+        (await chatStream(
+          messages,
+          modelConfig,
+          extra,
+          {
+            onStatus: (status) => {
+              if (status === 'waiting_response' || status === 'responding') {
+                this.setAwaiting('response');
+              } else if (status === 'thinking') {
+                this.setAwaiting('thinking');
+              } else if (status === 'done') {
+                this.setAwaiting(undefined);
+              }
+            },
           },
-        })) || '';
+          controller.signal,
+        )) || '';
+    } catch (error: any) {
+      if (this.isAbortError(error)) {
+        this.inflightControllers.delete(controller);
+        return undefined;
+      }
+      throw error;
     } finally {
       this.setAwaiting(undefined);
+      this.inflightControllers.delete(controller);
     }
 
       content = content.trim() || '__SKIP__';
@@ -281,11 +513,46 @@ class ConversationRunner {
     return message;
   }
 
+  private isAbortError(error: unknown): boolean {
+    if (!error) return false;
+    if (typeof error === 'object' && (error as any).name === 'AbortError') {
+      return true;
+    }
+    return String(error).includes('AbortError');
+  }
+
   private updateStatusAfterMessage(message: Message) {
     this.setStatus((status) => ({
       ...status,
       totalMessages: status.totalMessages + (message.content === '__SKIP__' ? 0 : 1),
     }));
+  }
+
+  private buildRoundOrderForRandom(
+    agents: AgentSpec[],
+    spokenIds: string[],
+    priorityId?: string,
+  ): AgentSpec[] {
+    if (spokenIds.length === 0 && !priorityId) {
+      return this.shuffleAgentsList(agents);
+    }
+    const spokenSet = new Set(spokenIds);
+    const spokenAgents = spokenIds
+      .map((id) => agents.find((agent) => agent.id === id))
+      .filter((agent): agent is AgentSpec => Boolean(agent));
+    const remainingAgents = agents.filter((agent) => !spokenSet.has(agent.id));
+    let priorityAgent: AgentSpec | undefined;
+    const others: AgentSpec[] = [];
+    remainingAgents.forEach((agent) => {
+      if (priorityId && agent.id === priorityId) {
+        priorityAgent = agent;
+      } else {
+        others.push(agent);
+      }
+    });
+    const shuffledOthers = this.shuffleAgentsList(others);
+    const orderedTail = priorityAgent ? [priorityAgent, ...shuffledOthers] : shuffledOthers;
+    return [...spokenAgents, ...orderedTail];
   }
 
     private buildTrustContext(agentId: string): Array<{ agentName: string; weight: number }> {
@@ -316,19 +583,33 @@ class ConversationRunner {
         }, {});
       }
 
-      private buildRoundContext(
-        round: number,
-        agentId: string,
-      ): { previousRoundMessages: Message[]; lastSpeakerMessage?: Message } {
+  private buildRoundContext(
+    round: number,
+    agentId: string,
+  ): {
+        previousRoundMessages: Message[];
+        lastSpeakerMessage?: Message;
+        selfPreviousMessage?: Message;
+      } {
         const messages = this.appStore.getState().runState.messages;
         const previousRoundMessages =
-          round > 1 ? messages.filter((message) => message.round === round - 1) : [];
+      round > 1
+        ? messages.filter(
+            (message) => message.round === round - 1 && message.agentId !== agentId,
+          )
+        : [];
+    const selfPreviousMessage =
+      round > 1
+        ? messages
+            .filter((message) => message.round === round - 1 && message.agentId === agentId)
+            .slice(-1)[0]
+        : undefined;
         const lastMessage = messages[messages.length - 1];
         const lastSpeakerMessage =
           lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId
             ? lastMessage
             : undefined;
-        return { previousRoundMessages, lastSpeakerMessage };
+    return { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage };
       }
 
       private collectPreviousPsychology(
@@ -350,19 +631,31 @@ class ConversationRunner {
           }));
       }
 
-    private extractPsychology(content: string): { content: string; psychology?: string } {
-      const regex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]\s*$/;
-      const match = content.match(regex);
-      if (!match || typeof match.index !== 'number') {
-        return { content };
-      }
-      const trimmedContent = content.slice(0, match.index).trimEnd();
-      const psychology = match[1].trim();
+  private extractPsychology(content: string): { content: string; psychology?: string } {
+    const blockRegex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]/;
+    const blockMatch = content.match(blockRegex);
+    if (blockMatch && typeof blockMatch.index === 'number') {
+      const before = content.slice(0, blockMatch.index);
+      const after = content.slice(blockMatch.index + blockMatch[0].length);
+      const remaining = `${before}${after}`.trim();
+      const psychology = blockMatch[1].trim();
+      return {
+        content: remaining,
+        psychology: psychology.length > 0 ? psychology : undefined,
+      };
+    }
+    const legacyRegex = /\[\[PSY\]\]([\s\S]*?)$/;
+    const legacyMatch = content.match(legacyRegex);
+    if (legacyMatch && typeof legacyMatch.index === 'number') {
+      const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
+      const psychology = legacyMatch[1].trim();
       return {
         content: trimmedContent,
         psychology: psychology.length > 0 ? psychology : undefined,
       };
     }
+    return { content };
+  }
 
       private processSelfReportedStance(
       content: string,
@@ -426,8 +719,25 @@ class ConversationRunner {
     }));
   }
 
+  private async waitIfPaused() {
+    if (this.stopped) return;
+    if (!this.pauseRequested && !this.paused) {
+      return;
+    }
+    if (!this.paused) {
+      this.pauseRequested = false;
+      this.paused = true;
+      this.appStore.getState().setStopRequested(false);
+    }
+    await new Promise<void>((resolve) => {
+      this.resumeResolver = resolve;
+    });
+    this.resumeResolver = undefined;
+    this.paused = false;
+  }
+
   private shouldStop() {
-    return this.stopped || this.appStore.getState().runState.stopRequested;
+    return this.stopped;
   }
 
   private captureResultSnapshot() {
