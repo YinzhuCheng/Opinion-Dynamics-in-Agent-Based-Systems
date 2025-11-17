@@ -5,12 +5,19 @@ import type { EChartsOption } from 'echarts';
 import { useAppStore } from '../store/useAppStore';
 import type { Message, SessionResult, RunConfig } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
+import {
+  ensureNegativeViewpoint,
+  ensurePositiveViewpoint,
+} from '../constants/discussion';
 
 export function ResultsPage() {
   const result = useAppStore((state) => state.currentResult);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactECharts | null>(null);
+    const discussionSnapshot = result?.configSnapshot.discussion;
+    const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
+    const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
 
   const stanceChartOption = useMemo<EChartsOption | null>(() => {
     if (!result?.configSnapshot.visualization.enableStanceChart) return null;
@@ -67,6 +74,7 @@ export function ResultsPage() {
                 {countVisibleMessages(result.messages)} 条有效消息。
               </p>
               <p>摘要：{result.summary || '尚未生成摘要。'}</p>
+                <p>立场基准：正向 = {positiveViewpointLabel} ｜ 负向 = {negativeViewpointLabel}</p>
               <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
                 <div className="results-actions">
                   <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
@@ -214,7 +222,10 @@ const buildTranscriptText = (
   const stanceEnabled = result.configSnapshot.visualization?.enableStanceChart ?? false;
   lines.push(`观点曲线：${stanceEnabled ? '启用' : '关闭'}`);
   const discussion = result.configSnapshot.discussion;
-  lines.push(`讨论主题：${discussion?.topic || '（未设置）'}`);
+  const positiveView = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+  const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+  lines.push(`正观点：${positiveView}`);
+  lines.push(`负观点：${negativeView}`);
   if (discussion) {
     lines.push(`立场/情感刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
   }
@@ -245,6 +256,10 @@ const buildTranscriptText = (
           lines.push('  [User Prompt]');
           lines.push(`  ${message.userPrompt.replace(/\n/g, '\n  ')}`);
         }
+          if (message.psychology) {
+            lines.push('  [Psychology]');
+            lines.push(`  ${message.psychology.replace(/\n/g, '\n  ')}`);
+          }
       }
     }
     lines.push('');

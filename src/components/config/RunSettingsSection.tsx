@@ -52,10 +52,9 @@ export function RunSettingsSection() {
   const setMaxMessages = useAppStore((state) => state.setMaxMessages);
   const setUseGlobalModelConfig = useAppStore((state) => state.setUseGlobalModelConfig);
   const updateGlobalModelConfig = useAppStore((state) => state.updateGlobalModelConfig);
-  const setDiscussionTopic = useAppStore((state) => state.setDiscussionTopic);
   const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
-  const setPositiveDefinition = useAppStore((state) => state.setPositiveDefinition);
-  const setNegativeDefinition = useAppStore((state) => state.setNegativeDefinition);
+  const setPositiveViewpoint = useAppStore((state) => state.setPositiveViewpoint);
+  const setNegativeViewpoint = useAppStore((state) => state.setNegativeViewpoint);
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -126,21 +125,17 @@ export function RunSettingsSection() {
     setTestState({ status: 'idle' });
   };
 
-  const handleTopicChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setDiscussionTopic(event.target.value);
-  };
-
   const handleScaleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number(event.target.value);
     setStanceScaleSize(Number.isNaN(value) ? 3 : value);
   };
 
-  const handlePositiveDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setPositiveDefinition(event.target.value);
+  const handlePositiveViewpointChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setPositiveViewpoint(event.target.value);
   };
 
-  const handleNegativeDefinitionChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setNegativeDefinition(event.target.value);
+  const handleNegativeViewpointChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setNegativeViewpoint(event.target.value);
   };
 
     const handleGlobalTestConnection = async (vendor: Vendor, config: ModelConfig) => {
@@ -230,7 +225,7 @@ export function RunSettingsSection() {
       </header>
 
       <div className="card__body column-gap">
-        <div className="card-section">
+          <div className="card-section">
           <h3 className="card-section-title">对话模式与全局模型</h3>
           <div className="mode-selector">
             {modeOptions.map((option) => (
@@ -250,88 +245,74 @@ export function RunSettingsSection() {
             ))}
           </div>
 
-          <div className="grid two-columns">
-            {runConfig.mode === 'round_robin' ? (
-              <label className="form-field">
-                <span>最大轮数</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={runConfig.maxRounds ?? ''}
-                  placeholder="例如 6"
-                  onChange={handleMaxRoundsChange}
-                />
-              </label>
-            ) : (
-              <label className="form-field">
-                <span>最大消息数</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={runConfig.maxMessages ?? ''}
-                  placeholder="例如 20"
-                  onChange={handleMaxMessagesChange}
-                />
-              </label>
-            )}
-            <label className="form-field">
-              <span>模型配置模式</span>
-              <select
-                value={runConfig.useGlobalModelConfig ? 'global' : 'perAgent'}
-                onChange={(event) => setUseGlobalModelConfig(event.target.value === 'global')}
-              >
-                <option value="global">统一配置（所有 Agent 共用）</option>
-                <option value="perAgent">自由配置（每个 Agent 独立）</option>
-              </select>
-            </label>
-          </div>
-
-            <div className="discussion-block">
-              <div className="grid two-columns">
+            <div className="grid two-columns">
+              {runConfig.mode === 'round_robin' ? (
                 <label className="form-field">
-                  <span>对话主题</span>
-                  <input
-                    type="text"
-                    value={discussion.topic}
-                    onChange={handleTopicChange}
-                    placeholder="例如：苹果新品 Vision Pro 的定价是否合理？"
-                  />
-                  <p className="form-hint">所有 Agent 必须围绕该主题展开，留空将无法开始对话。</p>
-                </label>
-                <label className="form-field">
-                  <span>立场/情感刻度粒度</span>
+                  <span>最大轮数</span>
                   <input
                     type="number"
-                    min={3}
-                    step={2}
-                    value={discussion.stanceScaleSize}
-                    onChange={handleScaleChange}
+                    min={1}
+                    value={runConfig.maxRounds ?? ''}
+                    placeholder="例如 6"
+                    onChange={handleMaxRoundsChange}
                   />
-                  <p className="form-hint">
-                    请输入一个 ≥3 的奇数，如 3、5、7。刻度会映射为 ±{Math.floor(discussion.stanceScaleSize / 2)}…0…±{Math.floor(discussion.stanceScaleSize / 2)}。
-                  </p>
                 </label>
-              </div>
+              ) : (
+                <label className="form-field">
+                  <span>最大消息数</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={runConfig.maxMessages ?? ''}
+                    placeholder="例如 20"
+                    onChange={handleMaxMessagesChange}
+                  />
+                </label>
+              )}
+              <label className="form-field">
+                <span>模型配置模式</span>
+                <select
+                  value={runConfig.useGlobalModelConfig ? 'global' : 'perAgent'}
+                  onChange={(event) => setUseGlobalModelConfig(event.target.value === 'global')}
+                >
+                  <option value="global">统一配置（所有 Agent 共用）</option>
+                  <option value="perAgent">自由配置（每个 Agent 独立）</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="discussion-block">
+              <label className="form-field">
+                <span>立场/情感刻度粒度</span>
+                <input
+                  type="number"
+                  min={3}
+                  step={2}
+                  value={discussion.stanceScaleSize}
+                  onChange={handleScaleChange}
+                />
+                <p className="form-hint">
+                  请输入一个 ≥3 的奇数，如 3、5、7。整数刻度会映射为 ±{Math.floor(discussion.stanceScaleSize / 2)}…0…±{Math.floor(discussion.stanceScaleSize / 2)}，绝对值越大代表立场越极端。
+                </p>
+              </label>
               <div className="grid two-columns">
                 <label className="form-field">
-                  <span>正值代表</span>
-                  <input
-                    type="text"
-                    value={discussion.positiveDefinition}
-                    onChange={handlePositiveDefinitionChange}
-                    placeholder="例如：支持项羽的做法"
+                  <span>正观点</span>
+                  <textarea
+                    value={discussion.positiveViewpoint}
+                    onChange={handlePositiveViewpointChange}
+                    placeholder="例如：支持项羽乌江自刎"
                   />
-                  <p className="form-hint">描述当情感评分为正数时的含义，例如“更加认可该方案”。</p>
+                  <p className="form-hint">描述当情感评分为正数/更极端正值时，Agent 想表达的核心观点。留空将自动使用“支持项羽乌江自刎”。</p>
                 </label>
                 <label className="form-field">
-                  <span>负值代表</span>
-                  <input
-                    type="text"
-                    value={discussion.negativeDefinition}
-                    onChange={handleNegativeDefinitionChange}
-                    placeholder="例如：反对项羽的做法"
+                  <span>负观点</span>
+                  <textarea
+                    value={discussion.negativeViewpoint}
+                    onChange={handleNegativeViewpointChange}
+                    placeholder="例如：反对项羽乌江自刎"
                   />
-                  <p className="form-hint">描述当情感评分为负数时的含义，例如“认为此举是失策”。</p>
+                  <p className="form-hint">描述当情感评分为负数/更极端负值时的立场陈述。留空将自动使用“反对项羽乌江自刎”。</p>
                 </label>
               </div>
             </div>

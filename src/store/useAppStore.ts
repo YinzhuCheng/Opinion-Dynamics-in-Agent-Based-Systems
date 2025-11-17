@@ -8,12 +8,16 @@ import type {
   Persona,
   RunConfig,
   RunState,
-    SessionResult,
+  SessionResult,
   Vendor,
   DialogueMode,
   RunStatus,
   TrustMatrix,
 } from '../types';
+import {
+  DEFAULT_NEGATIVE_VIEWPOINT,
+  DEFAULT_POSITIVE_VIEWPOINT,
+} from '../constants/discussion';
 
 const defaultModelConfig: ModelConfig = {
   vendor: 'openai',
@@ -122,10 +126,9 @@ const createDefaultRunConfig = (): RunConfig => ({
   },
   trustMatrix: {},
   discussion: {
-    topic: '',
     stanceScaleSize: 3,
-    positiveDefinition: '',
-    negativeDefinition: '',
+    positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
+    negativeViewpoint: DEFAULT_NEGATIVE_VIEWPOINT,
   },
 });
 
@@ -207,12 +210,11 @@ export interface AppStore {
   ) => void;
   setTrustValue: (sourceId: string, targetId: string, value: number) => void;
   normalizeTrustRow: (sourceId: string) => void;
-  setDiscussionTopic: (topic: string) => void;
   setStanceScaleSize: (size: number) => void;
-    setPositiveDefinition: (text: string) => void;
-    setNegativeDefinition: (text: string) => void;
-    randomizeTrustMatrix: () => void;
-    uniformTrustMatrix: () => void;
+  setPositiveViewpoint: (text: string) => void;
+  setNegativeViewpoint: (text: string) => void;
+  randomizeTrustMatrix: () => void;
+  uniformTrustMatrix: () => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -438,30 +440,24 @@ export const useAppStore = create<AppStore>((set) => ({
           state.runState.config.trustMatrix[sourceId] = normalizeTrustRowValues(row);
         }),
       ),
-    setDiscussionTopic: (topic) =>
-      set(
-        produce((state: AppStore) => {
-          state.runState.config.discussion.topic = topic;
-        }),
-      ),
-    setStanceScaleSize: (size) =>
-      set(
-        produce((state: AppStore) => {
-          state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
-        }),
-      ),
-      setPositiveDefinition: (text) =>
+      setStanceScaleSize: (size) =>
         set(
           produce((state: AppStore) => {
-            state.runState.config.discussion.positiveDefinition = text;
+            state.runState.config.discussion.stanceScaleSize = sanitizeStanceScaleSize(size);
           }),
         ),
-      setNegativeDefinition: (text) =>
-        set(
-          produce((state: AppStore) => {
-            state.runState.config.discussion.negativeDefinition = text;
-          }),
-        ),
+    setPositiveViewpoint: (text) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.positiveViewpoint = text;
+        }),
+      ),
+    setNegativeViewpoint: (text) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.config.discussion.negativeViewpoint = text;
+        }),
+      ),
       randomizeTrustMatrix: () =>
         set(
           produce((state: AppStore) => {

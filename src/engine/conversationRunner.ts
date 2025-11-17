@@ -4,6 +4,10 @@ import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../t
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
+import {
+  ensureNegativeViewpoint,
+  ensurePositiveViewpoint,
+} from '../constants/discussion';
 
 let activeRunner: ConversationRunner | undefined;
 
@@ -46,47 +50,15 @@ class ConversationRunner {
   }
 
   async run() {
-    const state = this.appStore.getState();
-    const { runState } = state;
-    const { agents, config } = runState;
+      const state = this.appStore.getState();
+      const { runState } = state;
+      const { agents, config } = runState;
 
-    if (agents.length === 0) {
-      this.appStore.getState().setRunStatus({
-        phase: 'error',
-        mode: config.mode,
-        error: '请至少配置 1 名 Agent 后再开始对话。',
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-      });
-      return;
-    }
-
-      const topic = config.discussion?.topic?.trim();
-      if (!topic) {
+      if (agents.length === 0) {
         this.appStore.getState().setRunStatus({
           phase: 'error',
           mode: config.mode,
-          error: '请先在配置页填写对话主题，所有 Agent 将围绕该主题展开。',
-          currentRound: 0,
-          currentTurn: 0,
-          totalMessages: 0,
-          summarizedCount: 0,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-        });
-        return;
-      }
-      const positiveDefinition = config.discussion?.positiveDefinition?.trim();
-      const negativeDefinition = config.discussion?.negativeDefinition?.trim();
-      if (!positiveDefinition || !negativeDefinition) {
-        this.appStore.getState().setRunStatus({
-          phase: 'error',
-          mode: config.mode,
-          error: '请完善“正值代表 / 负值代表”的含义，方便模型给出对应立场。',
+          error: '请至少配置 1 名 Agent 后再开始对话。',
           currentRound: 0,
           currentTurn: 0,
           totalMessages: 0,
@@ -228,6 +200,8 @@ class ConversationRunner {
       const agentNames = this.getAgentNameMap();
       const trustWeights = this.buildTrustContext(agent.id);
       const discussion = this.appStore.getState().runState.config.discussion;
+        const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+        const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
 
       const systemPrompt = buildAgentSystemPrompt({
         agent,
@@ -237,10 +211,9 @@ class ConversationRunner {
         contextMessages,
         agentNames,
         trustWeights,
-        topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
-        positiveDefinition: discussion.positiveDefinition,
-        negativeDefinition: discussion.negativeDefinition,
+          positiveViewpoint,
+          negativeViewpoint,
       });
       const userPrompt = buildAgentUserPrompt({
         agent,
@@ -250,10 +223,9 @@ class ConversationRunner {
         contextMessages,
         agentNames,
         trustWeights,
-        topic: discussion.topic,
         stanceScaleSize: discussion.stanceScaleSize,
-        positiveDefinition: discussion.positiveDefinition,
-        negativeDefinition: discussion.negativeDefinition,
+          positiveViewpoint,
+          negativeViewpoint,
       });
 
     const messages: ChatMessage[] = [
@@ -283,10 +255,20 @@ class ConversationRunner {
       this.setAwaiting(undefined);
     }
 
-    content = content.trim() || '__SKIP__';
+      content = content.trim() || '__SKIP__';
 
-      const stanceResult = this.processSelfReportedStance(content, discussion);
-      content = stanceResult.content;
+      let psychology: string | undefined;
+      if (content !== '__SKIP__') {
+        const psychologyResult = this.extractPsychology(content);
+        psychology = psychologyResult.psychology;
+        content = psychologyResult.content.trim() || '__SKIP__';
+      }
+      if (content === '__SKIP__') {
+        psychology = undefined;
+      }
+
+        const stanceResult = this.processSelfReportedStance(content, discussion);
+        content = stanceResult.content;
 
     const message: Message = {
       id: nanoid(),
@@ -298,6 +280,7 @@ class ConversationRunner {
       turn,
       systemPrompt,
       userPrompt,
+        psychology,
     };
     if (stanceResult.stance) {
       message.stance = stanceResult.stance;
@@ -357,7 +340,21 @@ class ConversationRunner {
       return context;
     }
 
-    private processSelfReportedStance(
+    private extractPsychology(content: string): { content: string; psychology?: string } {
+      const regex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]\s*$/;
+      const match = content.match(regex);
+      if (!match || typeof match.index !== 'number') {
+        return { content };
+      }
+      const trimmedContent = content.slice(0, match.index).trimEnd();
+      const psychology = match[1].trim();
+      return {
+        content: trimmedContent,
+        psychology: psychology.length > 0 ? psychology : undefined,
+      };
+    }
+
+      private processSelfReportedStance(
       content: string,
       discussion: RunConfig['discussion'],
     ): { content: string; stance?: { score: number; note?: string } } {
@@ -374,8 +371,8 @@ class ConversationRunner {
         return { content: trimmed };
       }
       score = Math.max(-maxLevel, Math.min(maxLevel, score));
-      const positiveDesc = discussion.positiveDefinition?.trim() || '倾向正向立场';
-      const negativeDesc = discussion.negativeDefinition?.trim() || '倾向负向立场';
+        const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
+        const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
       const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
       const sanitizedContent = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
       const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;

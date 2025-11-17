@@ -74,10 +74,9 @@ export interface RunConfig {
   globalModelConfig?: ModelConfig;
   trustMatrix: TrustMatrix;
   discussion: {
-    topic: string;
     stanceScaleSize: number;
-    positiveDefinition: string;
-    negativeDefinition: string;
+    positiveViewpoint: string;
+    negativeViewpoint: string;
   };
   visualization: {
     enableStanceChart: boolean;
@@ -97,6 +96,7 @@ export interface Message {
   systemPrompt?: string;
   userPrompt?: string;
   stance?: { score: number; note?: string };
+  psychology?: string;
 }
 
 export interface RunState {
