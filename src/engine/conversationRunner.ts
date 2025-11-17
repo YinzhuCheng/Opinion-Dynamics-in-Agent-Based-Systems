@@ -64,6 +64,7 @@ class ConversationRunner {
   private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
   private readonly runMode: RunnerMode;
+  private sequentialOrder?: string[];
 
   constructor(runMode: RunnerMode = 'fresh') {
     this.runMode = runMode;
@@ -140,6 +141,11 @@ class ConversationRunner {
     }
 
     const preserveHistory = this.runMode === 'resume';
+    if (config.mode === 'sequential' && !preserveHistory) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    } else if (config.mode === 'sequential' && !this.sequentialOrder) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    }
 
     this.appStore.getState().setStopRequested(false);
     this.stopped = false;
@@ -178,7 +184,13 @@ class ConversationRunner {
       });
     }
 
-    const progress = preserveHistory ? this.analyzeProgress(agents.map((agent) => agent.id)) : undefined;
+    const progress = preserveHistory
+      ? this.analyzeProgress(
+          config.mode === 'sequential'
+            ? this.ensureSequentialOrder(agents).map((agent) => agent.id)
+            : agents.map((agent) => agent.id),
+        )
+      : undefined;
 
     try {
         if (config.mode === 'sequential') {
@@ -269,30 +281,47 @@ class ConversationRunner {
       };
     }
 
-    private async runSequentialOrder(
-      agents: AgentSpec[],
-      config: RunConfig,
-      progress?: ConversationProgress,
-    ) {
+  private ensureSequentialOrder(agents: AgentSpec[]): AgentSpec[] {
+    if (!this.sequentialOrder) {
+      this.sequentialOrder = agents.map((agent) => agent.id);
+    }
+    const existingSet = new Set(this.sequentialOrder);
+    agents.forEach((agent) => {
+      if (!existingSet.has(agent.id)) {
+        this.sequentialOrder!.push(agent.id);
+        existingSet.add(agent.id);
+      }
+    });
+    const agentMap = new Map(agents.map((agent) => [agent.id, agent]));
+    this.sequentialOrder = this.sequentialOrder.filter((id) => agentMap.has(id));
+    return this.sequentialOrder.map((id) => agentMap.get(id)!).filter((agent): agent is AgentSpec => Boolean(agent));
+  }
+
+  private async runSequentialOrder(
+    agents: AgentSpec[],
+    config: RunConfig,
+    progress?: ConversationProgress,
+  ) {
+    const orderedAgents = this.ensureSequentialOrder(agents);
     const maxRounds = config.maxRounds ?? 3;
-      const startRound = progress?.startRound ?? 1;
-      const normalizedStartTurn = progress
-        ? Math.min(agents.length, Math.max(0, progress.startTurnIndex))
-        : 0;
+    const startRound = progress?.startRound ?? 1;
+    const normalizedStartTurn = progress
+      ? Math.min(orderedAgents.length, Math.max(0, progress.startTurnIndex))
+      : 0;
     for (let round = 1; round <= maxRounds; round += 1) {
-        if (round < startRound) {
-          continue;
-        }
+      if (round < startRound) {
+        continue;
+      }
       await this.waitIfPaused();
       if (this.shouldStop()) break;
-        const turnStart = round === startRound ? normalizedStartTurn : 0;
-        if (turnStart >= agents.length) {
-          continue;
-        }
-        for (let turn = turnStart; turn < agents.length; turn += 1) {
+      const turnStart = round === startRound ? normalizedStartTurn : 0;
+      if (turnStart >= orderedAgents.length) {
+        continue;
+      }
+      for (let turn = turnStart; turn < orderedAgents.length; turn += 1) {
         await this.waitIfPaused();
         if (this.shouldStop()) break;
-          const agent = agents[turn];
+        const agent = orderedAgents[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
