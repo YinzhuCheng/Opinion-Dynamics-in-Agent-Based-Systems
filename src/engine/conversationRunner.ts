@@ -388,8 +388,8 @@ class ConversationRunner {
       discussion: RunConfig['discussion'],
     ): { content: string; stance?: { score: number; note?: string } } {
       const trimmed = content.trim();
-        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)\s*$/;
-      const match = trimmed.match(ratingRegex);
+        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)/i;
+        const match = trimmed.match(ratingRegex);
       if (!match) {
         return { content: trimmed };
       }
@@ -403,7 +403,7 @@ class ConversationRunner {
         const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
         const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
       const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
-      const sanitizedContent = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
+        const sanitizedContent = trimmed.replace(match[0], '').trim();
       const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
       return {
         content: displayContent,
