@@ -199,6 +199,8 @@ const TrustMatrixEditor = () => {
   const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
   const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
   const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
+  const trustRandomAlpha = useAppStore((state) => state.runState.config.trustRandomAlpha);
+  const setTrustRandomAlpha = useAppStore((state) => state.setTrustRandomAlpha);
 
   if (agents.length === 0) {
     return null;
@@ -217,6 +219,12 @@ const TrustMatrixEditor = () => {
       const numeric = raw === '' ? 0 : Number(raw);
       setTrustValue(sourceId, targetId, Number.isNaN(numeric) ? 0 : numeric);
     };
+
+  const handleAlphaChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setTrustRandomAlpha(Number.isNaN(value) ? 0.8 : value);
+  };
+
 
   return (
     <div className="trust-matrix-block">
@@ -268,14 +276,33 @@ const TrustMatrixEditor = () => {
           </tbody>
         </table>
       </div>
-      <div className="trust-matrix-actions">
-        <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
-          随机初始化
-        </button>
-        <button type="button" className="button ghost" onClick={uniformTrustMatrix}>
-          均匀初始化
-        </button>
-      </div>
+        <div className="trust-matrix-actions">
+          <div className="trust-alpha-control">
+            <label className="form-field">
+              <span>随机自信系数 α</span>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={trustRandomAlpha}
+                onChange={handleAlphaChange}
+              />
+            </label>
+            <p className="form-hint">
+              数学：W = (1 − α) · R + α · I（R 为随机矩阵，I 为单位阵，保证行和=1）。心理：α 越大代表 Agent
+              越坚持自我，随机人际信任占比越低；α 越小则表示更容易受他人影响。
+            </p>
+          </div>
+          <div className="trust-matrix-buttons">
+            <button type="button" className="button secondary" onClick={randomizeTrustMatrix}>
+              随机初始化
+            </button>
+            <button type="button" className="button ghost" onClick={uniformTrustMatrix}>
+              均匀初始化
+            </button>
+          </div>
+        </div>
     </div>
   );
 };

@@ -5,6 +5,9 @@ import {
   ensurePositiveViewpoint,
 } from '../constants/discussion';
 
+const SYNTHESIS_HINT =
+  '思考时需同时吸收：你的固有立场与上一轮心理旁白、上一位发言者的最新观点、上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
+
 interface AgentPromptOptions {
   agent: AgentSpec;
   mode: DialogueMode;
@@ -55,10 +58,10 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).join('\n')}`
       : '上一轮心理模型快照：暂无记录（首轮或上一轮跳过），请自我推断气氛。';
   const psychologyGuidelines = `心理模型机制：
-- 将上一批次所有 Agent 的观点综合成一句“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由）。
-- 你的发言由“该心理状态 + 上一位发言者”共同驱动。
-- 输出顺序：正文 → （情感：X） → [[PSY]]隐含块。隐含块格式固定为 [[PSY]]你的心理状态[[/PSY]]，用 1-2 句话说明内心感受与成因，且不可在正文里提到“心理模型”或方括号。
-- 该心理描述只用于系统内部记录，请确保它不会泄露在正文里。`;
+- 将上一批次所有 Agent 的观点综合成“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由），并关联自身固有立场。
+- 你的发言需由“上一轮心理沉淀 + 上一位发言者的触发点”共同驱动。
+- 输出顺序：正文 → （情感：X） → [[PSY]]隐含块。隐含块必须写成 2~3 句，依次交代：你的固有立场/上一轮心理余韵、上一位发言者带来的刺激、上一轮各 Agent 气氛对你的影响。不要在正文里提到“心理模型”或方括号。
+- [[PSY]] 仅供系统记录，正文不可泄露这些元信息。`;
   const naturalGuidelines = [
     '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
     '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
@@ -83,6 +86,7 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
     psychologyGuidelines,
+    SYNTHESIS_HINT,
     previousPsychologySection,
     `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
@@ -150,7 +154,7 @@ export const buildAgentUserPrompt = ({
   const styleHint =
     '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
   const psychologyHint =
-    '输出格式：正文 + （情感：X） + [[PSY]]隐含块。隐含块仅用 1~2 句话描述你的心理状态与成因，且不得在正文中解释。';
+    '输出格式：正文 + （情感：X） + [[PSY]]隐含块。隐含块需至少 2~3 句话，依次说明你的固有立场/上一轮心理余韵、上一位发言者带来的触发点、上一轮群体氛围对你的影响；正文里不要解释这些。';
 
   return [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
@@ -160,6 +164,7 @@ export const buildAgentUserPrompt = ({
     `上一轮对话（供你潜意识参考）：\n${previousRoundTranscript}`,
     `上一位发言者（需优先回应）：\n${lastSpeakerLine}`,
     previousPsychologyHint,
+    SYNTHESIS_HINT,
     followHint,
     styleHint,
     ratingHint,

@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
 import { RunSettingsSection } from '../components/config/RunSettingsSection';
 import { AgentListSection } from '../components/config/AgentListSection';
-import { SentimentSection } from '../components/config/SentimentSection';
 import { useAppStore } from '../store/useAppStore';
 
 export function ConfigurationPage() {
@@ -13,7 +12,6 @@ export function ConfigurationPage() {
     <div className="page page--configuration">
       <RunSettingsSection />
       <AgentListSection />
-      <SentimentSection />
 
       <section className="card">
         <header className="card__header">

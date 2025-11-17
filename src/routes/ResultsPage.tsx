@@ -200,11 +200,12 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
     legend:
       legendData.length > 0
         ? {
+            type: 'scroll' as const,
             data: legendData,
             top: 0,
           }
         : undefined,
-    grid: { left: 40, right: 24, top: legendData.length > 0 ? 60 : 35, bottom: 40 },
+    grid: { left: 40, right: 24, top: legendData.length > 0 ? 65 : 35, bottom: 40 },
     xAxis: {
       type: 'value',
       name: '消息序号',
@@ -256,17 +257,6 @@ const buildTranscriptText = (
     );
       if (message.content !== '__SKIP__') {
         if (mode === 'full') {
-          lines.push('  [Message]');
-          lines.push(`  ${message.content.replace(/\n/g, '\n  ')}`);
-        } else {
-          lines.push(message.content);
-        }
-        if (message.stance) {
-          lines.push(
-            `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
-          );
-        }
-        if (mode === 'full') {
           if (message.systemPrompt) {
             lines.push('  [System Prompt]');
             lines.push(`  ${message.systemPrompt.replace(/\n/g, '\n  ')}`);
@@ -279,6 +269,15 @@ const buildTranscriptText = (
             lines.push('  [Psychology]');
             lines.push(`  ${message.psychology.replace(/\n/g, '\n  ')}`);
           }
+          lines.push('  [Message]');
+          lines.push(`  ${message.content.replace(/\n/g, '\n  ')}`);
+        } else {
+          lines.push(message.content);
+        }
+        if (message.stance) {
+          lines.push(
+            `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
+          );
         }
       }
     lines.push('');

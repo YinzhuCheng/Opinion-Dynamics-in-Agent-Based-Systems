@@ -73,6 +73,7 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   trustMatrix: TrustMatrix;
+  trustRandomAlpha: number;
   discussion: {
     stanceScaleSize: number;
     positiveViewpoint: string;

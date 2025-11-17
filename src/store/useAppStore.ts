@@ -125,6 +125,7 @@ const createDefaultRunConfig = (): RunConfig => ({
     enableStanceChart: true,
   },
   trustMatrix: {},
+  trustRandomAlpha: 0.8,
   discussion: {
     stanceScaleSize: 3,
     positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
@@ -215,6 +216,7 @@ export interface AppStore {
   setNegativeViewpoint: (text: string) => void;
   randomizeTrustMatrix: () => void;
   uniformTrustMatrix: () => void;
+  setTrustRandomAlpha: (value: number) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -463,12 +465,22 @@ export const useAppStore = create<AppStore>((set) => ({
           produce((state: AppStore) => {
             const agentIds = state.runState.agents.map((agent) => agent.id);
             const nextMatrix: TrustMatrix = {};
+              const alphaRaw = state.runState.config.trustRandomAlpha;
+              const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
             agentIds.forEach((sourceId) => {
               const rawRow: Record<string, number> = {};
               agentIds.forEach((targetId) => {
-                rawRow[targetId] = Math.random() + 0.01;
+                  rawRow[targetId] = Math.random() + 0.01;
               });
-              nextMatrix[sourceId] = normalizeTrustRowValues(rawRow);
+                const normalizedRow = normalizeTrustRowValues(rawRow);
+                const finalRow: Record<string, number> = {};
+                agentIds.forEach((targetId) => {
+                  const identity = sourceId === targetId ? 1 : 0;
+                  const randomWeight = normalizedRow[targetId] ?? 0;
+                  finalRow[targetId] =
+                    (1 - alpha) * randomWeight + alpha * identity;
+                });
+                nextMatrix[sourceId] = finalRow;
             });
             state.runState.config.trustMatrix = nextMatrix;
           }),
@@ -488,6 +500,13 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.config.trustMatrix = nextMatrix;
           }),
         ),
+    setTrustRandomAlpha: (value) =>
+      set(
+        produce((state: AppStore) => {
+          const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.8));
+          state.runState.config.trustRandomAlpha = Number(clamped.toFixed(2));
+        }),
+      ),
   setRunStatus: (updater) =>
     set(
       produce((state: AppStore) => {
