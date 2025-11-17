@@ -96,7 +96,7 @@ export function DialoguePage() {
             ) : (
               <ul className="message-timeline">
                 {visibleMessages.map((message) => {
-                  const agentName = agentNameMap[message.agentId] ?? message.agentId;
+                  const agentName = message.agentName ?? agentNameMap[message.agentId] ?? message.agentId;
                   const stanceValue =
                     typeof message.stance?.score === 'number'
                       ? message.stance.score > 0
@@ -109,12 +109,10 @@ export function DialoguePage() {
                         <span className="badge">{agentName}</span>
                         <span className="timestamp">{new Date(message.ts).toLocaleTimeString()}</span>
                       </header>
-                      {message.psychology ? (
-                        <div className="message-psychology">
-                          <span className="message-section-label">心理：</span>
-                          <p>{message.psychology}</p>
-                        </div>
-                      ) : null}
+                      <div className="message-psychology">
+                        <span className="message-section-label">心理：</span>
+                        <p>{message.psychology || '（未显式说明心理状态）'}</p>
+                      </div>
                       <div className="message-body">
                         <span className="message-section-label">发言：</span>
                         <p className="message-content">{message.content}</p>

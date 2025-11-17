@@ -86,6 +86,7 @@ export type TrustMatrix = Record<string, Record<string, number>>;
 export interface Message {
   id: string;
   agentId: string;
+  agentName?: string;
   role: 'assistant';
   content: string;
   ts: number;

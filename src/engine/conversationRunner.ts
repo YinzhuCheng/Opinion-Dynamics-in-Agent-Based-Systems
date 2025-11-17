@@ -261,6 +261,7 @@ class ConversationRunner {
     const message: Message = {
       id: nanoid(),
       agentId: agent.id,
+        agentName: agent.name,
       role: 'assistant',
       content,
       ts: Date.now(),
