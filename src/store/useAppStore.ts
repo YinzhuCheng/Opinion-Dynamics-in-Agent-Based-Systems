@@ -5,10 +5,10 @@ import type {
   AgentSpec,
   Message,
   ModelConfig,
-  Persona,
+  PersonaFree,
   RunConfig,
   RunState,
-  SessionResult,
+    SessionResult,
   Vendor,
   DialogueMode,
   RunStatus,
@@ -26,24 +26,23 @@ const defaultModelConfig: ModelConfig = {
   model: 'gpt-4o',
 };
 
-const defaultPersona: Persona = {
+const createFreePersona = (): PersonaFree => ({
   type: 'free',
-  description: 'A neutral analyst focused on balanced arguments.',
-};
+  description: '',
+});
+
+const buildAgent = (index: number, overrides?: Partial<AgentSpec>): AgentSpec => ({
+  id: nanoid(),
+  name: `A${index + 1}`,
+  persona: overrides?.persona ?? createFreePersona(),
+  initialOpinion: overrides?.initialOpinion ?? '',
+  initialStance: overrides?.initialStance,
+  modelConfig: overrides?.modelConfig,
+});
 
 const createDefaultAgents = (): AgentSpec[] => [
-  {
-    id: nanoid(),
-    name: 'A1',
-    persona: { ...defaultPersona },
-    initialOpinion: '',
-  },
-  {
-    id: nanoid(),
-    name: 'A2',
-    persona: { ...defaultPersona, description: 'A challenger who questions assumptions.' },
-    initialOpinion: '',
-  },
+  buildAgent(0),
+  buildAgent(1),
 ];
 
 const clampTrustValue = (value: number): number => {
@@ -217,6 +216,7 @@ export interface AppStore {
   randomizeTrustMatrix: () => void;
   uniformTrustMatrix: () => void;
   setTrustRandomAlpha: (value: number) => void;
+  configureAgentGroup: (count: number, stanceTemplate: number[]) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -246,23 +246,17 @@ export const useAppStore = create<AppStore>((set) => ({
           );
         }),
       ),
-    addAgent: (agent) =>
-      set(
-        produce((state: AppStore) => {
-          const nextIndex = state.runState.agents.length + 1;
-          state.runState.agents.push({
-            id: nanoid(),
-            name: `A${nextIndex}`,
-            persona: { ...defaultPersona },
-            initialOpinion: '',
-            ...agent,
-          });
-          state.runState.config.trustMatrix = ensureTrustMatrix(
-            state.runState.agents,
-            state.runState.config.trustMatrix,
-          );
-        }),
-      ),
+      addAgent: (agent) =>
+        set(
+          produce((state: AppStore) => {
+            const nextIndex = state.runState.agents.length;
+            state.runState.agents.push(buildAgent(nextIndex, agent));
+            state.runState.config.trustMatrix = ensureTrustMatrix(
+              state.runState.agents,
+              state.runState.config.trustMatrix,
+            );
+          }),
+        ),
   updateAgent: (agentId, updater) =>
     set(
       produce((state: AppStore) => {
@@ -276,14 +270,9 @@ export const useAppStore = create<AppStore>((set) => ({
       set(
         produce((state: AppStore) => {
           state.runState.agents = state.runState.agents.filter((a) => a.id !== agentId);
-          if (state.runState.agents.length === 0) {
-            state.runState.agents.push({
-              id: nanoid(),
-              name: 'A1',
-              persona: { ...defaultPersona },
-              initialOpinion: '',
-            });
-          }
+            if (state.runState.agents.length === 0) {
+              state.runState.agents.push(buildAgent(0));
+            }
           state.runState.config.trustMatrix = ensureTrustMatrix(
             state.runState.agents,
             state.runState.config.trustMatrix,
@@ -465,8 +454,8 @@ export const useAppStore = create<AppStore>((set) => ({
           produce((state: AppStore) => {
             const agentIds = state.runState.agents.map((agent) => agent.id);
             const nextMatrix: TrustMatrix = {};
-              const alphaRaw = state.runState.config.trustRandomAlpha;
-              const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
+          const alphaRaw = state.runState.config.trustRandomAlpha;
+          const alpha = Math.min(1, Math.max(0, Number.isFinite(alphaRaw) ? alphaRaw : 0.8));
             agentIds.forEach((sourceId) => {
               const rawRow: Record<string, number> = {};
               agentIds.forEach((targetId) => {
@@ -505,6 +494,32 @@ export const useAppStore = create<AppStore>((set) => ({
         produce((state: AppStore) => {
           const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.8));
           state.runState.config.trustRandomAlpha = Number(clamped.toFixed(2));
+        }),
+      ),
+    configureAgentGroup: (count, stanceTemplate) =>
+      set(
+          produce((state: AppStore) => {
+            const normalizedSize = sanitizeStanceScaleSize(state.runState.config.discussion.stanceScaleSize);
+            const maxLevel = Math.floor(Math.max(3, normalizedSize) / 2);
+          const sanitizedTemplate = stanceTemplate
+            .filter((value) => typeof value === 'number' && Number.isFinite(value))
+            .map((value) => Math.max(-maxLevel, Math.min(maxLevel, Math.round(value))));
+          const effectiveTemplate = sanitizedTemplate.length > 0 ? sanitizedTemplate : [0];
+          const safeCount = Math.max(1, Math.min(50, Math.floor(count)));
+          const agents: AgentSpec[] = [];
+          for (let i = 0; i < safeCount; i += 1) {
+            const stance = effectiveTemplate[i % effectiveTemplate.length];
+            agents.push(
+              buildAgent(i, {
+                initialStance: stance,
+              }),
+            );
+          }
+          state.runState.agents = agents;
+          state.runState.config.trustMatrix = ensureTrustMatrix(
+            state.runState.agents,
+            state.runState.config.trustMatrix,
+          );
         }),
       ),
   setRunStatus: (updater) =>

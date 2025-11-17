@@ -97,8 +97,8 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
 - ${coverageHint}
 
 日常表达提示：
-- ${naturalGuidelines}`,
-  ].join('\n\n');
+  - ${naturalGuidelines}`,
+  ].filter(Boolean).join('\n\n');
 };
 
 export const buildAgentUserPrompt = ({
@@ -140,13 +140,17 @@ export const buildAgentUserPrompt = ({
       ? '当前为轮询模式，请确保本轮提供有效观点或对已有观点的回应。'
       : '当前为自由对话模式，你可根据判断选择发言或跳过。';
 
-  const initialOpinionHint = agent.initialOpinion
-    ? `该角色的初始观点：${agent.initialOpinion}`
-    : '若你尚未明确立场，请在本轮给出立场与理由。';
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
   const positiveDesc = ensurePositiveViewpoint(positiveViewpoint);
   const negativeDesc = ensureNegativeViewpoint(negativeViewpoint);
+  const initialOpinionHint = agent.initialOpinion
+    ? `该角色的初始观点：${agent.initialOpinion}`
+    : '若你尚未明确观点，请结合角色立场在本轮给出你的判断与理由。';
+  const initialStanceHint =
+    typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
+      ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），可据此作为本轮的心理基调。`
+      : `当前立场刻度：${scaleValues.join(' / ')}，绝对值越接近 ±${maxLevel} 表示越极端。`;
   const viewpointHint = `仅需在这两种立场之间展开拉扯：正向 = ${positiveDesc} ｜ 负向 = ${negativeDesc}。`;
   const ratingHint = `回答末尾必须添加“（立场：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
   const followHint =
@@ -160,6 +164,7 @@ export const buildAgentUserPrompt = ({
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
+    initialStanceHint,
     viewpointHint,
     `上一轮对话（供你潜意识参考）：\n${previousRoundTranscript}`,
     `上一位发言者（需优先回应）：\n${lastSpeakerLine}`,
@@ -181,4 +186,6 @@ const buildScaleValues = (size: number): number[] => {
   }
   return values;
 };
+
+const formatStance = (value: number): string => (value > 0 ? `+${value}` : `${value}`);
 

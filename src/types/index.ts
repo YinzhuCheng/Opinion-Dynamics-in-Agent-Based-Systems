@@ -20,8 +20,6 @@ export interface PersonaBig5 {
   E: number;
   A: number;
   N: number;
-  templateKey?: string;
-  notes?: string;
 }
 
 export type MBTICode =
@@ -45,8 +43,6 @@ export type MBTICode =
 export interface PersonaMBTI {
   type: 'mbti';
   mbti: MBTICode;
-  templateKey?: string;
-  notes?: string;
 }
 
 export interface PersonaFree {
@@ -61,6 +57,7 @@ export interface AgentSpec {
   name: string;
   persona: Persona;
   initialOpinion?: string;
+  initialStance?: number;
   modelConfig?: ModelConfig;
 }
 

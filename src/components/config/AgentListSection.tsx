@@ -11,12 +11,7 @@ import type {
   Vendor,
 } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
-import {
-  BIG5_TEMPLATE_OPTIONS,
-  MBTI_TEMPLATE_OPTIONS,
-  MBTI_OPTIONS,
-  BIG5_TRAIT_LABELS,
-} from '../../data/personaTemplates';
+import { MBTI_OPTIONS, BIG5_TRAIT_LABELS } from '../../data/personaTemplates';
 import { chatStream } from '../../utils/llmAdapter';
 
 type ConnectionTestState = {
@@ -113,6 +108,23 @@ export function AgentListSection() {
       updateAgent(agent.id, { initialOpinion: event.target.value });
     };
 
+  const maxStanceLevel = Math.floor(Math.max(3, runConfig.discussion.stanceScaleSize) / 2);
+
+  const handleInitialStanceChange =
+    (agent: AgentSpec) => (event: ChangeEvent<HTMLInputElement>) => {
+      const raw = event.target.value;
+      if (raw === '') {
+        updateAgent(agent.id, { initialStance: undefined });
+        return;
+      }
+      const numeric = Number(raw);
+      if (Number.isNaN(numeric)) {
+        return;
+      }
+      const clamped = Math.max(-maxStanceLevel, Math.min(maxStanceLevel, Math.round(numeric)));
+      updateAgent(agent.id, { initialStance: clamped });
+    };
+
   return (
     <section className={`card ${collapsed ? 'card--collapsed' : ''}`}>
       <header className="card__header">
@@ -180,6 +192,19 @@ export function AgentListSection() {
                 onChange={handleInitialOpinionChange(agent)}
               />
             </label>
+              <label className="form-field">
+                <span>初始立场（范围 ±{maxStanceLevel}）</span>
+                <input
+                  type="number"
+                  min={-maxStanceLevel}
+                  max={maxStanceLevel}
+                  step={1}
+                  value={typeof agent.initialStance === 'number' ? agent.initialStance : ''}
+                  onChange={handleInitialStanceChange(agent)}
+                  placeholder="例如：+1、0、-2"
+                />
+                <p className="form-hint">值越接近 ±{maxStanceLevel} 表示越极端的立场，留空则由模型自由选择。</p>
+              </label>
 
             {!runConfig.useGlobalModelConfig && (
               <AgentModelConfigEditor agent={agent} onChange={updateAgent} vendorDefaults={vendorDefaults} />
@@ -322,7 +347,7 @@ const Big5Editor = ({ agent }: { agent: AgentSpec }) => {
   const persona = agent.persona as PersonaBig5;
 
   const handleScoreChange =
-    (key: keyof Omit<PersonaBig5, 'type' | 'templateKey' | 'notes'>) =>
+    (key: keyof Omit<PersonaBig5, 'type'>) =>
     (event: ChangeEvent<HTMLInputElement>) => {
       const value = Math.max(1, Math.min(100, Number(event.target.value)));
       updateAgent(agent.id, {
@@ -332,27 +357,6 @@ const Big5Editor = ({ agent }: { agent: AgentSpec }) => {
         },
       });
     };
-
-  const handleTemplateChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const templateKey = event.target.value || undefined;
-    const template = BIG5_TEMPLATE_OPTIONS.find((item) => item.key === templateKey);
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        templateKey,
-        notes: template?.notes ?? persona.notes ?? '',
-      },
-    });
-  };
-
-  const handleNotesChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        notes: event.target.value,
-      },
-    });
-  };
 
     return (
       <div className="persona-panel">
@@ -373,25 +377,6 @@ const Big5Editor = ({ agent }: { agent: AgentSpec }) => {
             </label>
           ))}
         </div>
-        <label className="form-field">
-          <span>性格模板（可选）</span>
-          <select value={persona.templateKey ?? ''} onChange={handleTemplateChange}>
-            <option value="">无模板</option>
-            {BIG5_TEMPLATE_OPTIONS.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="form-field">
-          <span>补充说明</span>
-          <textarea
-            placeholder="描述该 Agent 的动机、沟通风格或注意事项。"
-            value={persona.notes ?? ''}
-            onChange={handleNotesChange}
-          />
-        </label>
       </div>
     );
 };
@@ -410,27 +395,6 @@ const MBTIEditor = ({ agent }: { agent: AgentSpec }) => {
     });
   };
 
-  const handleTemplateChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const templateKey = event.target.value || undefined;
-    const template = MBTI_TEMPLATE_OPTIONS.find((item) => item.key === templateKey);
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        templateKey,
-        notes: template?.notes ?? persona.notes ?? '',
-      },
-    });
-  };
-
-  const handleNotesChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    updateAgent(agent.id, {
-      persona: {
-        ...persona,
-        notes: event.target.value,
-      },
-    });
-  };
-
   return (
     <div className="persona-panel">
       <label className="form-field">
@@ -443,25 +407,6 @@ const MBTIEditor = ({ agent }: { agent: AgentSpec }) => {
           ))}
         </select>
       </label>
-      <label className="form-field">
-        <span>沟通风格模板（可选）</span>
-        <select value={persona.templateKey ?? ''} onChange={handleTemplateChange}>
-          <option value="">无模板</option>
-          {MBTI_TEMPLATE_OPTIONS.map((option) => (
-            <option key={option.key} value={option.key}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="form-field">
-        <span>补充说明</span>
-        <textarea
-          placeholder="描述该类型在讨论中的表达方式、偏好或禁忌。"
-          value={persona.notes ?? ''}
-          onChange={handleNotesChange}
-        />
-      </label>
     </div>
   );
 };
@@ -472,18 +417,18 @@ const FreePersonaEditor = ({ agent }: { agent: AgentSpec }) => {
   return (
     <label className="form-field">
       <span>画像描述</span>
-      <textarea
-        placeholder="可描述性格、动机、专业背景、立场或禁忌。"
-        value={agent.persona.description}
-        onChange={(event) =>
-          updateAgent(agent.id, {
-            persona: {
-              type: 'free',
-              description: event.target.value,
-            },
-          })
-        }
-      />
+        <textarea
+          placeholder="可描述性格、动机、专业背景、立场或禁忌。"
+          value={agent.persona.description ?? ''}
+          onChange={(event) =>
+            updateAgent(agent.id, {
+              persona: {
+                type: 'free',
+                description: event.target.value,
+              },
+            })
+          }
+        />
     </label>
   );
 };

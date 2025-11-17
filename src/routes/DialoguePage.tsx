@@ -111,14 +111,17 @@ export function DialoguePage() {
                       </header>
                       {message.psychology ? (
                         <div className="message-psychology">
-                          <span className="message-psychology__label">心理</span>
+                          <span className="message-section-label">心理状态：</span>
                           <p>{message.psychology}</p>
                         </div>
                       ) : null}
-                      <p className="message-content">{message.content}</p>
+                      <div className="message-body">
+                        <span className="message-section-label">发言：</span>
+                        <p className="message-content">{message.content}</p>
+                      </div>
                       {message.stance && (
                         <div className="message-meta">
-                          <span className="stance-label">立场</span>
+                          <span className="message-section-label">立场：</span>
                           <span className={`stance-tag ${stanceClass(message.stance.score)}`}>{stanceValue}</span>
                           {message.stance.note ? (
                             <span className="meta-secondary">{message.stance.note}</span>
