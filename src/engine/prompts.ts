@@ -21,6 +21,7 @@ interface AgentPromptOptions {
   previousRoundMessages: Message[];
   lastSpeakerMessage?: Message;
   previousPsychology: Array<{ agentName: string; psychology: string }>;
+  selfPreviousMessage?: Message;
 }
 
 export const buildAgentSystemPrompt = ({
@@ -122,6 +123,7 @@ export const buildAgentUserPrompt = ({
   previousRoundMessages,
   lastSpeakerMessage,
   previousPsychology,
+  selfPreviousMessage,
 }: AgentPromptOptions): string => {
   const personaRaw = describePersona(agent.persona).trim();
   const personaBlock =
@@ -143,7 +145,7 @@ export const buildAgentUserPrompt = ({
         .join('\n')
       : '上一轮暂无对话（可能是首轮或上一轮全部跳过）。';
   const previousRoundStanceSummary = previousRoundMessages.length
-    ? `上一轮立场速记：\n${previousRoundMessages
+    ? `上一轮立场速记（不含你自己）：\n${previousRoundMessages
         .map((message) => {
           const speaker = agentNames[message.agentId] ?? message.agentId;
           if (typeof message.stance?.score === 'number') {
@@ -178,10 +180,17 @@ export const buildAgentUserPrompt = ({
   const initialOpinionHint = agent.initialOpinion
     ? `该角色的初始观点：${agent.initialOpinion}`
     : '若你尚未明确观点，请结合角色立场在本轮给出你的判断与理由。';
-  const initialStanceHint =
-    typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
-      ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），可据此作为本轮的心理基调。`
-      : `当前立场刻度：${scaleValues.join(' / ')}，绝对值越接近 ±${maxLevel} 表示越极端。`;
+  const selfLastStance = selfPreviousMessage?.stance;
+  const stanceHint =
+    round === 1
+      ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
+        ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），首轮尽量按照此刻度发言。`
+        : `首轮尚未设定明确立场，可在 ${scaleValues.join(' / ')} 中任选其一作为初始表态。`
+      : selfLastStance
+        ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时心理已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
+        : '上一轮你未给出立场刻度，可回顾当时的心理旁白，自行决定是维持、收敛还是反转。';
+  const polarityHint =
+    '若上一轮心理或外界刺激让你开始怀疑原有观点，可主动调整立场——包括极性反转——但要把心理变化写进 [[PSY]] 并在正文里给出充分理由。';
   const viewpointHint = `仅需在这两种立场之间展开拉扯：正向 = ${positiveDesc} ｜ 负向 = ${negativeDesc}。`;
   const ratingHint = `回答末尾必须添加“（立场：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
   const followHint =
@@ -199,7 +208,7 @@ export const buildAgentUserPrompt = ({
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
-    initialStanceHint,
+    stanceHint,
     viewpointHint,
     `上一轮对话（主要用于影响心理，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
     previousRoundStanceSummary,
@@ -207,6 +216,7 @@ export const buildAgentUserPrompt = ({
     previousPsychologyHint,
     trustWeightHint,
     SYNTHESIS_HINT,
+    polarityHint,
     followHint,
     styleHint,
     ratingHint,

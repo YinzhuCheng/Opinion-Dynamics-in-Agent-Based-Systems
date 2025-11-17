@@ -389,7 +389,10 @@ class ConversationRunner {
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
         const agentNames = this.getAgentNameMap();
-        const { previousRoundMessages, lastSpeakerMessage } = this.buildRoundContext(round, agent.id);
+        const { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage } = this.buildRoundContext(
+          round,
+          agent.id,
+        );
         const visibleWindow = [...previousRoundMessages];
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
@@ -401,7 +404,7 @@ class ConversationRunner {
         const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
         const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
 
-      const systemPrompt = buildAgentSystemPrompt({
+        const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
@@ -414,20 +417,21 @@ class ConversationRunner {
             previousRoundMessages,
           previousPsychology,
       });
-      const userPrompt = buildAgentUserPrompt({
-        agent,
-        mode: config.mode,
-        round,
-        turn,
-        agentNames,
-        trustWeights,
-        stanceScaleSize: discussion.stanceScaleSize,
+        const userPrompt = buildAgentUserPrompt({
+          agent,
+          mode: config.mode,
+          round,
+          turn,
+          agentNames,
+          trustWeights,
+          stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
           previousPsychology,
-      });
+          selfPreviousMessage,
+        });
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -579,10 +583,14 @@ class ConversationRunner {
         }, {});
       }
 
-      private buildRoundContext(
-        round: number,
-        agentId: string,
-      ): { previousRoundMessages: Message[]; lastSpeakerMessage?: Message } {
+  private buildRoundContext(
+    round: number,
+    agentId: string,
+  ): {
+        previousRoundMessages: Message[];
+        lastSpeakerMessage?: Message;
+        selfPreviousMessage?: Message;
+      } {
         const messages = this.appStore.getState().runState.messages;
         const previousRoundMessages =
       round > 1
@@ -590,12 +598,18 @@ class ConversationRunner {
             (message) => message.round === round - 1 && message.agentId !== agentId,
           )
         : [];
+    const selfPreviousMessage =
+      round > 1
+        ? messages
+            .filter((message) => message.round === round - 1 && message.agentId === agentId)
+            .slice(-1)[0]
+        : undefined;
         const lastMessage = messages[messages.length - 1];
         const lastSpeakerMessage =
           lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId
             ? lastMessage
             : undefined;
-        return { previousRoundMessages, lastSpeakerMessage };
+    return { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage };
       }
 
       private collectPreviousPsychology(
