@@ -32,7 +32,12 @@ export const buildAgentSystemPrompt = ({
   negativeViewpoint,
   previousPsychology,
 }: AgentPromptOptions): string => {
-  const personaDescription = describePersona(agent.persona);
+  const personaRaw = describePersona(agent.persona).trim();
+  const personaBlock =
+    personaRaw.length > 0
+      ? `人格画像：【\n${personaRaw}\n】`
+      : '人格画像：【（未提供画像，请保持中性口吻）】';
+  const personaAlignmentHint = '请让心理活动与外显措辞始终贴合人格画像/MBTI/大五人格的特质，不可自相矛盾。';
   const trustSection =
     trustWeights.length > 0
       ? `信任度矩阵（上一批次发言的参考权重，符合 DeGroot 聚合思路）：
@@ -78,13 +83,13 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
 
   return [
     `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
-    personaDescription,
+    personaBlock,
+    personaAlignmentHint,
     trustSection,
     stanceLine,
-    `核心职责：
+  `核心职责：
 - 在轮到你发言时，根据角色视角提出观点、论据或对他人观点的回应。
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
-- 保持条理清晰、专业且尊重的表达方式。
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
     psychologyGuidelines,
@@ -116,6 +121,12 @@ export const buildAgentUserPrompt = ({
   lastSpeakerMessage,
   previousPsychology,
 }: AgentPromptOptions): string => {
+  const personaRaw = describePersona(agent.persona).trim();
+  const personaBlock =
+    personaRaw.length > 0
+      ? `人格画像：【\n${personaRaw}\n】`
+      : '人格画像：【（未提供画像，请保持中性口吻）】';
+  const personaAlignmentHint = '请确保心理与发言在语气、词汇、价值判断上都忠实于上述人格设定。';
   const previousRoundTranscript = previousRoundMessages.length
     ? previousRoundMessages
         .map((message) => {
@@ -165,6 +176,8 @@ export const buildAgentUserPrompt = ({
     '请在心理推导中说明你如何平衡“上一轮的内心旁白 + 依据信任矩阵加权的上一轮集体发言 + 上一位发言者”的影响力。';
 
   return [
+    personaBlock,
+    personaAlignmentHint,
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
