@@ -10,12 +10,14 @@ interface AgentPromptOptions {
   mode: DialogueMode;
   round: number;
   turn: number;
-  contextMessages: Message[];
   agentNames: Record<string, string>;
   trustWeights: Array<{ agentName: string; weight: number }>;
   stanceScaleSize: number;
   positiveViewpoint: string;
   negativeViewpoint: string;
+  previousRoundMessages: Message[];
+  lastSpeakerMessage?: Message;
+  previousPsychology: Array<{ agentName: string; psychology: string }>;
 }
 
 export const buildAgentSystemPrompt = ({
@@ -25,6 +27,7 @@ export const buildAgentSystemPrompt = ({
   stanceScaleSize,
   positiveViewpoint,
   negativeViewpoint,
+  previousPsychology,
 }: AgentPromptOptions): string => {
   const personaDescription = describePersona(agent.persona);
   const trustSection =
@@ -46,6 +49,11 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
 - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
 - 引用他人时只提名字，点到为止。`;
+  const previousPsychologySection =
+    previousPsychology.length > 0
+      ? `上一轮心理模型快照（仅供你内化，不要在正文里引用）：
+${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).join('\n')}`
+      : '上一轮心理模型快照：暂无记录（首轮或上一轮跳过），请自我推断气氛。';
   const psychologyGuidelines = `心理模型机制：
 - 将上一批次所有 Agent 的观点综合成一句“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由）。
 - 你的发言由“该心理状态 + 上一位发言者”共同驱动。
@@ -75,6 +83,7 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
     psychologyGuidelines,
+    previousPsychologySection,
     `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
@@ -93,21 +102,34 @@ export const buildAgentUserPrompt = ({
   mode,
   round,
   turn,
-  contextMessages,
   agentNames,
   stanceScaleSize,
   positiveViewpoint,
   negativeViewpoint,
+  previousRoundMessages,
+  lastSpeakerMessage,
+  previousPsychology,
 }: AgentPromptOptions): string => {
-  const dialogueTranscripts = contextMessages.length
-    ? contextMessages
+  const previousRoundTranscript = previousRoundMessages.length
+    ? previousRoundMessages
         .map((message) => {
-          const content = message.content === '__SKIP__' ? '(跳过本轮)' : message.content;
+          const content = message.content === '__SKIP__' ? '(跳过)' : message.content;
           const speaker = agentNames[message.agentId] ?? message.agentId;
           return `${speaker}: ${content}`;
         })
         .join('\n')
-    : '上一批次暂无对话（可能是首轮或你是该轮首个发言者）。';
+    : '上一轮暂无对话（可能是首轮或上一轮全部跳过）。';
+  const lastSpeakerLine = lastSpeakerMessage
+    ? `${agentNames[lastSpeakerMessage.agentId] ?? lastSpeakerMessage.agentId}: ${
+        lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
+      }`
+    : '本轮尚无上一位发言者，你可以率先开场。';
+  const previousPsychologyHint =
+    previousPsychology.length > 0
+      ? `上一轮各方的隐含心理（请仅作为潜台词吸收，不要逐条引用）：\n${previousPsychology
+          .map((item) => `- ${item.agentName}: ${item.psychology}`)
+          .join('\n')}`
+      : '上一轮尚未形成可引用的心理模型，你可自行推断整体情绪。';
 
   const modeHint =
     mode === 'round_robin'
@@ -135,7 +157,9 @@ export const buildAgentUserPrompt = ({
     modeHint,
     initialOpinionHint,
     viewpointHint,
-    `上一批次对话 + 上一位发言者内容（仅供参考）：\n${dialogueTranscripts}`,
+    `上一轮对话（供你潜意识参考）：\n${previousRoundTranscript}`,
+    `上一位发言者（需优先回应）：\n${lastSpeakerLine}`,
+    previousPsychologyHint,
     followHint,
     styleHint,
     ratingHint,

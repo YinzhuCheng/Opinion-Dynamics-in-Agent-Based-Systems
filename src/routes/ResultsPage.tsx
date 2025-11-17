@@ -226,9 +226,9 @@ const buildTranscriptText = (
   const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);
   lines.push(`正观点：${positiveView}`);
   lines.push(`负观点：${negativeView}`);
-  if (discussion) {
-    lines.push(`立场/情感刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
-  }
+    if (discussion) {
+      lines.push(`立场/情感刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
+    }
   lines.push('');
   lines.push('【摘要】');
   lines.push(result.summary || '无摘要');
@@ -240,28 +240,33 @@ const buildTranscriptText = (
     lines.push(
       `#${idx + 1} ${agentName} @ ${timestamp}${message.content === '__SKIP__' ? '（跳过）' : ''}`,
     );
-    if (message.content !== '__SKIP__') {
-      lines.push(message.content);
-      if (message.stance) {
-        lines.push(
-          `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
-        );
-      }
-      if (mode === 'full') {
-        if (message.systemPrompt) {
-          lines.push('  [System Prompt]');
-          lines.push(`  ${message.systemPrompt.replace(/\n/g, '\n  ')}`);
+      if (message.content !== '__SKIP__') {
+        if (mode === 'full') {
+          lines.push('  [Message]');
+          lines.push(`  ${message.content.replace(/\n/g, '\n  ')}`);
+        } else {
+          lines.push(message.content);
         }
-        if (message.userPrompt) {
-          lines.push('  [User Prompt]');
-          lines.push(`  ${message.userPrompt.replace(/\n/g, '\n  ')}`);
+        if (message.stance) {
+          lines.push(
+            `  立场：${message.stance.score.toFixed(2)}${message.stance.note ? `｜${message.stance.note}` : ''}`,
+          );
         }
+        if (mode === 'full') {
+          if (message.systemPrompt) {
+            lines.push('  [System Prompt]');
+            lines.push(`  ${message.systemPrompt.replace(/\n/g, '\n  ')}`);
+          }
+          if (message.userPrompt) {
+            lines.push('  [User Prompt]');
+            lines.push(`  ${message.userPrompt.replace(/\n/g, '\n  ')}`);
+          }
           if (message.psychology) {
             lines.push('  [Psychology]');
             lines.push(`  ${message.psychology.replace(/\n/g, '\n  ')}`);
           }
+        }
       }
-    }
     lines.push('');
   });
   return lines.join('\n');

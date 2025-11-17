@@ -195,37 +195,45 @@ class ConversationRunner {
     }
     const modelConfig: ModelConfig = { ...baseModelConfig, apiKey };
 
-      const contextMessages = this.collectDialogueContext(round, agent.id);
-      this.appStore.getState().setVisibleWindow(contextMessages);
-      const agentNames = this.getAgentNameMap();
+        const agentNames = this.getAgentNameMap();
+        const { previousRoundMessages, lastSpeakerMessage } = this.buildRoundContext(round, agent.id);
+        const visibleWindow = [...previousRoundMessages];
+        if (lastSpeakerMessage) {
+          visibleWindow.push(lastSpeakerMessage);
+        }
+        this.appStore.getState().setVisibleWindow(visibleWindow);
       const trustWeights = this.buildTrustContext(agent.id);
       const discussion = this.appStore.getState().runState.config.discussion;
         const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
         const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+        const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
 
       const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        contextMessages,
-        agentNames,
+          agentNames,
         trustWeights,
         stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
-          negativeViewpoint,
+            negativeViewpoint,
+            previousRoundMessages,
+          previousPsychology,
       });
       const userPrompt = buildAgentUserPrompt({
         agent,
         mode: config.mode,
         round,
         turn,
-        contextMessages,
         agentNames,
         trustWeights,
         stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
           negativeViewpoint,
+          previousRoundMessages,
+          lastSpeakerMessage,
+          previousPsychology,
       });
 
     const messages: ChatMessage[] = [
@@ -319,26 +327,47 @@ class ConversationRunner {
       return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
 
-    private getAgentNameMap(): Record<string, string> {
-      const agents = this.appStore.getState().runState.agents;
-      return agents.reduce<Record<string, string>>((map, agent) => {
-        map[agent.id] = agent.name;
-        return map;
-      }, {});
-    }
+      private getAgentNameMap(): Record<string, string> {
+        const agents = this.appStore.getState().runState.agents;
+        return agents.reduce<Record<string, string>>((map, agent) => {
+          map[agent.id] = agent.name;
+          return map;
+        }, {});
+      }
 
-    private collectDialogueContext(round: number, agentId: string): Message[] {
-      const messages = this.appStore.getState().runState.messages;
-      const context: Message[] = [];
-      if (round > 1) {
-        context.push(...messages.filter((message) => message.round === round - 1));
+      private buildRoundContext(
+        round: number,
+        agentId: string,
+      ): { previousRoundMessages: Message[]; lastSpeakerMessage?: Message } {
+        const messages = this.appStore.getState().runState.messages;
+        const previousRoundMessages =
+          round > 1 ? messages.filter((message) => message.round === round - 1) : [];
+        const lastMessage = messages[messages.length - 1];
+        const lastSpeakerMessage =
+          lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId
+            ? lastMessage
+            : undefined;
+        return { previousRoundMessages, lastSpeakerMessage };
       }
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.round === round && lastMessage.agentId !== agentId) {
-        context.push(lastMessage);
+
+      private collectPreviousPsychology(
+        round: number,
+        agentNames: Record<string, string>,
+      ): Array<{ agentName: string; psychology: string }> {
+        if (round <= 0) return [];
+        const messages = this.appStore.getState().runState.messages;
+        return messages
+          .filter(
+            (message) =>
+              message.round === round &&
+              typeof message.psychology === 'string' &&
+              message.psychology.trim().length > 0,
+          )
+          .map((message) => ({
+            agentName: agentNames[message.agentId] ?? message.agentId,
+            psychology: (message.psychology ?? '').trim(),
+          }));
       }
-      return context;
-    }
 
     private extractPsychology(content: string): { content: string; psychology?: string } {
       const regex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]\s*$/;
