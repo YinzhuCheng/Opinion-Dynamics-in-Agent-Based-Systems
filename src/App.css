@@ -689,6 +689,30 @@
   flex-wrap: wrap;
 }
 
+.chart-tab-bar {
+  display: inline-flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.chart-tab-button {
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid #c7d2fe;
+  background: #f8fafc;
+  color: #4338ca;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.chart-tab-button.active {
+  background: #4338ca;
+  color: #fff;
+  border-color: #4338ca;
+  box-shadow: 0 0 0 2px rgba(67, 56, 202, 0.15);
+}
+
 @media (max-width: 768px) {
   .app-content {
     padding: 1rem;

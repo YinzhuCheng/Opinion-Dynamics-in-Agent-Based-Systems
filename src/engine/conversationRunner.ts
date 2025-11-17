@@ -133,9 +133,10 @@ class ConversationRunner {
     const maxRounds = config.maxRounds ?? 3;
     for (let round = 1; round <= maxRounds; round += 1) {
       if (this.shouldStop()) break;
-      for (let turn = 0; turn < agents.length; turn += 1) {
+        const roundOrder = this.shuffleAgentsList(agents);
+        for (let turn = 0; turn < roundOrder.length; turn += 1) {
         if (this.shouldStop()) break;
-        const agent = agents[turn];
+          const agent = roundOrder[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
@@ -157,9 +158,10 @@ class ConversationRunner {
       round += 1;
       let skipsThisRound = 0;
 
-      for (let turn = 0; turn < agents.length; turn += 1) {
+        const roundOrder = this.shuffleAgentsList(agents);
+        for (let turn = 0; turn < roundOrder.length; turn += 1) {
         if (this.shouldStop() || producedMessages >= maxMessages) break;
-        const agent = agents[turn];
+          const agent = roundOrder[turn];
         this.setStatus((status) => ({
           ...status,
           currentRound: round,
@@ -460,6 +462,15 @@ class ConversationRunner {
       status,
     });
   }
+
+    private shuffleAgentsList(agents: AgentSpec[]): AgentSpec[] {
+      const order = [...agents];
+      for (let i = order.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      return order;
+    }
 }
 
 const defaultFallbackModel = (): ModelConfig => ({

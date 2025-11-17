@@ -7,6 +7,7 @@ export function GroupSettingsSection() {
   const configureAgentGroup = useAppStore((state) => state.configureAgentGroup);
   const [plannedCount, setPlannedCount] = useState<number>(agents.length);
   const [stanceTemplate, setStanceTemplate] = useState('');
+  const [stanceCountsText, setStanceCountsText] = useState('');
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
 
   useEffect(() => {
@@ -15,14 +16,31 @@ export function GroupSettingsSection() {
 
   const handleApply = () => {
     const safeCount = Math.max(1, Math.min(50, Math.floor(plannedCount || 1)));
-    const parsed = stanceTemplate
+    const parsedList = stanceTemplate
       .split(/[,，\s]+/)
       .map((token) => token.trim())
       .filter(Boolean)
       .map((token) => Number(token))
       .filter((value) => Number.isFinite(value))
       .map((value) => Math.max(-maxLevel, Math.min(maxLevel, Math.round(value))));
-    configureAgentGroup(safeCount, parsed);
+    const expandedCounts: number[] = [];
+    stanceCountsText
+      .split(/[\n,，;]+/)
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .forEach((entry) => {
+        const match = entry.match(/^([+-]?\d+)\s*(?:[:=x×]\s*(\d+))?$/i);
+        if (!match) {
+          return;
+        }
+        const value = Math.max(-maxLevel, Math.min(maxLevel, Math.round(Number(match[1]))));
+        const count = Math.max(1, Math.min(50, Number(match[2] ?? '1')));
+        for (let i = 0; i < count; i += 1) {
+          expandedCounts.push(value);
+        }
+      });
+    const template = [...parsedList, ...expandedCounts];
+    configureAgentGroup(safeCount, template);
   };
 
   return (
@@ -56,6 +74,17 @@ export function GroupSettingsSection() {
             />
             <p className="form-hint">
               使用逗号或空格分隔取值，范围必须在 ±{maxLevel} 之间。系统会循环套用到所有 Agent 的初始立场。
+            </p>
+          </label>
+          <label className="form-field">
+            <span>按标签指定数量</span>
+            <textarea
+              value={stanceCountsText}
+              onChange={(event) => setStanceCountsText(event.target.value)}
+              placeholder={`格式示例：+${maxLevel}:3, 0:4, -1:2`}
+            />
+            <p className="form-hint">
+              使用“立场:数量”或“立场=数量”（亦可用 x/×）的格式，多个条目以换行或逗号分隔。系统会按数量重复该立场值。
             </p>
           </label>
         </div>

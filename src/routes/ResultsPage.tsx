@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
@@ -17,19 +17,27 @@ export function ResultsPage() {
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
+  const [chartTab, setChartTab] = useState<'individual' | 'group'>('individual');
     const discussionSnapshot = result?.configSnapshot.discussion;
     const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
     const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
 
-  const stanceChartOption = useMemo<EChartsOption | null>(() => {
-    if (!result) return null;
-    const option = buildStanceChartOption(result, agentNameMap);
-    const series = (option?.series as Array<{ data?: unknown[] }> | undefined) ?? [];
-    if (series.length === 0 || series.every((item) => !item.data || item.data.length === 0)) {
-      return null;
-    }
-    return option;
-  }, [result, agentNameMap]);
+    const stanceDataset = useMemo(() => {
+      if (!result) return null;
+      return prepareStanceDataset(result, agentNameMap);
+    }, [result, agentNameMap]);
+
+    const individualChartOption = useMemo<EChartsOption | null>(() => {
+      if (!stanceDataset) return null;
+      return buildIndividualStanceChartOption(stanceDataset);
+    }, [stanceDataset]);
+
+    const groupChartOption = useMemo<EChartsOption | null>(() => {
+      if (!stanceDataset) return null;
+      return buildGroupStanceChartOption(stanceDataset);
+    }, [stanceDataset]);
+
+    const stanceChartOption = chartTab === 'individual' ? individualChartOption : groupChartOption;
 
   const handleDownloadTranscript = (mode: 'standard' | 'full') => {
     if (!result) return;
@@ -44,17 +52,17 @@ export function ResultsPage() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportChart = (type: 'png' | 'svg') => {
-    if (!stanceChartOption) {
-      window.alert('暂无可导出的立场曲线。');
-      return;
-    }
-    const instance = chartRef.current?.getEchartsInstance();
-    if (!instance) {
-      window.alert('图表尚未渲染完成，请稍后再试。');
-      return;
-    }
-    const dataUrl = instance.getDataURL({
+    const handleExportChart = (type: 'png' | 'svg') => {
+      if (!stanceChartOption) {
+        window.alert('暂无可导出的立场曲线。');
+        return;
+      }
+      const instance = chartRef.current?.getEchartsInstance();
+      if (!instance) {
+        window.alert('图表尚未渲染完成，请稍后再试。');
+        return;
+      }
+      const dataUrl = instance.getDataURL({
       type,
       pixelRatio: type === 'png' ? 2 : 1,
       backgroundColor: '#fff',
@@ -135,10 +143,28 @@ export function ResultsPage() {
             <h2>观点演化曲线</h2>
           </header>
           <div className="card__body">
+            <div className="chart-tab-bar">
+              <button
+                type="button"
+                className={`chart-tab-button ${chartTab === 'individual' ? 'active' : ''}`}
+                onClick={() => setChartTab('individual')}
+              >
+                个体演化曲线
+              </button>
+              <button
+                type="button"
+                className={`chart-tab-button ${chartTab === 'group' ? 'active' : ''}`}
+                onClick={() => setChartTab('group')}
+              >
+                总体演化曲线
+              </button>
+            </div>
             {stanceChartOption ? (
               <>
                 <ReactECharts ref={chartRef} option={stanceChartOption} notMerge={true} style={{ height: 360 }} />
-                <p className="form-hint">提示：点击上方图例可单独查看某位 Agent 的立场轨迹，导出 PNG 将保留当前显示状态。</p>
+                <p className="form-hint">
+                  提示：点击上方图例可切换曲线可见性，导出 PNG 将保留当前选项卡及显示状态。
+                </p>
               </>
             ) : (
               <div className="empty-state">
@@ -164,31 +190,83 @@ const describeModelConfig = (config: RunConfig): string => {
 const countVisibleMessages = (messages: Message[]) =>
   messages.filter((message) => message.content !== '__SKIP__').length;
 
-const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<string, string>): EChartsOption => {
-  const dataByAgent = new Map<string, { name: string; data: Array<{ value: [number, number]; message: Message }> }>();
-  let index = 0;
+type IndividualStancePoint = { round: number; value: number; message: Message };
+type IndividualStanceSeries = { agentId: string; agentName: string; points: IndividualStancePoint[] };
+type GroupStancePoint = { round: number; mean: number; variance: number };
+
+interface StanceDataset {
+  perAgentSeries: IndividualStanceSeries[];
+  groupSeries: GroupStancePoint[];
+  maxLevel: number;
+  maxRound: number;
+}
+
+const prepareStanceDataset = (
+  result: SessionResult,
+  agentNameMap: Record<string, string>,
+): StanceDataset | null => {
+  const maxLevel = Math.floor(Math.max(3, result.configSnapshot.discussion.stanceScaleSize) / 2);
+  const perAgent = new Map<string, Map<number, { value: number; message: Message }>>();
+  let maxRound = 0;
   for (const message of result.messages) {
     if (message.content === '__SKIP__' || typeof message.stance?.score !== 'number') continue;
-    index += 1;
-    const agentName = agentNameMap[message.agentId] ?? message.agentId;
-    if (!dataByAgent.has(message.agentId)) {
-      dataByAgent.set(message.agentId, { name: agentName, data: [] });
+    maxRound = Math.max(maxRound, message.round);
+    if (!perAgent.has(message.agentId)) {
+      perAgent.set(message.agentId, new Map());
     }
-    dataByAgent.get(message.agentId)!.data.push({ value: [index, message.stance.score], message });
+    perAgent.get(message.agentId)!.set(message.round, { value: message.stance.score, message });
+  }
+  if (maxRound === 0) return null;
+  const perAgentSeries: IndividualStanceSeries[] = Array.from(perAgent.entries())
+    .map(([agentId, roundMap]) => ({
+      agentId,
+      agentName: agentNameMap[agentId] ?? agentId,
+      points: Array.from(roundMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([round, detail]) => ({ round, value: detail.value, message: detail.message })),
+    }))
+    .filter((series) => series.points.length > 0);
+  if (perAgentSeries.length === 0) return null;
+
+  const groupSeries: GroupStancePoint[] = [];
+  for (let round = 1; round <= maxRound; round += 1) {
+    const roundValues: number[] = [];
+    perAgentSeries.forEach((series) => {
+      const point = series.points.find((entry) => entry.round === round);
+      if (point) {
+        roundValues.push(point.value);
+      }
+    });
+    if (roundValues.length === 0) continue;
+    const mean = roundValues.reduce((sum, value) => sum + value, 0) / roundValues.length;
+    const variance =
+      roundValues.reduce((sum, value) => sum + (value - mean) ** 2, 0) / roundValues.length;
+    groupSeries.push({ round, mean, variance });
   }
 
-  const series = Array.from(dataByAgent.values()).map((series) => ({
+  return {
+    perAgentSeries,
+    groupSeries,
+    maxLevel,
+    maxRound,
+  };
+};
+
+const buildIndividualStanceChartOption = (dataset: StanceDataset): EChartsOption => {
+  const { perAgentSeries, maxLevel, maxRound } = dataset;
+  const legendData = perAgentSeries.map((series) => series.agentName);
+  const series = perAgentSeries.map((series) => ({
     type: 'line' as const,
-    name: series.name,
+    name: series.agentName,
     smooth: true,
-    data: series.data,
     symbol: 'circle',
     symbolSize: 8,
-    emphasis: {
-      focus: 'series' as const,
-    },
+    emphasis: { focus: 'series' as const },
+    data: series.points.map((point) => ({
+      value: [point.round, point.value],
+      message: point.message,
+    })),
   }));
-  const legendData = series.map((item) => item.name);
 
   return {
     tooltip: {
@@ -201,7 +279,7 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
             const time = new Date(data.message.ts).toLocaleTimeString();
             return [
               `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
-              `<div>消息序号：${data.value[0]} ｜ 时间：${time}</div>`,
+              `<div>轮次：第 ${data.value[0]} 轮 ｜ 时间：${time}</div>`,
               `<div>立场：${data.value[1].toFixed(2)}</div>`,
               data.message.stance?.note ? `<div>说明：${data.message.stance.note}</div>` : '',
               `<div>内容：${escapeHtml(data.message.content)}</div>`,
@@ -214,25 +292,93 @@ const buildStanceChartOption = (result: SessionResult, agentNameMap: Record<stri
     },
     legend:
       legendData.length > 0
-        ? {
-            type: 'scroll' as const,
-            data: legendData,
-            top: 0,
-          }
+        ? { type: 'scroll' as const, data: legendData, top: 0 }
         : undefined,
     grid: { left: 40, right: 24, top: legendData.length > 0 ? 65 : 35, bottom: 40 },
     xAxis: {
       type: 'value',
-      name: '消息序号',
       min: 1,
+      max: Math.max(maxRound, 1),
+      interval: 1,
+      name: '轮次',
+      axisLabel: {
+        formatter: (value: number) => `第${value}轮`,
+      },
     },
     yAxis: {
       type: 'value',
-      min: -1,
-      max: 1,
+      min: -maxLevel,
+      max: maxLevel,
       name: '立场强度',
     },
     series,
+  };
+};
+
+const buildGroupStanceChartOption = (dataset: StanceDataset): EChartsOption | null => {
+  const { groupSeries, maxLevel, maxRound } = dataset;
+  if (groupSeries.length === 0) return null;
+  const varianceMax =
+    groupSeries.length > 0 ? Math.max(...groupSeries.map((point) => point.variance)) : 1;
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        if (!Array.isArray(params) || params.length === 0) return '';
+        return params
+          .map((item) => {
+            const [round, value] = item.value as [number, number];
+            const label = item.seriesName === '平均立场' ? value.toFixed(2) : value.toFixed(3);
+            return `<div>${item.marker}<strong>${item.seriesName}</strong> ｜ 轮次：第 ${round} 轮 ｜ 值：${label}</div>`;
+          })
+          .join('<br/>');
+      },
+    },
+    legend: { data: ['平均立场', '立场方差'], top: 0 },
+    grid: { left: 48, right: 40, top: 65, bottom: 40 },
+    xAxis: {
+      type: 'value',
+      min: 1,
+      max: Math.max(maxRound, 1),
+      interval: 1,
+      name: '轮次',
+      axisLabel: { formatter: (value: number) => `第${value}轮` },
+    },
+    yAxis: [
+      {
+        type: 'value',
+        min: -maxLevel,
+        max: maxLevel,
+        name: '平均立场',
+      },
+      {
+        type: 'value',
+        position: 'right',
+        min: 0,
+        max: Math.max(varianceMax, 1),
+        name: '立场方差',
+      },
+    ],
+    series: [
+      {
+        name: '平均立场',
+        type: 'line' as const,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 8,
+        data: groupSeries.map((point) => [point.round, Number(point.mean.toFixed(2))]),
+      },
+      {
+        name: '立场方差',
+        type: 'line' as const,
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: 'diamond',
+        symbolSize: 8,
+        lineStyle: { type: 'dashed' },
+        data: groupSeries.map((point) => [point.round, Number(point.variance.toFixed(3))]),
+      },
+    ],
   };
 };
 
