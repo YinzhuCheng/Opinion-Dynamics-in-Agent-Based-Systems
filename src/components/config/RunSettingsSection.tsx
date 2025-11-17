@@ -276,26 +276,30 @@ export function RunSettingsSection() {
                     请输入一个 ≥3 的奇数，如 3、5、7。整数刻度会映射为 ±{Math.floor(discussion.stanceScaleSize / 2)}…0…±{Math.floor(discussion.stanceScaleSize / 2)}，绝对值越大代表立场越极端。
                   </p>
                 </label>
-                <div className="grid two-columns">
-                  <label className="form-field">
-                    <span>正观点</span>
-                    <textarea
-                      value={discussion.positiveViewpoint}
-                      onChange={handlePositiveViewpointChange}
-                      placeholder="例如：支持项羽乌江自刎"
-                    />
-                    <p className="form-hint">描述当立场评分为正数/更极端正值时，Agent 想表达的核心观点。留空将自动使用“支持项羽乌江自刎”。</p>
-                  </label>
-                  <label className="form-field">
-                    <span>负观点</span>
-                    <textarea
-                      value={discussion.negativeViewpoint}
-                      onChange={handleNegativeViewpointChange}
-                      placeholder="例如：反对项羽乌江自刎"
-                    />
-                    <p className="form-hint">描述当立场评分为负数/更极端负值时的立场陈述。留空将自动使用“反对项羽乌江自刎”。</p>
-                  </label>
-                </div>
+                  <div className="grid two-columns">
+                    <label className="form-field">
+                      <span>正方观点</span>
+                      <textarea
+                        value={discussion.positiveViewpoint}
+                        onChange={handlePositiveViewpointChange}
+                        placeholder="例如：大语言模型的发展会造福人类"
+                      />
+                      <p className="form-hint">
+                        描述当立场评分为正数/更极端正值时，Agent 想表达的核心观点。留空将自动使用 "大语言模型的发展会造福人类"。
+                      </p>
+                    </label>
+                    <label className="form-field">
+                      <span>反方观点</span>
+                      <textarea
+                        value={discussion.negativeViewpoint}
+                        onChange={handleNegativeViewpointChange}
+                        placeholder="例如：大语言模型的发展会威胁人类"
+                      />
+                      <p className="form-hint">
+                        描述当立场评分为负数/更极端负值时的立场陈述。留空将自动使用 "大语言模型的发展会威胁人类"。
+                      </p>
+                    </label>
+                  </div>
               </div>
 
           {runConfig.useGlobalModelConfig && (

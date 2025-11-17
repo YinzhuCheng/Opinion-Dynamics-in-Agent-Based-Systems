@@ -95,7 +95,7 @@ export function ResultsPage() {
                 {countVisibleMessages(result.messages)} 条有效消息。
               </p>
               <p>摘要：{result.summary || '尚未生成摘要。'}</p>
-                <p>立场基准：正向 = {positiveViewpointLabel} ｜ 负向 = {negativeViewpointLabel}</p>
+                <p>立场基准：正方 = {positiveViewpointLabel} ｜ 反方 = {negativeViewpointLabel}</p>
                 <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
                 <div className="results-actions">
                   <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
@@ -124,17 +124,6 @@ export function ResultsPage() {
               <p>暂无历史结果。完成一轮对话后将在此展示摘要与导出工具。</p>
             </div>
           )}
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card__header">
-          <h2>当前会话状态</h2>
-        </header>
-        <div className="card__body">
-          <p>当前消息数：{runState.messages.length}</p>
-          <p>长期摘要长度：{runState.summary.length} 字符</p>
-          <p>可见窗口：{runState.visibleWindow.length} 条消息</p>
         </div>
       </section>
 
@@ -397,16 +386,13 @@ const buildTranscriptText = (
   }
     lines.push('观点曲线：默认启用');
   const discussion = result.configSnapshot.discussion;
-  const positiveView = ensurePositiveViewpoint(discussion?.positiveViewpoint);
-  const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-    lines.push(`正观点：${positiveView}`);
-    lines.push(`负观点：${negativeView}`);
+    const positiveView = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+    const negativeView = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+      lines.push(`正方观点：${positiveView}`);
+      lines.push(`反方观点：${negativeView}`);
     if (discussion) {
       lines.push(`立场刻度粒度：${discussion.stanceScaleSize}（范围 ±${Math.floor(discussion.stanceScaleSize / 2)}）`);
     }
-  lines.push('');
-  lines.push('【摘要】');
-  lines.push(result.summary || '无摘要');
   lines.push('');
   lines.push('【对话记录】');
   result.messages.forEach((message, idx) => {

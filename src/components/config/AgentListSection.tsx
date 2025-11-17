@@ -48,6 +48,16 @@ const defaultMBTIPersona = (): PersonaMBTI => ({
   mbti: 'INTJ',
 });
 
+const buildScaleValues = (size: number): number[] => {
+  const normalized = size % 2 === 0 ? size + 1 : size;
+  const half = Math.max(1, Math.floor(normalized / 2));
+  const values: number[] = [];
+  for (let i = -half; i <= half; i += 1) {
+    values.push(i);
+  }
+  return values;
+};
+
 export function AgentListSection() {
   const [collapsed, setCollapsed] = useState(false);
   const agents = useAppStore((state) => state.runState.agents);
@@ -147,6 +157,7 @@ export function AgentListSection() {
         </div>
       </header>
       <div className="card__body column-gap">
+        <GroupConfigurator />
         {agents.map((agent, index) => (
           <div key={agent.id} className="agent-card">
             <div className="agent-card__header">
@@ -216,6 +227,79 @@ export function AgentListSection() {
     </section>
   );
 }
+
+const GroupConfigurator = () => {
+  const stanceScaleSize = useAppStore((state) => state.runState.config.discussion.stanceScaleSize);
+  const configureAgentGroup = useAppStore((state) => state.configureAgentGroup);
+  const [counts, setCounts] = useState<Record<number, number>>(() => {
+    const initial: Record<number, number> = {};
+    buildScaleValues(stanceScaleSize).forEach((value) => {
+      initial[value] = 0;
+    });
+    return initial;
+  });
+
+  useEffect(() => {
+    setCounts((prev) => {
+      const next: Record<number, number> = {};
+      buildScaleValues(stanceScaleSize).forEach((value) => {
+        next[value] = prev[value] ?? 0;
+      });
+      return next;
+    });
+  }, [stanceScaleSize]);
+
+  const scaleValues = buildScaleValues(stanceScaleSize);
+
+  const handleCountChange = (value: number, raw: string) => {
+    const numeric = Math.max(0, Math.min(50, Math.floor(Number(raw) || 0)));
+    setCounts((prev) => ({
+      ...prev,
+      [value]: numeric,
+    }));
+  };
+
+  const handleApply = () => {
+    const distribution: Record<number, number> = {};
+    let total = 0;
+    scaleValues.forEach((value) => {
+      const count = Math.max(0, Math.floor(counts[value] ?? 0));
+      distribution[value] = count;
+      total += count;
+    });
+    if (total === 0) {
+      window.alert('请至少为一个立场标签输入人数。');
+      return;
+    }
+    configureAgentGroup(distribution);
+  };
+
+  return (
+    <div className="card-section">
+      <h3 className="card-section-title">群体设置</h3>
+      <p className="form-hint">
+        一次性规划 Agent 数量与整体立场分布，系统会按人数自动生成空白画像。未填写的立场标签默认 0。
+      </p>
+      <div className="grid stance-count-grid">
+        {scaleValues.map((value) => (
+          <label key={value} className="form-field">
+            <span>立场标签 {value > 0 ? `+${value}` : value}</span>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={counts[value] ?? 0}
+              onChange={(event) => handleCountChange(value, event.target.value)}
+            />
+          </label>
+        ))}
+      </div>
+      <button type="button" className="button primary" onClick={handleApply}>
+        应用群体设置
+      </button>
+    </div>
+  );
+};
 
 const TrustMatrixEditor = () => {
   const agents = useAppStore((state) => state.runState.agents);
