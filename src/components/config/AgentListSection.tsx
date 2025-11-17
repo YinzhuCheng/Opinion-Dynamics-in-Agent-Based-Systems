@@ -342,7 +342,7 @@ const TrustMatrixEditor = () => {
       <p className="form-hint">
         {exampleText}
         <br />
-        每一行代表“该 Agent 聚合上一轮观点时如何加权他人”，数值范围建议 0–1，可点击“归一化”让该行加总为 1。
+          每行展示“这个 Agent 在融合上一轮观点时给各位发言者多少权重”，数值建议填 0–1，可点击“归一化”让该行的权重自动加总为 1。
       </p>
       <div className="trust-matrix-table-wrapper">
         <table className="trust-matrix-table">

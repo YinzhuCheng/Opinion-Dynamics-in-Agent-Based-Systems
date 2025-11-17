@@ -32,7 +32,7 @@ export function DialoguePage() {
   const startDisabled = isRunning || isPaused;
   const startLabel = startDisabled ? '对话进行中' : '开始对话';
   const stopButtonDisabled = !isRunning && !isPaused;
-  const stopButtonLabel = isPaused ? '重启对话' : '停止';
+  const stopButtonLabel = isPaused ? '继续对话' : '停止';
 
   useEffect(() => {
     if (!status.awaitingLabel) {

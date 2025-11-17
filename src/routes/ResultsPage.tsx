@@ -18,60 +18,90 @@ export function ResultsPage() {
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
   const [chartTab, setChartTab] = useState<'individual' | 'group'>('individual');
-    const discussionSnapshot = result?.configSnapshot.discussion;
-    const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
-    const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
+  const liveResult = useMemo<SessionResult | undefined>(() => {
+    if (result) {
+      return undefined;
+    }
+    const hasProgress =
+      runState.messages.length > 0 ||
+      ['running', 'stopping', 'paused'].includes(runState.status.phase);
+    if (!hasProgress) {
+      return undefined;
+    }
+    return {
+      messages: runState.messages,
+      finishedAt: Date.now(),
+      summary: runState.summary,
+      configSnapshot: runState.config,
+      status: runState.status,
+    };
+  }, [result, runState]);
+  const displayResult = result ?? liveResult;
+  const discussionSnapshot = displayResult?.configSnapshot.discussion;
+  const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
+  const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
 
-    const stanceDataset = useMemo(() => {
-      if (!result) return null;
-      return prepareStanceDataset(result, agentNameMap);
-    }, [result, agentNameMap]);
+  const stanceDataset = useMemo(() => {
+    if (!displayResult) return null;
+    return prepareStanceDataset(displayResult, agentNameMap);
+  }, [displayResult, agentNameMap]);
 
-    const individualChartOption = useMemo<EChartsOption | null>(() => {
-      if (!stanceDataset) return null;
-      return buildIndividualStanceChartOption(stanceDataset);
-    }, [stanceDataset]);
+  const individualChartOption = useMemo<EChartsOption | null>(() => {
+    if (!stanceDataset) return null;
+    return buildIndividualStanceChartOption(stanceDataset);
+  }, [stanceDataset]);
 
-    const groupChartOption = useMemo<EChartsOption | null>(() => {
-      if (!stanceDataset) return null;
-      return buildGroupStanceChartOption(stanceDataset);
-    }, [stanceDataset]);
+  const groupChartOption = useMemo<EChartsOption | null>(() => {
+    if (!stanceDataset) return null;
+    return buildGroupStanceChartOption(stanceDataset);
+  }, [stanceDataset]);
 
-    const stanceChartOption = chartTab === 'individual' ? individualChartOption : groupChartOption;
+  const stanceChartOption = chartTab === 'individual' ? individualChartOption : groupChartOption;
 
   const handleDownloadTranscript = (mode: 'standard' | 'full') => {
-    if (!result) return;
-    const text = buildTranscriptText(result, agentNameMap, mode);
+    if (!displayResult) {
+      window.alert('暂无可导出的对话。');
+      return;
+    }
+    const text = buildTranscriptText(displayResult, agentNameMap, mode);
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     const suffix = mode === 'full' ? '-full' : '-standard';
-    link.download = `conversation${suffix}-${new Date(result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.download = `conversation${suffix}-${new Date(displayResult.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
-    const handleExportChart = (type: 'png' | 'svg') => {
-      if (!stanceChartOption) {
-        window.alert('暂无可导出的立场曲线。');
-        return;
-      }
-      const instance = chartRef.current?.getEchartsInstance();
-      if (!instance) {
-        window.alert('图表尚未渲染完成，请稍后再试。');
-        return;
-      }
-      const dataUrl = instance.getDataURL({
+  const handleExportChart = (type: 'png' | 'svg') => {
+    if (!stanceChartOption) {
+      window.alert('暂无可导出的立场曲线。');
+      return;
+    }
+    const instance = chartRef.current?.getEchartsInstance();
+    if (!instance) {
+      window.alert('图表尚未渲染完成，请稍后再试。');
+      return;
+    }
+    const dataUrl = instance.getDataURL({
       type,
       pixelRatio: type === 'png' ? 2 : 1,
       backgroundColor: '#fff',
     });
     const link = document.createElement('a');
     link.href = dataUrl;
-    link.download = `stance-chart-${new Date(result!.finishedAt).toISOString().replace(/[:.]/g, '-')}.${type}`;
+    const finishedAt = displayResult?.finishedAt ?? Date.now();
+    link.download = `stance-chart-${new Date(finishedAt).toISOString().replace(/[:.]/g, '-')}.${type}`;
     link.click();
   };
+
+  const isFinalized = Boolean(result);
+  const summaryLine = displayResult
+    ? isFinalized
+      ? `已完成会话，结束时间：${new Date(displayResult.finishedAt).toLocaleString()}。共计 ${countVisibleMessages(displayResult.messages)} 条有效消息。`
+      : `对话尚未完成（统计截至 ${new Date(displayResult.finishedAt).toLocaleString()}），当前共计 ${countVisibleMessages(displayResult.messages)} 条有效消息。`
+    : '';
 
   return (
     <div className="page page--results">
@@ -88,80 +118,77 @@ export function ResultsPage() {
           </div>
         </header>
         <div className="card__body">
-          {result ? (
+          {displayResult ? (
             <div className="results-summary">
-              <p>
-                已完成会话，结束时间：{new Date(result.finishedAt).toLocaleString()}。共计{' '}
-                {countVisibleMessages(result.messages)} 条有效消息。
-              </p>
-              <p>摘要：{result.summary || '尚未生成摘要。'}</p>
-                <p>立场基准：正方 = {positiveViewpointLabel} ｜ 反方 = {negativeViewpointLabel}</p>
-                <p>模式：{translateMode(result.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(result.configSnapshot)}</p>
-                <div className="results-actions">
-                  <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
-                    下载精简版 .txt
-                  </button>
-                  <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
-                    下载完整版（含提示词）
-                  </button>
-                    <button
-                      type="button"
-                      className="button secondary"
-                      onClick={() => stanceChartOption && handleExportChart('png')}
-                      disabled={!stanceChartOption}
-                      title={
-                        stanceChartOption
-                          ? '导出当前的观点演化曲线（PNG）'
-                          : '暂无足够的立场数据可绘制曲线'
-                      }
-                    >
-                    导出观点演化图（PNG）
-                  </button>
-                </div>
+              <p>{summaryLine}</p>
+              <p>摘要：{displayResult.summary || '尚未生成摘要。'}</p>
+              <p>立场基准：正方 = {positiveViewpointLabel} ｜ 反方 = {negativeViewpointLabel}</p>
+              <p>模式：{translateMode(displayResult.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(displayResult.configSnapshot)}</p>
+              <div className="results-actions">
+                <button type="button" className="button primary" onClick={() => handleDownloadTranscript('standard')}>
+                  下载精简版 .txt
+                </button>
+                <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
+                  下载完整版（含提示词）
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => stanceChartOption && handleExportChart('png')}
+                  disabled={!stanceChartOption}
+                  title={
+                    stanceChartOption
+                      ? '导出当前的观点演化曲线（PNG）'
+                      : '暂无足够的立场数据可绘制曲线'
+                  }
+                >
+                  导出观点演化图（PNG）
+                </button>
+              </div>
             </div>
           ) : (
             <div className="empty-state">
-              <p>暂无历史结果。完成一轮对话后将在此展示摘要与导出工具。</p>
+              <p>暂无历史结果。完成一轮对话或至少生成一条消息后，将在此展示进展与导出工具。</p>
             </div>
           )}
         </div>
       </section>
 
-        <section className="card">
-          <header className="card__header">
-            <h2>观点演化曲线</h2>
-          </header>
-          <div className="card__body">
-            <div className="chart-tab-bar">
-              <button
-                type="button"
-                className={`chart-tab-button ${chartTab === 'individual' ? 'active' : ''}`}
-                onClick={() => setChartTab('individual')}
-              >
-                个体演化曲线
-              </button>
-              <button
-                type="button"
-                className={`chart-tab-button ${chartTab === 'group' ? 'active' : ''}`}
-                onClick={() => setChartTab('group')}
-              >
-                总体演化曲线
-              </button>
-            </div>
-            {stanceChartOption ? (
-              <>
-                <ReactECharts ref={chartRef} option={stanceChartOption} notMerge={true} style={{ height: 360 }} />
-                <p className="form-hint">
-                  提示：点击上方图例可切换曲线可见性，导出 PNG 将保留当前选项卡及显示状态。
-                </p>
-              </>
-            ) : (
-              <div className="empty-state">
-                <p>暂无可绘制的立场分数。完成至少一条包含“（立场：X）”的发言后即可生成曲线。</p>
-              </div>
-            )}
+      <section className="card">
+        <header className="card__header">
+          <h2>观点演化曲线</h2>
+        </header>
+        <div className="card__body">
+          <div className="chart-tab-bar">
+            <button
+              type="button"
+              className={`chart-tab-button ${chartTab === 'individual' ? 'active' : ''}`}
+              onClick={() => setChartTab('individual')}
+            >
+              个体演化曲线
+            </button>
+            <button
+              type="button"
+              className={`chart-tab-button ${chartTab === 'group' ? 'active' : ''}`}
+              onClick={() => setChartTab('group')}
+            >
+              总体演化曲线
+            </button>
           </div>
-        </section>
+          {stanceChartOption ? (
+            <>
+              <ReactECharts ref={chartRef} option={stanceChartOption} notMerge={true} style={{ height: 360 }} />
+              <p className="form-hint">
+                提示：点击上方图例可切换曲线可见性，导出 PNG 将保留当前选项卡及显示状态。
+              </p>
+            </>
+          ) : (
+            <div className="empty-state">
+              <p>暂无可绘制的立场分数。完成至少一条包含“（立场：X）”的发言后即可生成曲线。</p>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
