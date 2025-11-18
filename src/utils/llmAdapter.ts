@@ -17,24 +17,29 @@ export interface ChatStreamExtra {
   maxTokens?: number;
 }
 
+export interface ChatStreamOptions {
+  signal?: AbortSignal;
+}
+
 export async function chatStream(
   messages: ChatMessage[],
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  options?: ChatStreamOptions,
 ): Promise<string> {
   if (!config.apiKey || !config.apiKey.trim()) {
     throw new Error('请先为所选供应商填写 API Key。');
   }
   const vendor = config.vendor;
   if (vendor === 'openai') {
-    return callOpenAIChat(messages, config, extra, handlers);
+    return callOpenAIChat(messages, config, extra, handlers, options);
   }
   if (vendor === 'anthropic') {
-    return callAnthropicMessages(messages, config, extra, handlers);
+    return callAnthropicMessages(messages, config, extra, handlers, options);
   }
   if (vendor === 'gemini') {
-    return callGemini(messages, config, extra, handlers);
+    return callGemini(messages, config, extra, handlers, options);
   }
   throw new Error(`暂不支持的供应商：${vendor}`);
 }
@@ -52,6 +57,7 @@ async function callOpenAIChat(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  options?: ChatStreamOptions,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   const base = tidyBase(config.baseUrl) || defaultBases.openai;
@@ -65,18 +71,26 @@ async function callOpenAIChat(
     stream: true,
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify(body),
-  }).catch((error: any) => {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(body),
+      signal: options?.signal,
+    });
+  } catch (error) {
     handlers?.onStatus?.('done');
-    throw new Error(error?.message ?? '无法连接到 OpenAI');
-  });
+    if (isAbortError(error)) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : '无法连接到 OpenAI';
+    throw new Error(message);
+  }
 
   if (!response.ok || !response.body) {
     handlers?.onStatus?.('done');
@@ -139,6 +153,7 @@ async function callAnthropicMessages(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  options?: ChatStreamOptions,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   handlers?.onStatus?.('thinking');
@@ -159,18 +174,26 @@ async function callAnthropicMessages(
     max_tokens: extra?.maxTokens ?? config.max_output_tokens ?? 4096,
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': `${config.apiKey}`,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-  }).catch((error: any) => {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': `${config.apiKey}`,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal: options?.signal,
+    });
+  } catch (error) {
     handlers?.onStatus?.('done');
-    throw new Error(error?.message ?? '无法连接到 Anthropic');
-  });
+    if (isAbortError(error)) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : '无法连接到 Anthropic';
+    throw new Error(message);
+  }
 
   const json = await response.json().catch(() => null);
   handlers?.onStatus?.('done');
@@ -198,6 +221,7 @@ async function callGemini(
   config: ModelConfig,
   extra?: ChatStreamExtra,
   handlers?: ChatStreamHandlers,
+  options?: ChatStreamOptions,
 ): Promise<string> {
   handlers?.onStatus?.('waiting_response');
   handlers?.onStatus?.('thinking');
@@ -217,14 +241,22 @@ async function callGemini(
     },
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).catch((error: any) => {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: options?.signal,
+    });
+  } catch (error) {
     handlers?.onStatus?.('done');
-    throw new Error(error?.message ?? '无法连接到 Gemini');
-  });
+    if (isAbortError(error)) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : '无法连接到 Gemini';
+    throw new Error(message);
+  }
 
   const json = await response.json().catch(() => null);
   handlers?.onStatus?.('done');
@@ -238,5 +270,14 @@ async function callGemini(
       ?.map((part: { text?: string }) => part?.text || '')
       .join('\n')
       .trim() ?? '';
-  return content;
-}
+    return content;
+  }
+
+const isAbortError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const abortLike = error as { name?: string; code?: string; message?: string };
+  if (abortLike.name === 'AbortError') return true;
+  if (abortLike.code === 'ERR_ABORTED') return true;
+  const message = typeof abortLike.message === 'string' ? abortLike.message.toLowerCase() : '';
+  return message.includes('aborted');
+};
