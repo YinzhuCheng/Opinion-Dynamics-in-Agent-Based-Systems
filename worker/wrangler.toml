@@ -1,0 +1,10 @@
+name = "odm-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[vars]
+# 在 Cloudflare Dashboard 上配置供应商所需的额外变量（若有）
+
+#[[r2_buckets]]
+#binding = "FILES"
+#bucket_name = "example"
