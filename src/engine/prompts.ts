@@ -7,6 +7,10 @@ import {
 
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
+const OUTPUT_FORMAT_EXAMPLE = `示例格式：
+[[STATE]]你的长期基线与当前状态……[[/STATE]]
+[[THINK]]你在本轮的即时推理……[[/THINK]]
+自然语言正文……（立场：+1）`;
 
 interface AgentPromptOptions {
   agent: AgentSpec;
@@ -122,6 +126,7 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - ${ratingLine}
 - ${coverageHint}
   - ${enforcementWarning}
+  - ${OUTPUT_FORMAT_EXAMPLE}
 
 日常表达提示：
   - ${naturalGuidelines}`,
@@ -249,7 +254,8 @@ export const buildAgentUserPrompt = ({
     followHint,
     styleHint,
     ratingHint,
-    thinkingHint,
+      thinkingHint,
+      OUTPUT_FORMAT_EXAMPLE,
   ].join('\n\n');
 };
 

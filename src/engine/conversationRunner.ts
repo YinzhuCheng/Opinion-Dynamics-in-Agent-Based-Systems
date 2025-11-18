@@ -683,7 +683,9 @@ class ConversationRunner {
       foundThought: boolean;
       rawContent: string;
     } {
-      const stateResult = this.extractTaggedBlock(content, 'STATE');
+      const stateResult = this.extractTaggedBlock(content, 'STATE', {
+        stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
+      });
       const innerState = stateResult.value?.trim() || undefined;
       let workingContent = stateResult.content;
 
@@ -691,7 +693,9 @@ class ConversationRunner {
       let thoughtSummary: string | undefined;
       let foundThought = false;
       for (const tag of thoughtTags) {
-        const result = this.extractTaggedBlock(workingContent, tag);
+        const result = this.extractTaggedBlock(workingContent, tag, {
+          stopBeforeTags: ['（立场', '[[STATE]]'],
+        });
         if (result.found && result.value) {
           thoughtSummary = result.value?.trim() || undefined;
           workingContent = result.content;
@@ -713,32 +717,68 @@ class ConversationRunner {
     private extractTaggedBlock(
       content: string,
       tag: string,
+      options?: { stopBeforeTags?: string[] },
     ): { content: string; value?: string; found: boolean } {
-      const closingRegex = new RegExp(`\\[\\[${tag}\\]\\]([\\s\\S]*?)\\[\\[\\/${tag}\\]\\]`, 'i');
-      const closingMatch = content.match(closingRegex);
-      if (closingMatch && typeof closingMatch.index === 'number') {
-        const before = content.slice(0, closingMatch.index);
-        const after = content.slice(closingMatch.index + closingMatch[0].length);
-        const remaining = `${before}${after}`.trim();
-        const value = closingMatch[1].trim();
-        return {
-          content: remaining,
-          value: value.length > 0 ? value : undefined,
-          found: true,
-        };
+      const normalizedTag = tag.toUpperCase();
+      const upperContent = content.toUpperCase();
+      const openMarker = `[[${normalizedTag}]]`;
+      const startIndex = upperContent.indexOf(openMarker);
+      if (startIndex === -1) {
+        return { content, found: false };
       }
-      const legacyRegex = new RegExp(`\\[\\[${tag}\\]\\]([\\s\\S]*?)$`, 'i');
-      const legacyMatch = content.match(legacyRegex);
-      if (legacyMatch && typeof legacyMatch.index === 'number') {
-        const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
-        const value = legacyMatch[1].trim();
-        return {
-          content: trimmedContent,
-          value: value.length > 0 ? value : undefined,
-          found: true,
-        };
+      const afterOpen = startIndex + openMarker.length;
+      const closingMarker = `[[/${normalizedTag}]]`;
+      const closingIndex = upperContent.indexOf(closingMarker, afterOpen);
+
+      let endIndex: number;
+      let afterIndex: number;
+
+      if (closingIndex !== -1) {
+        endIndex = closingIndex;
+        afterIndex = closingIndex + closingMarker.length;
+      } else {
+        const boundary = this.findNextTaggedBoundary(upperContent, afterOpen, options);
+        endIndex = boundary ?? content.length;
+        afterIndex = boundary ?? content.length;
       }
-      return { content, found: false };
+
+      const before = content.slice(0, startIndex);
+      const extracted = content.slice(afterOpen, endIndex).trim();
+      const after = content.slice(afterIndex);
+      const needsSpace = before && after && !before.endsWith('\n') && !after.startsWith('\n');
+      const remaining = `${before}${needsSpace ? ' ' : ''}${after}`.trim();
+      return {
+        content: remaining,
+        value: extracted.length > 0 ? extracted : undefined,
+        found: true,
+      };
+    }
+
+    private findNextTaggedBoundary(
+      upperContent: string,
+      fromIndex: number,
+      options?: { stopBeforeTags?: string[] },
+    ): number | undefined {
+      const candidates: number[] = [];
+      const extraStops = options?.stopBeforeTags ?? [];
+      extraStops.forEach((tag) => {
+        const idx = upperContent.indexOf(tag.toUpperCase(), fromIndex);
+        if (idx !== -1) {
+          candidates.push(idx);
+        }
+      });
+      const nextGenericTag = upperContent.indexOf('[[', fromIndex);
+      if (nextGenericTag !== -1) {
+        candidates.push(nextGenericTag);
+      }
+      const stanceIndex = upperContent.indexOf('（立场', fromIndex);
+      if (stanceIndex !== -1) {
+        candidates.push(stanceIndex);
+      }
+      if (candidates.length === 0) {
+        return undefined;
+      }
+      return Math.min(...candidates);
     }
 
       private processSelfReportedStance(
