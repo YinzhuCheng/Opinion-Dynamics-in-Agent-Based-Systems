@@ -84,6 +84,8 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
   - [[THINK]] 段描述你基于当前内在状态所做的推理，包括：上一轮残留的问题、上一位发言者带来的刺激、你准备如何组织正文。
   - 至少点名一个内在状态中的因素，解释它如何左右本轮的判断或表达。
   - 该段保持 2~3 句，聚焦推理，不写口语化结论。`;
+  const enforcementWarning =
+    '注意：若缺少 [[STATE]]、[[THINK]]、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
   const naturalGuidelines = [
     '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
     '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
@@ -112,13 +114,14 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
     SYNTHESIS_HINT,
     previousInnerStateSection,
     previousThoughtSection,
-    `输出要求：
+      `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
 - ${ratingLine}
 - ${coverageHint}
+  - ${enforcementWarning}
 
 日常表达提示：
   - ${naturalGuidelines}`,
@@ -221,6 +224,8 @@ export const buildAgentUserPrompt = ({
     '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
   const thinkingHint =
     '输出格式：[[STATE]] 内在状态 + [[THINK]] 思考摘要 + 正文 + （立场：X）。每个带方括号的区块需至少 2 句话，前者交代长期基线与短期波动，后者说明如何据此推导正文。区块必须放在最前且不要在正文里说明它们的存在。';
+  const reinforcementHint =
+    '警告：若缺少 [[STATE]]、[[THINK]]、正文或结尾“（立场：X）”，系统将抛弃本轮输出，请严格遵守。';
   const trustWeightHint =
     '请在 [[STATE]] 或 [[THINK]] 中说明你如何平衡“上一轮的内在状态/思考摘要 + 依据信任矩阵加权的上一轮集体发言 + 上一位发言者”的影响力。';
 
@@ -237,7 +242,8 @@ export const buildAgentUserPrompt = ({
       `上一位发言者（影响内在状态/思考与发言内容，但也不必每次都引用上一位的内容，允许开启新话题）：\n${lastSpeakerLine}`,
     previousInnerStateHint,
     previousThoughtHint,
-    trustWeightHint,
+      trustWeightHint,
+      reinforcementHint,
     SYNTHESIS_HINT,
     polarityHint,
     followHint,

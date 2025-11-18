@@ -490,10 +490,25 @@ class ConversationRunner {
         const metadataResult = this.extractThinkingArtifacts(content);
         thoughtSummary = metadataResult.thoughtSummary;
         innerState = metadataResult.innerState;
-        content = metadataResult.content.trim() || '__SKIP__';
+        let processedContent = metadataResult.content.trim();
+        if (!processedContent) {
+          const fallbackSegments: string[] = [];
+          if (metadataResult.thoughtSummary) {
+            fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
+          }
+          if (metadataResult.innerState) {
+            fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
+          }
+          processedContent = fallbackSegments.join('\n').trim();
+        }
+        if (!processedContent) {
+          processedContent = metadataResult.rawContent.trim();
+        }
+        content = processedContent || '__SKIP__';
       }
       if (content === '__SKIP__') {
         thoughtSummary = undefined;
+        innerState = undefined;
       }
 
         const stanceResult = this.processSelfReportedStance(content, discussion);
@@ -664,6 +679,9 @@ class ConversationRunner {
       content: string;
       thoughtSummary?: string;
       innerState?: string;
+      foundState: boolean;
+      foundThought: boolean;
+      rawContent: string;
     } {
       const stateResult = this.extractTaggedBlock(content, 'STATE');
       const innerState = stateResult.value?.trim() || undefined;
@@ -671,11 +689,13 @@ class ConversationRunner {
 
       const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
       let thoughtSummary: string | undefined;
+      let foundThought = false;
       for (const tag of thoughtTags) {
         const result = this.extractTaggedBlock(workingContent, tag);
         if (result.found && result.value) {
           thoughtSummary = result.value?.trim() || undefined;
           workingContent = result.content;
+          foundThought = Boolean(thoughtSummary);
           break;
         }
       }
@@ -684,6 +704,9 @@ class ConversationRunner {
         content: workingContent.trim(),
         thoughtSummary,
         innerState,
+        foundState: Boolean(stateResult.found && innerState),
+        foundThought,
+        rawContent: content,
       };
     }
 
