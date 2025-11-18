@@ -128,6 +128,7 @@ export interface RunStatus {
   lastAgentId?: string;
   error?: string;
   awaitingLabel?: 'response' | 'thinking';
+  sessionId: number;
 }
 
 export type PageKey = 'configuration' | 'dialogue' | 'results';

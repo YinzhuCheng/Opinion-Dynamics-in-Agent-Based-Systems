@@ -147,7 +147,7 @@ const createEmptyRunState = (): RunState => {
   };
 };
 
-const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
+const createInitialStatus = (mode: DialogueMode = 'random', sessionId = 0): RunStatus => ({
   phase: 'idle',
   mode,
   currentRound: 0,
@@ -155,6 +155,7 @@ const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
   totalMessages: 0,
   summarizedCount: 0,
   awaitingLabel: undefined,
+  sessionId,
 });
 
 export type VendorDefaults = Record<

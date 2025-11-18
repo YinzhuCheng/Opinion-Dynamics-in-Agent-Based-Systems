@@ -18,15 +18,17 @@ type ConversationProgress = {
 };
 
 let activeRunner: ConversationRunner | undefined;
+let currentRunRevision = 0;
 
 const runConversation = async (mode: RunnerMode) => {
+  const revision = ++currentRunRevision;
   if (activeRunner) {
     activeRunner.forceStop();
   }
   if (mode === 'fresh') {
     useAppStore.getState().setResult(undefined);
   }
-  const runner = new ConversationRunner(mode);
+  const runner = new ConversationRunner(mode, revision);
   activeRunner = runner;
   try {
     await runner.run();
@@ -64,19 +66,21 @@ class ConversationRunner {
   private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
   private readonly runMode: RunnerMode;
+  private readonly runRevision: number;
   private sequentialOrder?: string[];
   private inflightControllers = new Set<AbortController>();
 
-  constructor(runMode: RunnerMode = 'fresh') {
+  constructor(runMode: RunnerMode = 'fresh', runRevision: number) {
     this.runMode = runMode;
+    this.runRevision = runRevision;
   }
 
   requestPause() {
-    if (this.stopped || this.paused || this.pauseRequested) {
+    if (!this.isCurrentRun() || this.stopped || this.paused || this.pauseRequested) {
       return;
     }
     this.pauseRequested = true;
-    this.appStore.getState().setStopRequested(true);
+    this.setStopRequested(true);
     this.setStatus((status) => ({
       ...status,
       phase: 'paused',
@@ -85,14 +89,14 @@ class ConversationRunner {
   }
 
   resume() {
-    if (this.stopped) {
+    if (!this.isCurrentRun() || this.stopped) {
       return;
     }
     if (this.paused && this.resumeResolver) {
       const resolver = this.resumeResolver;
       this.resumeResolver = undefined;
       this.paused = false;
-      this.appStore.getState().setStopRequested(false);
+      this.setStopRequested(false);
       this.setStatus((status) => ({
         ...status,
         phase: 'running',
@@ -102,7 +106,7 @@ class ConversationRunner {
     }
     if (this.pauseRequested) {
       this.pauseRequested = false;
-      this.appStore.getState().setStopRequested(false);
+      this.setStopRequested(false);
       this.setStatus((status) => ({
         ...status,
         phase: 'running',
@@ -123,69 +127,69 @@ class ConversationRunner {
     }
   }
 
-  async run() {
+    async run() {
       const state = this.appStore.getState();
       const { runState } = state;
       const { agents, config } = runState;
 
-    if (agents.length === 0) {
-      this.appStore.getState().setRunStatus({
-        phase: 'error',
-        mode: config.mode,
-        error: '请至少配置 1 名 Agent 后再开始对话。',
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-      });
-      return;
-    }
+      if (agents.length === 0) {
+        this.setStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请至少配置 1 名 Agent 后再开始对话。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
 
-    const preserveHistory = this.runMode === 'resume';
-    if (config.mode === 'sequential' && !preserveHistory) {
-      this.sequentialOrder = agents.map((agent) => agent.id);
-    } else if (config.mode === 'sequential' && !this.sequentialOrder) {
-      this.sequentialOrder = agents.map((agent) => agent.id);
-    }
+      const preserveHistory = this.runMode === 'resume';
+      if (config.mode === 'sequential' && !preserveHistory) {
+        this.sequentialOrder = agents.map((agent) => agent.id);
+      } else if (config.mode === 'sequential' && !this.sequentialOrder) {
+        this.sequentialOrder = agents.map((agent) => agent.id);
+      }
 
-    this.appStore.getState().setStopRequested(false);
-    this.stopped = false;
-    this.pauseRequested = false;
-    this.paused = false;
-    this.resumeResolver = undefined;
+      this.setStopRequested(false);
+      this.stopped = false;
+      this.pauseRequested = false;
+      this.paused = false;
+      this.resumeResolver = undefined;
 
-    let startedAt = runState.status.startedAt ?? Date.now();
+      let startedAt = runState.status.startedAt ?? Date.now();
 
-    if (!preserveHistory) {
-      this.appStore.getState().resetMessages();
-      startedAt = Date.now();
-      this.setStatus({
-        phase: 'running',
-        mode: config.mode,
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt,
-        finishedAt: undefined,
-        error: undefined,
-        lastAgentId: undefined,
-        awaitingLabel: undefined,
-      });
-    } else {
-      const currentStatus = this.appStore.getState().runState.status;
-      startedAt = currentStatus.startedAt ?? startedAt;
-      this.setStatus({
-        ...currentStatus,
-        phase: 'running',
-        startedAt,
-        finishedAt: undefined,
-        error: undefined,
-        awaitingLabel: undefined,
-      });
-    }
+      if (!preserveHistory) {
+        this.resetMessages();
+        startedAt = Date.now();
+        this.setStatus({
+          phase: 'running',
+          mode: config.mode,
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt,
+          finishedAt: undefined,
+          error: undefined,
+          lastAgentId: undefined,
+          awaitingLabel: undefined,
+        });
+      } else {
+        const currentStatus = this.appStore.getState().runState.status;
+        startedAt = currentStatus.startedAt ?? startedAt;
+        this.setStatus({
+          ...currentStatus,
+          phase: 'running',
+          startedAt,
+          finishedAt: undefined,
+          error: undefined,
+          awaitingLabel: undefined,
+        });
+      }
 
     const progress = preserveHistory
       ? this.analyzeProgress(
@@ -397,8 +401,8 @@ class ConversationRunner {
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
         }
-        this.appStore.getState().setVisibleWindow(visibleWindow);
-      const trustWeights = this.buildTrustContext(agent.id);
+        this.updateVisibleWindow(visibleWindow);
+        const trustWeights = this.buildTrustContext(agent.id);
       const discussion = this.appStore.getState().runState.config.discussion;
         const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
         const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
@@ -507,7 +511,7 @@ class ConversationRunner {
       message.stance = stanceResult.stance;
     }
 
-    this.appStore.getState().appendMessage(message);
+    this.appendMessageSnapshot(message);
     this.updateStatusAfterMessage(message);
 
     return message;
@@ -709,7 +713,42 @@ class ConversationRunner {
   }
 
   private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
-    this.appStore.getState().setRunStatus(updater);
+    this.runIfCurrent(() => {
+      this.appStore.getState().setRunStatus((status) => {
+        const next =
+          typeof updater === 'function'
+            ? (updater as (current: RunStatus) => RunStatus)(status)
+            : { ...status, ...updater };
+        return {
+          ...next,
+          sessionId: this.runRevision,
+        };
+      });
+    });
+  }
+
+  private setStopRequested(value: boolean) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().setStopRequested(value);
+    });
+  }
+
+  private resetMessages() {
+    this.runIfCurrent(() => {
+      this.appStore.getState().resetMessages();
+    });
+  }
+
+  private updateVisibleWindow(messages: Message[]) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().setVisibleWindow(messages);
+    });
+  }
+
+  private appendMessageSnapshot(message: Message) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().appendMessage(message);
+    });
   }
 
   private setAwaiting(label?: 'response' | 'thinking') {
@@ -719,16 +758,27 @@ class ConversationRunner {
     }));
   }
 
+  private isCurrentRun() {
+    return this.runRevision === currentRunRevision;
+  }
+
+  private runIfCurrent(action: () => void) {
+    if (!this.isCurrentRun()) {
+      return;
+    }
+    action();
+  }
+
   private async waitIfPaused() {
     if (this.stopped) return;
     if (!this.pauseRequested && !this.paused) {
       return;
     }
-    if (!this.paused) {
-      this.pauseRequested = false;
-      this.paused = true;
-      this.appStore.getState().setStopRequested(false);
-    }
+      if (!this.paused) {
+        this.pauseRequested = false;
+        this.paused = true;
+        this.setStopRequested(false);
+      }
     await new Promise<void>((resolve) => {
       this.resumeResolver = resolve;
     });
@@ -741,14 +791,16 @@ class ConversationRunner {
   }
 
   private captureResultSnapshot() {
-    const state = this.appStore.getState().runState;
-    const status = state.status;
-    this.appStore.getState().setResult({
-      messages: state.messages,
-      finishedAt: status.finishedAt ?? Date.now(),
-      summary: state.summary,
-      configSnapshot: state.config,
-      status,
+    this.runIfCurrent(() => {
+      const state = this.appStore.getState().runState;
+      const status = state.status;
+      this.appStore.getState().setResult({
+        messages: state.messages,
+        finishedAt: status.finishedAt ?? Date.now(),
+        summary: state.summary,
+        configSnapshot: state.config,
+        status,
+      });
     });
   }
 
