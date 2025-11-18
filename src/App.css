@@ -638,7 +638,8 @@
   line-height: 1.6;
 }
 
-.message-psychology {
+.message-inner-state,
+.message-thought {
   background: #eef2ff;
   border-left: 3px solid #818cf8;
   border-radius: 0.5rem;
@@ -670,10 +671,32 @@
   margin-right: 0.35rem;
 }
 
-.message-psychology p {
+.message-inner-state p,
+.message-thought p {
   margin: 0;
   color: #475569;
   font-style: italic;
+}
+
+.timeline-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.timeline-filters__label {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.timeline-filters__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: #475569;
 }
 
 .results-summary {

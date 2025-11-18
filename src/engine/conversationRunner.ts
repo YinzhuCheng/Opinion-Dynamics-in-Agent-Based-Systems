@@ -403,12 +403,13 @@ class ConversationRunner {
         }
         this.updateVisibleWindow(visibleWindow);
         const trustWeights = this.buildTrustContext(agent.id);
-      const discussion = this.appStore.getState().runState.config.discussion;
-        const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
-        const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-        const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
+        const discussion = this.appStore.getState().runState.config.discussion;
+          const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+          const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agentNames);
+          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agentNames);
 
-        const systemPrompt = buildAgentSystemPrompt({
+          const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
@@ -418,10 +419,11 @@ class ConversationRunner {
         stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
             negativeViewpoint,
-            previousRoundMessages,
-          previousPsychology,
+              previousRoundMessages,
+            previousThoughtSummaries,
+            previousInnerStates,
       });
-        const userPrompt = buildAgentUserPrompt({
+          const userPrompt = buildAgentUserPrompt({
           agent,
           mode: config.mode,
           round,
@@ -433,7 +435,8 @@ class ConversationRunner {
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
-          previousPsychology,
+            previousThoughtSummaries,
+            previousInnerStates,
           selfPreviousMessage,
         });
 
@@ -481,14 +484,16 @@ class ConversationRunner {
 
       content = content.trim() || '__SKIP__';
 
-      let psychology: string | undefined;
+      let thoughtSummary: string | undefined;
+      let innerState: string | undefined;
       if (content !== '__SKIP__') {
-        const psychologyResult = this.extractPsychology(content);
-        psychology = psychologyResult.psychology;
-        content = psychologyResult.content.trim() || '__SKIP__';
+        const metadataResult = this.extractThinkingArtifacts(content);
+        thoughtSummary = metadataResult.thoughtSummary;
+        innerState = metadataResult.innerState;
+        content = metadataResult.content.trim() || '__SKIP__';
       }
       if (content === '__SKIP__') {
-        psychology = undefined;
+        thoughtSummary = undefined;
       }
 
         const stanceResult = this.processSelfReportedStance(content, discussion);
@@ -505,7 +510,8 @@ class ConversationRunner {
       turn,
       systemPrompt,
       userPrompt,
-        psychology,
+          thoughtSummary,
+          innerState,
     };
     if (stanceResult.stance) {
       message.stance = stanceResult.stance;
@@ -616,50 +622,101 @@ class ConversationRunner {
     return { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage };
       }
 
-      private collectPreviousPsychology(
-        round: number,
-        agentNames: Record<string, string>,
-      ): Array<{ agentName: string; psychology: string }> {
-        if (round <= 0) return [];
-        const messages = this.appStore.getState().runState.messages;
-        return messages
-          .filter(
-            (message) =>
-              message.round === round &&
-              typeof message.psychology === 'string' &&
-              message.psychology.trim().length > 0,
-          )
-          .map((message) => ({
-            agentName: agentNames[message.agentId] ?? message.agentId,
-            psychology: (message.psychology ?? '').trim(),
-          }));
+        private collectPreviousThoughtSummaries(
+          round: number,
+          agentNames: Record<string, string>,
+        ): Array<{ agentName: string; thoughtSummary: string }> {
+          if (round <= 0) return [];
+          const messages = this.appStore.getState().runState.messages;
+          return messages
+            .filter(
+              (message) =>
+                message.round === round &&
+                typeof message.thoughtSummary === 'string' &&
+                message.thoughtSummary.trim().length > 0,
+            )
+            .map((message) => ({
+              agentName: agentNames[message.agentId] ?? message.agentId,
+              thoughtSummary: (message.thoughtSummary ?? '').trim(),
+            }));
+        }
+
+        private collectPreviousInnerStates(
+          round: number,
+          agentNames: Record<string, string>,
+        ): Array<{ agentName: string; innerState: string }> {
+          if (round <= 0) return [];
+          const messages = this.appStore.getState().runState.messages;
+          return messages
+            .filter(
+              (message) =>
+                message.round === round &&
+                typeof message.innerState === 'string' &&
+                message.innerState.trim().length > 0,
+            )
+            .map((message) => ({
+              agentName: agentNames[message.agentId] ?? message.agentId,
+              innerState: (message.innerState ?? '').trim(),
+            }));
+        }
+
+    private extractThinkingArtifacts(content: string): {
+      content: string;
+      thoughtSummary?: string;
+      innerState?: string;
+    } {
+      const stateResult = this.extractTaggedBlock(content, 'STATE');
+      const innerState = stateResult.value?.trim() || undefined;
+      let workingContent = stateResult.content;
+
+      const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
+      let thoughtSummary: string | undefined;
+      for (const tag of thoughtTags) {
+        const result = this.extractTaggedBlock(workingContent, tag);
+        if (result.found && result.value) {
+          thoughtSummary = result.value?.trim() || undefined;
+          workingContent = result.content;
+          break;
+        }
       }
 
-  private extractPsychology(content: string): { content: string; psychology?: string } {
-    const blockRegex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]/;
-    const blockMatch = content.match(blockRegex);
-    if (blockMatch && typeof blockMatch.index === 'number') {
-      const before = content.slice(0, blockMatch.index);
-      const after = content.slice(blockMatch.index + blockMatch[0].length);
-      const remaining = `${before}${after}`.trim();
-      const psychology = blockMatch[1].trim();
       return {
-        content: remaining,
-        psychology: psychology.length > 0 ? psychology : undefined,
+        content: workingContent.trim(),
+        thoughtSummary,
+        innerState,
       };
     }
-    const legacyRegex = /\[\[PSY\]\]([\s\S]*?)$/;
-    const legacyMatch = content.match(legacyRegex);
-    if (legacyMatch && typeof legacyMatch.index === 'number') {
-      const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
-      const psychology = legacyMatch[1].trim();
-      return {
-        content: trimmedContent,
-        psychology: psychology.length > 0 ? psychology : undefined,
-      };
+
+    private extractTaggedBlock(
+      content: string,
+      tag: string,
+    ): { content: string; value?: string; found: boolean } {
+      const closingRegex = new RegExp(`\\[\\[${tag}\\]\\]([\\s\\S]*?)\\[\\[\\/${tag}\\]\\]`, 'i');
+      const closingMatch = content.match(closingRegex);
+      if (closingMatch && typeof closingMatch.index === 'number') {
+        const before = content.slice(0, closingMatch.index);
+        const after = content.slice(closingMatch.index + closingMatch[0].length);
+        const remaining = `${before}${after}`.trim();
+        const value = closingMatch[1].trim();
+        return {
+          content: remaining,
+          value: value.length > 0 ? value : undefined,
+          found: true,
+        };
+      }
+      const legacyRegex = new RegExp(`\\[\\[${tag}\\]\\]([\\s\\S]*?)$`, 'i');
+      const legacyMatch = content.match(legacyRegex);
+      if (legacyMatch && typeof legacyMatch.index === 'number') {
+        const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
+        const value = legacyMatch[1].trim();
+        return {
+          content: trimmedContent,
+          value: value.length > 0 ? value : undefined,
+          found: true,
+        };
+      }
+      return { content, found: false };
     }
-    return { content };
-  }
 
       private processSelfReportedStance(
       content: string,

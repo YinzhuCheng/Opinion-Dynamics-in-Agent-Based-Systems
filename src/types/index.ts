@@ -94,7 +94,8 @@ export interface Message {
   systemPrompt?: string;
   userPrompt?: string;
   stance?: { score: number; note?: string };
-  psychology?: string;
+  thoughtSummary?: string;
+  innerState?: string;
 }
 
 export interface RunState {
