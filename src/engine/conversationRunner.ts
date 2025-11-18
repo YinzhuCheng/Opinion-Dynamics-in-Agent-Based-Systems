@@ -12,8 +12,10 @@ import {
 let activeRunner: ConversationRunner | undefined;
 
 export const startConversation = async () => {
-  if (activeRunner?.isRunning()) {
-    activeRunner.requestStop();
+  const previousRunner = activeRunner;
+  if (previousRunner) {
+    previousRunner.requestStop();
+    await previousRunner.waitForCompletion();
   }
   const runner = new ConversationRunner();
   activeRunner = runner;
@@ -33,10 +35,23 @@ export const stopConversation = () => {
 class ConversationRunner {
   private stopped = false;
   private readonly appStore = useAppStore;
+  private readonly completionPromise: Promise<void>;
+  private resolveCompletion?: () => void;
+  private currentAbortController?: AbortController;
+
+  constructor() {
+    this.completionPromise = new Promise((resolve) => {
+      this.resolveCompletion = resolve;
+    });
+  }
 
   isRunning() {
     const { phase } = this.appStore.getState().runState.status;
     return phase === 'running' || phase === 'stopping';
+  }
+
+  waitForCompletion() {
+    return this.completionPromise;
   }
 
   requestStop() {
@@ -46,28 +61,35 @@ class ConversationRunner {
       ...status,
       phase: status.phase === 'running' ? 'stopping' : status.phase,
       awaitingLabel: undefined,
-    }));
+      }));
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
   }
 
-  async run() {
+    async run() {
       const state = this.appStore.getState();
       const { runState } = state;
       const { agents, config } = runState;
 
-      if (agents.length === 0) {
-        this.appStore.getState().setRunStatus({
-          phase: 'error',
-          mode: config.mode,
-          error: '请至少配置 1 名 Agent 后再开始对话。',
-          currentRound: 0,
-          currentTurn: 0,
-          totalMessages: 0,
-          summarizedCount: 0,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-        });
-        return;
-      }
+        if (agents.length === 0) {
+          this.appStore.getState().setRunStatus({
+            phase: 'error',
+            mode: config.mode,
+            error: '请至少配置 1 名 Agent 后再开始对话。',
+            currentRound: 0,
+            currentTurn: 0,
+            totalMessages: 0,
+            summarizedCount: 0,
+            startedAt: Date.now(),
+            finishedAt: Date.now(),
+          });
+          if (this.resolveCompletion) {
+            this.resolveCompletion();
+            this.resolveCompletion = undefined;
+          }
+          return;
+        }
 
     this.appStore.getState().resetMessages();
     this.appStore.getState().setStopRequested(false);
@@ -111,7 +133,8 @@ class ConversationRunner {
           }));
       }
       this.captureResultSnapshot();
-    } catch (error: any) {
+      } catch (error) {
+          const err = error instanceof Error ? error : new Error('运行过程中发生未知错误。');
         this.setStatus({
           phase: 'error',
           mode: config.mode,
@@ -119,14 +142,19 @@ class ConversationRunner {
           currentTurn: this.appStore.getState().runState.status.currentTurn,
           totalMessages: this.appStore.getState().runState.status.totalMessages,
           summarizedCount: this.appStore.getState().runState.status.summarizedCount,
-          error: error?.message ?? '运行过程中发生未知错误。',
+            error: err.message ?? '运行过程中发生未知错误。',
           startedAt,
           finishedAt: Date.now(),
           lastAgentId: this.appStore.getState().runState.status.lastAgentId,
           awaitingLabel: undefined,
         });
-      throw error;
-    }
+          throw err;
+      } finally {
+        if (this.resolveCompletion) {
+          this.resolveCompletion();
+          this.resolveCompletion = undefined;
+        }
+      }
   }
 
     private async runSequentialOrder(agents: AgentSpec[], config: RunConfig) {
@@ -143,8 +171,8 @@ class ConversationRunner {
           lastAgentId: agent.id,
         }));
         await this.executeAgentTurn(agent, round, turn + 1, config);
+        }
       }
-    }
   }
 
     private async runRandomOrder(agents: AgentSpec[], config: RunConfig) {
@@ -225,23 +253,39 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
-    let content = '';
-    try {
-      content =
-        (await chatStream(messages, modelConfig, extra, {
-          onStatus: (status) => {
-            if (status === 'waiting_response' || status === 'responding') {
-              this.setAwaiting('response');
-            } else if (status === 'thinking') {
-              this.setAwaiting('thinking');
-            } else if (status === 'done') {
-              this.setAwaiting(undefined);
-            }
-          },
-        })) || '';
-    } finally {
-      this.setAwaiting(undefined);
-    }
+      let content = '';
+      const abortController = new AbortController();
+      this.currentAbortController = abortController;
+      try {
+        content =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
+            },
+            { signal: abortController.signal },
+          )) || '';
+      } catch (error) {
+        if (isAbortError(error) && this.shouldStop()) {
+          return;
+        }
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
+        if (this.currentAbortController === abortController) {
+          this.currentAbortController = undefined;
+        }
+      }
 
       content = content.trim() || '__SKIP__';
 
@@ -275,10 +319,10 @@ class ConversationRunner {
       message.stance = stanceResult.stance;
     }
 
-    this.appStore.getState().appendMessage(message);
-    this.updateStatusAfterMessage(message);
+      this.appStore.getState().appendMessage(message);
+      this.updateStatusAfterMessage(message);
 
-    return message;
+      return message;
   }
 
   private updateStatusAfterMessage(message: Message) {
@@ -465,4 +509,13 @@ const normalizeScaleSize = (value: number | undefined): number => {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 3;
   const atLeastThree = Math.max(3, numeric);
   return atLeastThree % 2 === 0 ? atLeastThree + 1 : atLeastThree;
+};
+
+const isAbortError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const abortLike = error as { name?: string; code?: string; message?: string };
+  if (abortLike.name === 'AbortError') return true;
+  if (abortLike.code === 'ERR_ABORTED') return true;
+  const message = typeof abortLike.message === 'string' ? abortLike.message.toLowerCase() : '';
+  return message.includes('aborted');
 };
