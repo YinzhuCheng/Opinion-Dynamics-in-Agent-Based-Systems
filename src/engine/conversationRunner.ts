@@ -18,15 +18,17 @@ type ConversationProgress = {
 };
 
 let activeRunner: ConversationRunner | undefined;
+let currentRunRevision = 0;
 
 const runConversation = async (mode: RunnerMode) => {
+  const revision = ++currentRunRevision;
   if (activeRunner) {
     activeRunner.forceStop();
   }
   if (mode === 'fresh') {
     useAppStore.getState().setResult(undefined);
   }
-  const runner = new ConversationRunner(mode);
+  const runner = new ConversationRunner(mode, revision);
   activeRunner = runner;
   try {
     await runner.run();
@@ -64,19 +66,21 @@ class ConversationRunner {
   private resumeResolver?: () => void;
   private readonly appStore = useAppStore;
   private readonly runMode: RunnerMode;
+  private readonly runRevision: number;
   private sequentialOrder?: string[];
   private inflightControllers = new Set<AbortController>();
 
-  constructor(runMode: RunnerMode = 'fresh') {
+  constructor(runMode: RunnerMode = 'fresh', runRevision: number) {
     this.runMode = runMode;
+    this.runRevision = runRevision;
   }
 
   requestPause() {
-    if (this.stopped || this.paused || this.pauseRequested) {
+    if (!this.isCurrentRun() || this.stopped || this.paused || this.pauseRequested) {
       return;
     }
     this.pauseRequested = true;
-    this.appStore.getState().setStopRequested(true);
+    this.setStopRequested(true);
     this.setStatus((status) => ({
       ...status,
       phase: 'paused',
@@ -85,14 +89,14 @@ class ConversationRunner {
   }
 
   resume() {
-    if (this.stopped) {
+    if (!this.isCurrentRun() || this.stopped) {
       return;
     }
     if (this.paused && this.resumeResolver) {
       const resolver = this.resumeResolver;
       this.resumeResolver = undefined;
       this.paused = false;
-      this.appStore.getState().setStopRequested(false);
+      this.setStopRequested(false);
       this.setStatus((status) => ({
         ...status,
         phase: 'running',
@@ -102,7 +106,7 @@ class ConversationRunner {
     }
     if (this.pauseRequested) {
       this.pauseRequested = false;
-      this.appStore.getState().setStopRequested(false);
+      this.setStopRequested(false);
       this.setStatus((status) => ({
         ...status,
         phase: 'running',
@@ -123,69 +127,69 @@ class ConversationRunner {
     }
   }
 
-  async run() {
+    async run() {
       const state = this.appStore.getState();
       const { runState } = state;
       const { agents, config } = runState;
 
-    if (agents.length === 0) {
-      this.appStore.getState().setRunStatus({
-        phase: 'error',
-        mode: config.mode,
-        error: '请至少配置 1 名 Agent 后再开始对话。',
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-      });
-      return;
-    }
+      if (agents.length === 0) {
+        this.setStatus({
+          phase: 'error',
+          mode: config.mode,
+          error: '请至少配置 1 名 Agent 后再开始对话。',
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+        });
+        return;
+      }
 
-    const preserveHistory = this.runMode === 'resume';
-    if (config.mode === 'sequential' && !preserveHistory) {
-      this.sequentialOrder = agents.map((agent) => agent.id);
-    } else if (config.mode === 'sequential' && !this.sequentialOrder) {
-      this.sequentialOrder = agents.map((agent) => agent.id);
-    }
+      const preserveHistory = this.runMode === 'resume';
+      if (config.mode === 'sequential' && !preserveHistory) {
+        this.sequentialOrder = agents.map((agent) => agent.id);
+      } else if (config.mode === 'sequential' && !this.sequentialOrder) {
+        this.sequentialOrder = agents.map((agent) => agent.id);
+      }
 
-    this.appStore.getState().setStopRequested(false);
-    this.stopped = false;
-    this.pauseRequested = false;
-    this.paused = false;
-    this.resumeResolver = undefined;
+      this.setStopRequested(false);
+      this.stopped = false;
+      this.pauseRequested = false;
+      this.paused = false;
+      this.resumeResolver = undefined;
 
-    let startedAt = runState.status.startedAt ?? Date.now();
+      let startedAt = runState.status.startedAt ?? Date.now();
 
-    if (!preserveHistory) {
-      this.appStore.getState().resetMessages();
-      startedAt = Date.now();
-      this.setStatus({
-        phase: 'running',
-        mode: config.mode,
-        currentRound: 0,
-        currentTurn: 0,
-        totalMessages: 0,
-        summarizedCount: 0,
-        startedAt,
-        finishedAt: undefined,
-        error: undefined,
-        lastAgentId: undefined,
-        awaitingLabel: undefined,
-      });
-    } else {
-      const currentStatus = this.appStore.getState().runState.status;
-      startedAt = currentStatus.startedAt ?? startedAt;
-      this.setStatus({
-        ...currentStatus,
-        phase: 'running',
-        startedAt,
-        finishedAt: undefined,
-        error: undefined,
-        awaitingLabel: undefined,
-      });
-    }
+      if (!preserveHistory) {
+        this.resetMessages();
+        startedAt = Date.now();
+        this.setStatus({
+          phase: 'running',
+          mode: config.mode,
+          currentRound: 0,
+          currentTurn: 0,
+          totalMessages: 0,
+          summarizedCount: 0,
+          startedAt,
+          finishedAt: undefined,
+          error: undefined,
+          lastAgentId: undefined,
+          awaitingLabel: undefined,
+        });
+      } else {
+        const currentStatus = this.appStore.getState().runState.status;
+        startedAt = currentStatus.startedAt ?? startedAt;
+        this.setStatus({
+          ...currentStatus,
+          phase: 'running',
+          startedAt,
+          finishedAt: undefined,
+          error: undefined,
+          awaitingLabel: undefined,
+        });
+      }
 
     const progress = preserveHistory
       ? this.analyzeProgress(
@@ -397,14 +401,15 @@ class ConversationRunner {
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
         }
-        this.appStore.getState().setVisibleWindow(visibleWindow);
-      const trustWeights = this.buildTrustContext(agent.id);
-      const discussion = this.appStore.getState().runState.config.discussion;
-        const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
-        const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-        const previousPsychology = this.collectPreviousPsychology(round - 1, agentNames);
+        this.updateVisibleWindow(visibleWindow);
+        const trustWeights = this.buildTrustContext(agent.id);
+        const discussion = this.appStore.getState().runState.config.discussion;
+          const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
+          const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
+          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agentNames);
+          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agentNames);
 
-        const systemPrompt = buildAgentSystemPrompt({
+          const systemPrompt = buildAgentSystemPrompt({
         agent,
         mode: config.mode,
         round,
@@ -414,10 +419,11 @@ class ConversationRunner {
         stanceScaleSize: discussion.stanceScaleSize,
           positiveViewpoint,
             negativeViewpoint,
-            previousRoundMessages,
-          previousPsychology,
+              previousRoundMessages,
+            previousThoughtSummaries,
+            previousInnerStates,
       });
-        const userPrompt = buildAgentUserPrompt({
+          const userPrompt = buildAgentUserPrompt({
           agent,
           mode: config.mode,
           round,
@@ -429,7 +435,8 @@ class ConversationRunner {
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
-          previousPsychology,
+            previousThoughtSummaries,
+            previousInnerStates,
           selfPreviousMessage,
         });
 
@@ -477,14 +484,31 @@ class ConversationRunner {
 
       content = content.trim() || '__SKIP__';
 
-      let psychology: string | undefined;
+      let thoughtSummary: string | undefined;
+      let innerState: string | undefined;
       if (content !== '__SKIP__') {
-        const psychologyResult = this.extractPsychology(content);
-        psychology = psychologyResult.psychology;
-        content = psychologyResult.content.trim() || '__SKIP__';
+        const metadataResult = this.extractThinkingArtifacts(content);
+        thoughtSummary = metadataResult.thoughtSummary;
+        innerState = metadataResult.innerState;
+        let processedContent = metadataResult.content.trim();
+        if (!processedContent) {
+          const fallbackSegments: string[] = [];
+          if (metadataResult.thoughtSummary) {
+            fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
+          }
+          if (metadataResult.innerState) {
+            fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
+          }
+          processedContent = fallbackSegments.join('\n').trim();
+        }
+        if (!processedContent) {
+          processedContent = metadataResult.rawContent.trim();
+        }
+        content = processedContent || '__SKIP__';
       }
       if (content === '__SKIP__') {
-        psychology = undefined;
+        thoughtSummary = undefined;
+        innerState = undefined;
       }
 
         const stanceResult = this.processSelfReportedStance(content, discussion);
@@ -501,13 +525,14 @@ class ConversationRunner {
       turn,
       systemPrompt,
       userPrompt,
-        psychology,
+          thoughtSummary,
+          innerState,
     };
     if (stanceResult.stance) {
       message.stance = stanceResult.stance;
     }
 
-    this.appStore.getState().appendMessage(message);
+    this.appendMessageSnapshot(message);
     this.updateStatusAfterMessage(message);
 
     return message;
@@ -612,50 +637,149 @@ class ConversationRunner {
     return { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage };
       }
 
-      private collectPreviousPsychology(
-        round: number,
-        agentNames: Record<string, string>,
-      ): Array<{ agentName: string; psychology: string }> {
-        if (round <= 0) return [];
-        const messages = this.appStore.getState().runState.messages;
-        return messages
-          .filter(
-            (message) =>
-              message.round === round &&
-              typeof message.psychology === 'string' &&
-              message.psychology.trim().length > 0,
-          )
-          .map((message) => ({
-            agentName: agentNames[message.agentId] ?? message.agentId,
-            psychology: (message.psychology ?? '').trim(),
-          }));
+        private collectPreviousThoughtSummaries(
+          round: number,
+          agentNames: Record<string, string>,
+        ): Array<{ agentName: string; thoughtSummary: string }> {
+          if (round <= 0) return [];
+          const messages = this.appStore.getState().runState.messages;
+          return messages
+            .filter(
+              (message) =>
+                message.round === round &&
+                typeof message.thoughtSummary === 'string' &&
+                message.thoughtSummary.trim().length > 0,
+            )
+            .map((message) => ({
+              agentName: agentNames[message.agentId] ?? message.agentId,
+              thoughtSummary: (message.thoughtSummary ?? '').trim(),
+            }));
+        }
+
+        private collectPreviousInnerStates(
+          round: number,
+          agentNames: Record<string, string>,
+        ): Array<{ agentName: string; innerState: string }> {
+          if (round <= 0) return [];
+          const messages = this.appStore.getState().runState.messages;
+          return messages
+            .filter(
+              (message) =>
+                message.round === round &&
+                typeof message.innerState === 'string' &&
+                message.innerState.trim().length > 0,
+            )
+            .map((message) => ({
+              agentName: agentNames[message.agentId] ?? message.agentId,
+              innerState: (message.innerState ?? '').trim(),
+            }));
+        }
+
+    private extractThinkingArtifacts(content: string): {
+      content: string;
+      thoughtSummary?: string;
+      innerState?: string;
+      foundState: boolean;
+      foundThought: boolean;
+      rawContent: string;
+    } {
+      const stateResult = this.extractTaggedBlock(content, 'STATE', {
+        stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
+      });
+      const innerState = stateResult.value?.trim() || undefined;
+      let workingContent = stateResult.content;
+
+      const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
+      let thoughtSummary: string | undefined;
+      let foundThought = false;
+      for (const tag of thoughtTags) {
+        const result = this.extractTaggedBlock(workingContent, tag, {
+          stopBeforeTags: ['（立场', '[[STATE]]'],
+        });
+        if (result.found && result.value) {
+          thoughtSummary = result.value?.trim() || undefined;
+          workingContent = result.content;
+          foundThought = Boolean(thoughtSummary);
+          break;
+        }
       }
 
-  private extractPsychology(content: string): { content: string; psychology?: string } {
-    const blockRegex = /\[\[PSY\]\]([\s\S]*?)\[\[\/PSY\]\]/;
-    const blockMatch = content.match(blockRegex);
-    if (blockMatch && typeof blockMatch.index === 'number') {
-      const before = content.slice(0, blockMatch.index);
-      const after = content.slice(blockMatch.index + blockMatch[0].length);
-      const remaining = `${before}${after}`.trim();
-      const psychology = blockMatch[1].trim();
+      return {
+        content: workingContent.trim(),
+        thoughtSummary,
+        innerState,
+        foundState: Boolean(stateResult.found && innerState),
+        foundThought,
+        rawContent: content,
+      };
+    }
+
+    private extractTaggedBlock(
+      content: string,
+      tag: string,
+      options?: { stopBeforeTags?: string[] },
+    ): { content: string; value?: string; found: boolean } {
+      const normalizedTag = tag.toUpperCase();
+      const upperContent = content.toUpperCase();
+      const openMarker = `[[${normalizedTag}]]`;
+      const startIndex = upperContent.indexOf(openMarker);
+      if (startIndex === -1) {
+        return { content, found: false };
+      }
+      const afterOpen = startIndex + openMarker.length;
+      const closingMarker = `[[/${normalizedTag}]]`;
+      const closingIndex = upperContent.indexOf(closingMarker, afterOpen);
+
+      let endIndex: number;
+      let afterIndex: number;
+
+      if (closingIndex !== -1) {
+        endIndex = closingIndex;
+        afterIndex = closingIndex + closingMarker.length;
+      } else {
+        const boundary = this.findNextTaggedBoundary(upperContent, afterOpen, options);
+        endIndex = boundary ?? content.length;
+        afterIndex = boundary ?? content.length;
+      }
+
+      const before = content.slice(0, startIndex);
+      const extracted = content.slice(afterOpen, endIndex).trim();
+      const after = content.slice(afterIndex);
+      const needsSpace = before && after && !before.endsWith('\n') && !after.startsWith('\n');
+      const remaining = `${before}${needsSpace ? ' ' : ''}${after}`.trim();
       return {
         content: remaining,
-        psychology: psychology.length > 0 ? psychology : undefined,
+        value: extracted.length > 0 ? extracted : undefined,
+        found: true,
       };
     }
-    const legacyRegex = /\[\[PSY\]\]([\s\S]*?)$/;
-    const legacyMatch = content.match(legacyRegex);
-    if (legacyMatch && typeof legacyMatch.index === 'number') {
-      const trimmedContent = content.slice(0, legacyMatch.index).trimEnd();
-      const psychology = legacyMatch[1].trim();
-      return {
-        content: trimmedContent,
-        psychology: psychology.length > 0 ? psychology : undefined,
-      };
+
+    private findNextTaggedBoundary(
+      upperContent: string,
+      fromIndex: number,
+      options?: { stopBeforeTags?: string[] },
+    ): number | undefined {
+      const candidates: number[] = [];
+      const extraStops = options?.stopBeforeTags ?? [];
+      extraStops.forEach((tag) => {
+        const idx = upperContent.indexOf(tag.toUpperCase(), fromIndex);
+        if (idx !== -1) {
+          candidates.push(idx);
+        }
+      });
+      const nextGenericTag = upperContent.indexOf('[[', fromIndex);
+      if (nextGenericTag !== -1) {
+        candidates.push(nextGenericTag);
+      }
+      const stanceIndex = upperContent.indexOf('（立场', fromIndex);
+      if (stanceIndex !== -1) {
+        candidates.push(stanceIndex);
+      }
+      if (candidates.length === 0) {
+        return undefined;
+      }
+      return Math.min(...candidates);
     }
-    return { content };
-  }
 
       private processSelfReportedStance(
       content: string,
@@ -709,7 +833,42 @@ class ConversationRunner {
   }
 
   private setStatus(updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) {
-    this.appStore.getState().setRunStatus(updater);
+    this.runIfCurrent(() => {
+      this.appStore.getState().setRunStatus((status) => {
+        const next =
+          typeof updater === 'function'
+            ? (updater as (current: RunStatus) => RunStatus)(status)
+            : { ...status, ...updater };
+        return {
+          ...next,
+          sessionId: this.runRevision,
+        };
+      });
+    });
+  }
+
+  private setStopRequested(value: boolean) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().setStopRequested(value);
+    });
+  }
+
+  private resetMessages() {
+    this.runIfCurrent(() => {
+      this.appStore.getState().resetMessages();
+    });
+  }
+
+  private updateVisibleWindow(messages: Message[]) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().setVisibleWindow(messages);
+    });
+  }
+
+  private appendMessageSnapshot(message: Message) {
+    this.runIfCurrent(() => {
+      this.appStore.getState().appendMessage(message);
+    });
   }
 
   private setAwaiting(label?: 'response' | 'thinking') {
@@ -719,16 +878,27 @@ class ConversationRunner {
     }));
   }
 
+  private isCurrentRun() {
+    return this.runRevision === currentRunRevision;
+  }
+
+  private runIfCurrent(action: () => void) {
+    if (!this.isCurrentRun()) {
+      return;
+    }
+    action();
+  }
+
   private async waitIfPaused() {
     if (this.stopped) return;
     if (!this.pauseRequested && !this.paused) {
       return;
     }
-    if (!this.paused) {
-      this.pauseRequested = false;
-      this.paused = true;
-      this.appStore.getState().setStopRequested(false);
-    }
+      if (!this.paused) {
+        this.pauseRequested = false;
+        this.paused = true;
+        this.setStopRequested(false);
+      }
     await new Promise<void>((resolve) => {
       this.resumeResolver = resolve;
     });
@@ -741,14 +911,16 @@ class ConversationRunner {
   }
 
   private captureResultSnapshot() {
-    const state = this.appStore.getState().runState;
-    const status = state.status;
-    this.appStore.getState().setResult({
-      messages: state.messages,
-      finishedAt: status.finishedAt ?? Date.now(),
-      summary: state.summary,
-      configSnapshot: state.config,
-      status,
+    this.runIfCurrent(() => {
+      const state = this.appStore.getState().runState;
+      const status = state.status;
+      this.appStore.getState().setResult({
+        messages: state.messages,
+        finishedAt: status.finishedAt ?? Date.now(),
+        summary: state.summary,
+        configSnapshot: state.config,
+        status,
+      });
     });
   }
 

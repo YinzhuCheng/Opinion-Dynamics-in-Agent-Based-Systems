@@ -94,7 +94,8 @@ export interface Message {
   systemPrompt?: string;
   userPrompt?: string;
   stance?: { score: number; note?: string };
-  psychology?: string;
+  thoughtSummary?: string;
+  innerState?: string;
 }
 
 export interface RunState {
@@ -128,6 +129,7 @@ export interface RunStatus {
   lastAgentId?: string;
   error?: string;
   awaitingLabel?: 'response' | 'thinking';
+  sessionId: number;
 }
 
 export type PageKey = 'configuration' | 'dialogue' | 'results';

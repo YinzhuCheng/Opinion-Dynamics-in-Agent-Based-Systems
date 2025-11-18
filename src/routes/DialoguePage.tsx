@@ -4,14 +4,35 @@ import { useAppStore } from '../store/useAppStore';
 import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
 import { resolveAgentNameMap } from '../utils/names';
 
+type TimelineSection = 'innerState' | 'thought' | 'speech' | 'stance';
+
 export function DialoguePage() {
   const { messages, agents, status } = useAppStore((state) => state.runState);
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [visibleSections, setVisibleSections] = useState<Record<TimelineSection, boolean>>({
+    innerState: true,
+    thought: true,
+    speech: true,
+    stance: true,
+  });
 
   const agentNameMap = resolveAgentNameMap(agents);
+  const sectionOptions: Array<{ key: TimelineSection; label: string }> = [
+    { key: 'innerState', label: '内在状态' },
+    { key: 'thought', label: '思考摘要' },
+    { key: 'speech', label: '发言内容' },
+    { key: 'stance', label: '立场刻度' },
+  ];
+
+  const handleSectionToggle = (key: TimelineSection) => {
+    setVisibleSections((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
 
   const handleStart = async () => {
     try {
@@ -117,6 +138,19 @@ export function DialoguePage() {
           </div>
         ) : null}
         <div className="card__body">
+            <div className="timeline-filters">
+              <span className="timeline-filters__label">显示内容：</span>
+              {sectionOptions.map((option) => (
+                <label key={option.key} className="timeline-filters__option">
+                  <input
+                    type="checkbox"
+                    checked={visibleSections[option.key]}
+                    onChange={() => handleSectionToggle(option.key)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
           {visibleMessages.length === 0 ? (
             <div className="empty-state">
               <p>当前尚未有对话记录。配置完成后点击“开始对话”即可查看进展。</p>
@@ -137,23 +171,33 @@ export function DialoguePage() {
                         <span className="badge">{agentName}</span>
                         <span className="timestamp">{new Date(message.ts).toLocaleTimeString()}</span>
                       </header>
-                      <div className="message-psychology">
-                        <span className="message-section-label">心理：</span>
-                        <p>{message.psychology || '（未显式说明心理状态）'}</p>
-                      </div>
-                      <div className="message-body">
-                        <span className="message-section-label">发言：</span>
-                        <p className="message-content">{message.content}</p>
-                      </div>
-                      {message.stance && (
+                        {visibleSections.innerState ? (
+                          <div className="message-inner-state">
+                            <span className="message-section-label">内在状态：</span>
+                            <p>{message.innerState || '（未记录内在状态）'}</p>
+                          </div>
+                        ) : null}
+                        {visibleSections.thought ? (
+                          <div className="message-thought">
+                            <span className="message-section-label">思考摘要：</span>
+                            <p>{message.thoughtSummary || '（未提供思考摘要）'}</p>
+                          </div>
+                        ) : null}
+                        {visibleSections.speech ? (
+                          <div className="message-body">
+                            <span className="message-section-label">发言：</span>
+                            <p className="message-content">{message.content}</p>
+                          </div>
+                        ) : null}
+                        {visibleSections.stance && message.stance ? (
                         <div className="message-meta">
                           <span className="message-section-label">立场：</span>
                           <span className={`stance-tag ${stanceClass(message.stance.score)}`}>{stanceValue}</span>
                           {message.stance.note ? (
                             <span className="meta-secondary">{message.stance.note}</span>
                           ) : null}
-                        </div>
-                      )}
+                          </div>
+                        ) : null}
                     </li>
                   );
                 })}

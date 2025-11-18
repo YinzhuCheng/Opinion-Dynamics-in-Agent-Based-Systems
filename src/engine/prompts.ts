@@ -6,7 +6,26 @@ import {
 } from '../constants/discussion';
 
 const SYNTHESIS_HINT =
-  '思考时需同时吸收：你的固有立场与上一轮心理旁白、上一位发言者的最新观点、上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
+  '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
+const BLOCK_DEFINITION_HINT = `块含义：
+[[STATE]] = “我是谁＆现在的滤镜”——3~5 句，先讲长期基线（人格画像、MBTI、大五、价值观、沟通风格、初始观点/立场、记忆摘要），再讲短期波动（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。
+[[THINK]] = “我马上要怎么推理”——2~3 句，描述上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳，必须引用至少一个内在状态因素。
+正文 = 口语化发言，像真人聊天那样推进讨论。
+（立场：X） = 以括号包裹的整数刻度，总结本轮立场。`;
+
+const OUTPUT_ORDER_HINT = `输出顺序（必须严格遵守）：
+1. [[STATE]] …… [[/STATE]]
+2. [[THINK]] …… [[/THINK]]
+3. 正文（自然语言发言）
+4. （立场：X）`;
+
+const OUTPUT_FORMAT_SAMPLE = `示例格式：
+[[STATE]]（长期基线与短期波动示例）[[/STATE]]
+[[THINK]]（即时推理示例）[[/THINK]]
+正文自然语言……（立场：+1）`;
+
+const ENFORCEMENT_WARNING =
+  '注意：若缺少 [[STATE]]、[[THINK]]、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
 
 interface AgentPromptOptions {
   agent: AgentSpec;
@@ -20,7 +39,8 @@ interface AgentPromptOptions {
   negativeViewpoint: string;
   previousRoundMessages: Message[];
   lastSpeakerMessage?: Message;
-  previousPsychology: Array<{ agentName: string; psychology: string }>;
+  previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string }>;
+  previousInnerStates: Array<{ agentName: string; innerState: string }>;
   selfPreviousMessage?: Message;
 }
 
@@ -31,19 +51,26 @@ export const buildAgentSystemPrompt = ({
   stanceScaleSize,
   positiveViewpoint,
   negativeViewpoint,
-  previousPsychology,
+  previousThoughtSummaries,
+  previousInnerStates,
 }: AgentPromptOptions): string => {
   const personaRaw = describePersona(agent.persona).trim();
   const personaBlock =
     personaRaw.length > 0
       ? `人格画像：【\n${personaRaw}\n】`
       : '人格画像：【（未提供画像，请保持中性口吻）】';
-  const personaAlignmentHint = '请让心理活动与外显措辞始终贴合人格画像/MBTI/大五人格的特质，不可自相矛盾。';
+  const personaAlignmentHint =
+    '请让“内在状态 + 思考摘要 + 外显措辞”始终贴合人格画像 / MBTI / 大五人格与初始立场设定，不可自相矛盾。';
   const trustSection =
     trustWeights.length > 0
       ? `信任度矩阵（上一批次发言的参考权重，符合 DeGroot 聚合思路）：
-${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).join('\n')}
-权重越大代表越信任，回答时优先回应权重高的对象。`
+${trustWeights
+  .map((item) => {
+    const selfMark = item.agentName === agent.name ? ' ← 这是“我”' : '';
+    return `- ${item.agentName}: ${item.weight.toFixed(2)}${selfMark}`;
+  })
+  .join('\n')}
+权重越大代表越信任；对你自己（标记为“我”）的权重代表自我参考的稳定程度，其余权重代表你对他人观点的吸收强度。`
       : '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。';
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
@@ -54,28 +81,35 @@ ${trustWeights.map((item) => `- ${item.agentName}: ${item.weight.toFixed(2)}`).j
 - 负向：${negativeDesc}`;
   const ratingLine = `正文末尾必须紧跟“（立场：X）”，X 属于 [-${maxLevel}, +${maxLevel}] 的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。不得另起一句解释评分。`;
   const coverageHint = `刻度示例：${scaleValues.join(' / ')}。负值对应“${negativeDesc}”，正值对应“${positiveDesc}”。多轮对话中请主动探索不同强度，而不是永远停在单一取值。`;
-    const continuityGuidelines = `对话策略：
+  const continuityGuidelines = `对话策略：
   - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
   - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
-  - 引用他人时只提名字，点到为止。
   - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，可带一点争执语气以保持真实感。
-  - 若上一轮心理旁白已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
-  const previousPsychologySection =
-    previousPsychology.length > 0
-      ? `上一轮心理模型快照（仅供你内化，不要在正文里引用）：
-${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).join('\n')}`
-      : '上一轮心理模型快照：暂无记录（首轮或上一轮跳过），请自我推断气氛。';
-    const psychologyGuidelines = `心理模型机制：
-  - 将上一批次所有 Agent 的观点综合成“内心旁白”，描述你的心理状态（情绪、怀疑或坚持理由），并关联自身固有立场。
-  - 你的发言需由“上一轮心理沉淀 + 上一位发言者的触发点 + 你上一轮的外显发言”共同驱动，必要时可反思上一轮自己说过的话。
-  - 输出顺序：[[PSY]]隐含块 → 正文 → （立场：X）。隐含块必须以 [[PSY]] 开头、[[/PSY]] 结尾，并写成 2~3 句，依次交代：你的固有立场/上一轮心理余韵、上一位发言者带来的刺激、上一轮各 Agent 气氛对你的影响；该块只写心理，不要混入正文。
-  - [[PSY]] 仅供系统记录，正文不可泄露这些元信息，也不要在正文里提到“心理模型”或方括号。
-  - 当心理开始摇摆或你上一轮的结论不再站得住脚时，允许彻底改变立场，只需在心理和正文里说明触发点与新的理由。
-  - 进行心理推导时，请显式权衡：上一轮的内心旁白、依据信任矩阵加权的上一轮发言集合、上一位发言者的即时刺激。`;
+  - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
+  const previousInnerStateSection =
+    previousInnerStates.length > 0
+      ? `上一轮内在状态快照（只供你内化，不要在正文里引用）：\n${previousInnerStates
+          .map((item) => `- ${item.agentName}: ${item.innerState}`)
+          .join('\n')}`
+      : '上一轮内在状态快照：暂无记录（可能是首轮或上一轮跳过），请结合角色画像自行推断。';
+  const previousThoughtSection =
+    previousThoughtSummaries.length > 0
+      ? `上一轮思考摘要摘录（用于感知潜台词）：\n${previousThoughtSummaries
+          .map((item) => `- ${item.agentName}: ${item.thoughtSummary}`)
+          .join('\n')}`
+      : '上一轮尚未形成可引用的思考摘要，可自行根据对话与信任权重推断群体情绪。';
+const innerStateGuidelines = `内在状态机制：
+  - [[STATE]] 描述“你是谁、现在的滤镜如何”，需要拆开“长期基线”（人格画像、MBTI、大五因子、价值观、沟通风格、初始观点/立场、记忆摘要）与“短期波动”（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。3~5 句，每句都在讲述“你”的感受，不要泛泛而谈。
+  - 允许把对自己或他人上一轮发言的记忆摘要写进 [[STATE]]，作为长期基线或最新滤镜的一部分，但仍要保持第一人称。
+  - 记得引用上一轮自己的 [[STATE]]、[[THINK]] 以及信任度矩阵中的偏好，说明哪些部分保持稳定、哪些因外界刺激发生变化；[[STATE]] 只供系统记录，正文不要透露这些元信息。`;
+const thoughtGuidelines = `思考摘要机制：
+  - [[THINK]] 描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
+  - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
   const naturalGuidelines = [
     '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
     '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
-    '避免模板化句式或编号，拆成两三句短句更自然。',
+  '避免模板化句式或编号，拆成两三句短句更自然。',
+  '每轮发言长度可灵活波动：有时简短回应 1-2 句，有时展开 5-6 句或分段说明，让整体节奏更像真实讨论。',
     '不要在输出里提到“信任度矩阵”“立场评分”等内部术语。',
   ].join('\n- ');
 
@@ -95,16 +129,22 @@ ${previousPsychology.map((item) => `- ${item.agentName}: ${item.psychology}`).jo
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
-    psychologyGuidelines,
+    innerStateGuidelines,
+    thoughtGuidelines,
     SYNTHESIS_HINT,
-    previousPsychologySection,
-    `输出要求：
+    previousInnerStateSection,
+    previousThoughtSection,
+      `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
-- ${ratingLine}
-- ${coverageHint}
+    - ${ratingLine}
+    - ${coverageHint}
+      - ${ENFORCEMENT_WARNING}
+    - ${OUTPUT_ORDER_HINT}
+    - ${BLOCK_DEFINITION_HINT}
+    - ${OUTPUT_FORMAT_SAMPLE}
 
 日常表达提示：
   - ${naturalGuidelines}`,
@@ -118,19 +158,14 @@ export const buildAgentUserPrompt = ({
   turn,
   agentNames,
   stanceScaleSize,
-  positiveViewpoint,
-  negativeViewpoint,
+  positiveViewpoint: _positiveViewpoint,
+  negativeViewpoint: _negativeViewpoint,
   previousRoundMessages,
   lastSpeakerMessage,
-  previousPsychology,
+  previousThoughtSummaries,
+  previousInnerStates,
   selfPreviousMessage,
 }: AgentPromptOptions): string => {
-  const personaRaw = describePersona(agent.persona).trim();
-  const personaBlock =
-    personaRaw.length > 0
-      ? `人格画像：【\n${personaRaw}\n】`
-      : '人格画像：【（未提供画像，请保持中性口吻）】';
-  const personaAlignmentHint = '请确保心理与发言在语气、词汇、价值判断上都忠实于上述人格设定。';
   const previousRoundTranscript = previousRoundMessages.length
     ? previousRoundMessages
         .map((message) => {
@@ -161,12 +196,18 @@ export const buildAgentUserPrompt = ({
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
       }`
     : '本轮尚无上一位发言者，你可以率先开场。';
-  const previousPsychologyHint =
-    previousPsychology.length > 0
-      ? `上一轮各方的隐含心理（请仅作为潜台词吸收，不要逐条引用）：\n${previousPsychology
-          .map((item) => `- ${item.agentName}: ${item.psychology}`)
+  const previousInnerStateHint =
+    previousInnerStates.length > 0
+      ? `上一轮内在状态（请仅作为潜台词吸收，不要逐条引用）：\n${previousInnerStates
+          .map((item) => `- ${item.agentName}: ${item.innerState}`)
           .join('\n')}`
-      : '上一轮尚未形成可引用的心理模型，你可自行推断整体情绪。';
+      : '上一轮尚未形成可引用的内在状态，可结合人格设定与对话自我推断。';
+    const previousThoughtHint =
+      previousThoughtSummaries.length > 0
+        ? `上一轮思考摘要摘录（帮助你理解隐含思考与潜台词）：\n${previousThoughtSummaries
+          .map((item) => `- ${item.agentName}: ${item.thoughtSummary}`)
+          .join('\n')}`
+      : '上一轮暂无思考摘要可用。';
 
   const modeHint =
     mode === 'sequential'
@@ -175,8 +216,6 @@ export const buildAgentUserPrompt = ({
 
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
-  const positiveDesc = ensurePositiveViewpoint(positiveViewpoint);
-  const negativeDesc = ensureNegativeViewpoint(negativeViewpoint);
   const initialOpinionHint = agent.initialOpinion
     ? `该角色的初始观点：${agent.initialOpinion}`
     : '若你尚未明确观点，请结合角色立场在本轮给出你的判断与理由。';
@@ -186,42 +225,21 @@ export const buildAgentUserPrompt = ({
       ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
         ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），首轮尽量按照此刻度发言。`
         : `首轮尚未设定明确立场，可在 ${scaleValues.join(' / ')} 中任选其一作为初始表态。`
-      : selfLastStance
-        ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时心理已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
-        : '上一轮你未给出立场刻度，可回顾当时的心理旁白，自行决定是维持、收敛还是反转。';
-  const polarityHint =
-    '若上一轮心理或外界刺激让你开始怀疑原有观点，可主动调整立场——包括极性反转——但要把心理变化写进 [[PSY]] 并在正文里给出充分理由。';
-  const viewpointHint = `仅需在这两种立场之间展开拉扯：正向 = ${positiveDesc} ｜ 负向 = ${negativeDesc}。`;
-  const ratingHint = `回答末尾必须添加“（立场：X）”，其中 X 属于 [-${maxLevel}, +${maxLevel}] 的整数，且绝对值越大表示越极端：负值 = ${negativeDesc}，正值 = ${positiveDesc}，0 = 中立。多轮对话中请尝试覆盖 ${scaleValues.join(' / ')} 等不同取值。`;
-  const followHint =
-    '优先承接上一位发言者的情绪或论点继续推进，需要时可以直接质疑或顶撞对方，不必过度客气；只有在能自然衔接时才开启新的话题。上一批次的内容更多是潜在影响，正文里不要频繁提“上一轮”。';
-  const styleHint =
-    '保持口语化表达，不要说“在本轮”“根据 A1 的观点”，也不要列条目；像真人聊天那样，自然回应刚刚的发言，可包含感叹、犹豫或补充。';
-  const psychologyHint =
-    '输出格式：[[PSY]]隐含块 + 正文 + （立场：X）。隐含块需至少 2~3 句话，依次说明你的固有立场/上一轮心理余韵、上一位发言者带来的触发点、上一轮群体氛围对你的影响；隐含块必须放在最前，正文里不要解释这些心理描写。';
-  const trustWeightHint =
-    '请在心理推导中说明你如何平衡“上一轮的内心旁白 + 依据信任矩阵加权的上一轮集体发言 + 上一位发言者”的影响力。';
-
-  return [
-    personaBlock,
-    personaAlignmentHint,
+        : selfLastStance
+          ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
+          : '上一轮你未给出立场刻度，可回顾当时的内在状态与思考摘要，自行决定是维持、收敛还是反转。';
+  const dynamicContext: string[] = [
     `轮次信息：第 ${round} 轮，第 ${turn} 个发言者。`,
     modeHint,
     initialOpinionHint,
     stanceHint,
-    viewpointHint,
-    `上一轮对话（主要用于影响心理，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
+    `上一轮对话（主要用于影响内在状态与思考，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
     previousRoundStanceSummary,
-    `上一位发言者（影响心理和发言内容，但也不必每次都提及上一位发言者内容，允许开启新话题）：\n${lastSpeakerLine}`,
-    previousPsychologyHint,
-    trustWeightHint,
-    SYNTHESIS_HINT,
-    polarityHint,
-    followHint,
-    styleHint,
-    ratingHint,
-    psychologyHint,
-  ].join('\n\n');
+    `上一位发言者（影响内在状态/思考与发言内容，但也不必每次都引用上一位的内容，允许开启新话题）：\n${lastSpeakerLine}`,
+    previousInnerStateHint,
+    previousThoughtHint,
+  ];
+  return dynamicContext.join('\n\n');
 };
 
 const buildScaleValues = (size: number): number[] => {

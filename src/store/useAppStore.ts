@@ -116,7 +116,7 @@ const sanitizeStanceScaleSize = (value: number | undefined): number => {
 };
 
 const createDefaultRunConfig = (): RunConfig => ({
-  mode: 'random',
+  mode: 'sequential',
   maxRounds: 4,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
@@ -141,13 +141,13 @@ const createEmptyRunState = (): RunState => {
     messages: [],
     summary: '',
     visibleWindow: [],
-    status: createInitialStatus(),
+    status: createInitialStatus(config.mode),
     stopRequested: false,
     lastRandomMatrix: undefined,
   };
 };
 
-const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
+const createInitialStatus = (mode: DialogueMode = 'sequential', sessionId = 0): RunStatus => ({
   phase: 'idle',
   mode,
   currentRound: 0,
@@ -155,6 +155,7 @@ const createInitialStatus = (mode: DialogueMode = 'random'): RunStatus => ({
   totalMessages: 0,
   summarizedCount: 0,
   awaitingLabel: undefined,
+  sessionId,
 });
 
 export type VendorDefaults = Record<

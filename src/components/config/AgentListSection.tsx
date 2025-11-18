@@ -11,7 +11,7 @@ import type {
   Vendor,
 } from '../../types';
 import { useAppStore, type VendorDefaults } from '../../store/useAppStore';
-import { MBTI_OPTIONS, BIG5_TRAIT_LABELS } from '../../data/personaTemplates';
+import { MBTI_OPTIONS, BIG5_TRAIT_LABELS, MBTI_SUMMARIES } from '../../data/personaTemplates';
 import { chatStream } from '../../utils/llmAdapter';
 
 type ConnectionTestState = {
@@ -481,6 +481,10 @@ const MBTIEditor = ({ agent }: { agent: AgentSpec }) => {
           ))}
         </select>
       </label>
+      <div className="persona-summary">
+        <strong>{persona.mbti}</strong>
+        <p>{MBTI_SUMMARIES[persona.mbti]}</p>
+      </div>
     </div>
   );
 };

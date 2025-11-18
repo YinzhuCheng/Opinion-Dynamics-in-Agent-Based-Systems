@@ -72,17 +72,20 @@ async function callOpenAIChat(
     stream: true,
   };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`,
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify(body),
-      signal,
-    }).catch((error: any) => {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(body),
+    signal,
+  }).catch((error: any) => {
     handlers?.onStatus?.('done');
+    if (isAbortError(error)) {
+      throw error;
+    }
     throw new Error(error?.message ?? '无法连接到 OpenAI');
   });
 
