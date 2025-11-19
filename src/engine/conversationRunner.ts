@@ -19,6 +19,7 @@ type ConversationProgress = {
 
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
+const PRIVATE_MEMORY_WINDOW = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -641,20 +642,24 @@ class ConversationRunner {
           round: number,
           agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; thoughtSummary: string }> {
+        ): Array<{ agentName: string; thoughtSummary: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
                 message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.thoughtSummary === 'string' &&
                 message.thoughtSummary.trim().length > 0,
             )
+            .sort((a, b) => a.round - b.round)
             .map((message) => ({
               agentName: agentNames[message.agentId] ?? message.agentId,
               thoughtSummary: (message.thoughtSummary ?? '').trim(),
+              round: message.round,
             }));
         }
 
@@ -662,20 +667,24 @@ class ConversationRunner {
           round: number,
           agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; innerState: string }> {
+        ): Array<{ agentName: string; innerState: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
                 message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.innerState === 'string' &&
                 message.innerState.trim().length > 0,
             )
+            .sort((a, b) => a.round - b.round)
             .map((message) => ({
               agentName: agentNames[message.agentId] ?? message.agentId,
               innerState: (message.innerState ?? '').trim(),
+              round: message.round,
             }));
         }
 
