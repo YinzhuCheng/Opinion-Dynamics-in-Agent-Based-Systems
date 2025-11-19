@@ -20,6 +20,7 @@ type ConversationProgress = {
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
 const PRIVATE_MEMORY_WINDOW = 3;
+const MAX_RESPONSE_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -450,70 +451,104 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
-    const controller = new AbortController();
-    this.inflightControllers.add(controller);
-    let content = '';
-    try {
-      content =
-        (await chatStream(
-          messages,
-          modelConfig,
-          extra,
-          {
-            onStatus: (status) => {
-              if (status === 'waiting_response' || status === 'responding') {
-                this.setAwaiting('response');
-              } else if (status === 'thinking') {
-                this.setAwaiting('thinking');
-              } else if (status === 'done') {
-                this.setAwaiting(undefined);
-              }
+    let content = '__SKIP__';
+    let thoughtSummary: string | undefined;
+    let innerState: string | undefined;
+    let stanceResult: { content: string; stance?: { score: number; note?: string } } = {
+      content: '__SKIP__',
+    };
+
+    for (let attempt = 1; attempt <= MAX_RESPONSE_ATTEMPTS; attempt += 1) {
+      const controller = new AbortController();
+      this.inflightControllers.add(controller);
+      let rawContent = '';
+      try {
+        rawContent =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
             },
-          },
-          controller.signal,
-        )) || '';
-    } catch (error: any) {
-      if (this.isAbortError(error)) {
+            controller.signal,
+          )) || '';
+      } catch (error: any) {
+        if (this.isAbortError(error)) {
+          this.inflightControllers.delete(controller);
+          return undefined;
+        }
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
         this.inflightControllers.delete(controller);
-        return undefined;
       }
-      throw error;
-    } finally {
-      this.setAwaiting(undefined);
-      this.inflightControllers.delete(controller);
-    }
 
-      content = content.trim() || '__SKIP__';
-
-      let thoughtSummary: string | undefined;
-      let innerState: string | undefined;
-      if (content !== '__SKIP__') {
-        const metadataResult = this.extractThinkingArtifacts(content);
-        thoughtSummary = metadataResult.thoughtSummary;
-        innerState = metadataResult.innerState;
-        let processedContent = metadataResult.content.trim();
-        if (!processedContent) {
-          const fallbackSegments: string[] = [];
-          if (metadataResult.thoughtSummary) {
-            fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
-          }
-          if (metadataResult.innerState) {
-            fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
-          }
-          processedContent = fallbackSegments.join('\n').trim();
+      rawContent = rawContent.trim() || '__SKIP__';
+      if (rawContent === '__SKIP__') {
+        if (attempt === MAX_RESPONSE_ATTEMPTS) {
+          content = '__SKIP__';
         }
-        if (!processedContent) {
-          processedContent = metadataResult.rawContent.trim();
-        }
-        content = processedContent || '__SKIP__';
+        continue;
       }
+
+      const metadataResult = this.extractThinkingArtifacts(rawContent);
+      thoughtSummary = metadataResult.thoughtSummary?.trim() || undefined;
+      innerState = metadataResult.innerState?.trim() || undefined;
+      let processedContent = metadataResult.content.trim();
+      if (!processedContent) {
+        const fallbackSegments: string[] = [];
+        if (metadataResult.thoughtSummary) {
+          fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
+        }
+        if (metadataResult.innerState) {
+          fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
+        }
+        processedContent = fallbackSegments.join('\n').trim();
+      }
+      if (!processedContent) {
+        processedContent = metadataResult.rawContent.trim();
+      }
+      content = processedContent || '__SKIP__';
       if (content === '__SKIP__') {
         thoughtSummary = undefined;
         innerState = undefined;
       }
 
-        const stanceResult = this.processSelfReportedStance(content, discussion);
-        content = stanceResult.content;
+      stanceResult = this.processSelfReportedStance(content, discussion);
+      content = stanceResult.content;
+
+      const hasState = Boolean(metadataResult.foundState && innerState);
+      const hasThought = Boolean(metadataResult.foundThought && thoughtSummary);
+      const hasBody = Boolean(content.trim());
+      const hasStance = Boolean(stanceResult.stance);
+
+      if (hasState && hasThought && hasBody && hasStance) {
+        break;
+      }
+
+      if (attempt === MAX_RESPONSE_ATTEMPTS) {
+        if (!(hasState && hasThought && hasBody && hasStance)) {
+          content = '__SKIP__';
+          thoughtSummary = undefined;
+          innerState = undefined;
+          stanceResult = { content: '__SKIP__' };
+        }
+      } else {
+        content = '__SKIP__';
+        thoughtSummary = undefined;
+        innerState = undefined;
+        stanceResult = { content: '__SKIP__' };
+      }
+    }
 
     const message: Message = {
       id: nanoid(),
