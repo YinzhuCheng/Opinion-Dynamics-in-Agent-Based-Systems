@@ -406,8 +406,8 @@ class ConversationRunner {
         const discussion = this.appStore.getState().runState.config.discussion;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agentNames);
-          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agentNames);
+          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
+          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agent.id, agentNames);
 
           const systemPrompt = buildAgentSystemPrompt({
         agent,
@@ -639,6 +639,7 @@ class ConversationRunner {
 
         private collectPreviousThoughtSummaries(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
         ): Array<{ agentName: string; thoughtSummary: string }> {
           if (round <= 0) return [];
@@ -647,6 +648,7 @@ class ConversationRunner {
             .filter(
               (message) =>
                 message.round === round &&
+                message.agentId === agentId &&
                 typeof message.thoughtSummary === 'string' &&
                 message.thoughtSummary.trim().length > 0,
             )
@@ -658,6 +660,7 @@ class ConversationRunner {
 
         private collectPreviousInnerStates(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
         ): Array<{ agentName: string; innerState: string }> {
           if (round <= 0) return [];
@@ -666,6 +669,7 @@ class ConversationRunner {
             .filter(
               (message) =>
                 message.round === round &&
+                message.agentId === agentId &&
                 typeof message.innerState === 'string' &&
                 message.innerState.trim().length > 0,
             )
