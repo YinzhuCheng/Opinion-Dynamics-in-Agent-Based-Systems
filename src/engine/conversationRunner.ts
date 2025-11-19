@@ -457,11 +457,12 @@ class ConversationRunner {
     let stanceResult: { content: string; stance?: { score: number; note?: string } } = {
       content: '__SKIP__',
     };
+    let rawResponse: string | undefined;
 
     for (let attempt = 1; attempt <= MAX_RESPONSE_ATTEMPTS; attempt += 1) {
       const controller = new AbortController();
       this.inflightControllers.add(controller);
-      let rawContent = '';
+        let rawContent = '';
       try {
         rawContent =
           (await chatStream(
@@ -492,13 +493,14 @@ class ConversationRunner {
         this.inflightControllers.delete(controller);
       }
 
-      rawContent = rawContent.trim() || '__SKIP__';
-      if (rawContent === '__SKIP__') {
+        rawContent = rawContent.trim() || '__SKIP__';
+        if (rawContent === '__SKIP__') {
         if (attempt === MAX_RESPONSE_ATTEMPTS) {
           content = '__SKIP__';
         }
         continue;
       }
+        rawResponse = rawContent;
 
       const metadataResult = this.extractThinkingArtifacts(rawContent);
       thoughtSummary = metadataResult.thoughtSummary?.trim() || undefined;
@@ -518,9 +520,10 @@ class ConversationRunner {
         processedContent = metadataResult.rawContent.trim();
       }
       content = processedContent || '__SKIP__';
-      if (content === '__SKIP__') {
+        if (content === '__SKIP__') {
         thoughtSummary = undefined;
         innerState = undefined;
+          rawResponse = undefined;
       }
 
       stanceResult = this.processSelfReportedStance(content, discussion);
@@ -535,18 +538,20 @@ class ConversationRunner {
         break;
       }
 
-      if (attempt === MAX_RESPONSE_ATTEMPTS) {
+        if (attempt === MAX_RESPONSE_ATTEMPTS) {
         if (!(hasState && hasThought && hasBody && hasStance)) {
           content = '__SKIP__';
           thoughtSummary = undefined;
           innerState = undefined;
-          stanceResult = { content: '__SKIP__' };
+            stanceResult = { content: '__SKIP__' };
+            rawResponse = undefined;
         }
       } else {
         content = '__SKIP__';
         thoughtSummary = undefined;
         innerState = undefined;
-        stanceResult = { content: '__SKIP__' };
+          stanceResult = { content: '__SKIP__' };
+          rawResponse = undefined;
       }
     }
 
@@ -556,6 +561,7 @@ class ConversationRunner {
         agentName: agent.name,
       role: 'assistant',
       content,
+      rawContent: rawResponse,
       ts: Date.now(),
       round,
       turn,

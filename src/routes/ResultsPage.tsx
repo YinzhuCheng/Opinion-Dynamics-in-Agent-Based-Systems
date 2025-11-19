@@ -480,44 +480,21 @@ const buildTranscriptText = (
     const timestamp = new Date(message.ts).toLocaleTimeString();
     lines.push(`#${idx + 1} ${agentName} @ ${timestamp}${message.content === '__SKIP__' ? '（跳过）' : ''}`);
     if (message.content !== '__SKIP__') {
-      if (mode === 'full') {
-        lines.push('  --- Prompts ---');
-        if (message.systemPrompt) {
-          lines.push('    [System Prompt]');
-          lines.push(`    ${message.systemPrompt.replace(/\n/g, '\n    ')}`);
+        if (mode === 'full') {
+          lines.push('[System Prompt]');
+          lines.push(message.systemPrompt ?? '（无）');
+          lines.push('[User Prompt]');
+          lines.push(message.userPrompt ?? '（无）');
+          lines.push('[LLM Raw Output]');
+          lines.push(message.rawContent ?? message.content);
+          if (message.stance) {
+            lines.push(
+              `[Stance] ${message.stance.score.toFixed(2)}${
+                message.stance.note ? `｜${message.stance.note}` : ''
+              }`,
+            );
+          }
         } else {
-          lines.push('    [System Prompt]（无）');
-        }
-        if (message.userPrompt) {
-          lines.push('    [User Prompt]');
-          lines.push(`    ${message.userPrompt.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [User Prompt]（无）');
-        }
-        lines.push('  --- LLM Response ---');
-        if (message.innerState) {
-          lines.push('    [Inner State]');
-          lines.push(`    ${message.innerState.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [Inner State]（未记录）');
-        }
-        if (message.thoughtSummary) {
-          lines.push('    [Thought Summary]');
-          lines.push(`    ${message.thoughtSummary.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [Thought Summary]（未记录）');
-        }
-        lines.push('    [Message]');
-        lines.push(`    ${message.content.replace(/\n/g, '\n    ')}`);
-        if (message.stance) {
-          lines.push(
-            `    [Stance] ${message.stance.score.toFixed(2)}${
-              message.stance.note ? `｜${message.stance.note}` : ''
-            }`,
-          );
-        }
-        lines.push('  --- End Of Turn ---');
-      } else {
         if (message.innerState) {
           lines.push(`  内在状态：${message.innerState.replace(/\n/g, '\n  ')}`);
         }

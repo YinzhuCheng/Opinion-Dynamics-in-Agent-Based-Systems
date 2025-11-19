@@ -88,6 +88,7 @@ export interface Message {
   agentName?: string;
   role: 'assistant';
   content: string;
+  rawContent?: string;
   ts: number;
   round: number;
   turn: number;
