@@ -133,7 +133,6 @@ ${personalExampleLine}
     previousThoughtSection,
       `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
-- 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
   - ${ratingLine}

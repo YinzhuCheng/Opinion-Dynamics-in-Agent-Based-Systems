@@ -529,8 +529,12 @@ class ConversationRunner {
       stanceResult = this.processSelfReportedStance(content, discussion);
       content = stanceResult.content;
 
-      const hasState = Boolean(metadataResult.foundState && innerState);
-      const hasThought = Boolean(metadataResult.foundThought && thoughtSummary);
+      const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
+      const stateHasAll = stateTokens.every((token) => innerState?.includes(token));
+      const hasState = Boolean(metadataResult.foundState && innerState && stateHasAll);
+      const hasThought = Boolean(
+        metadataResult.foundThought && thoughtSummary && thoughtSummary.trim().length > 0,
+      );
       const hasBody = Boolean(content.trim());
       const hasStance = Boolean(stanceResult.stance);
 
