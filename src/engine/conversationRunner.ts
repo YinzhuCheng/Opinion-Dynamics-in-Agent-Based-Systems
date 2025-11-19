@@ -741,14 +741,16 @@ class ConversationRunner {
             }));
         }
 
-    private extractThinkingArtifacts(content: string): {
-      content: string;
-      thoughtSummary?: string;
-      innerState?: string;
-      foundState: boolean;
-      foundThought: boolean;
-      rawContent: string;
-    } {
+  private extractThinkingArtifacts(content: string): {
+    content: string;
+    thoughtSummary?: string;
+    innerState?: string;
+    foundState: boolean;
+    foundThought: boolean;
+    stateClosed: boolean;
+    thoughtClosed: boolean;
+    rawContent: string;
+  } {
       const stateResult = this.extractTaggedBlock(content, 'STATE', {
         stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
       });
