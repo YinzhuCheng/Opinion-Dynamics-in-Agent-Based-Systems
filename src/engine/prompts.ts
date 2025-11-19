@@ -92,12 +92,16 @@ const innerStateGuidelines = `内在状态机制（[[STATE]] 必须按下列顺�
   - [[THINK]] 描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
   - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
   const bodyLengthTarget = Math.floor(Math.random() * 4) + 2;
+  const includePersonalExample = Math.random() < 0.2;
+  const personalExampleLine = includePersonalExample
+    ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
+    : '';
 const naturalGuidelines = `日常表达提示：
   - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
   - 使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。
   - 避免模板化句式或编号，拆成两三句短句更自然。
   - 正文长度为 ${bodyLengthTarget} 句
-  - 在动笔前心里掷一次 1~5 的随机数，只有当你认为结果为 1 时（约 20% 轮次），才额外加入自己或身边人的真实体验；其余情况按正常论证即可，不必刻意寻找私密故事。
+${personalExampleLine}
   - 正文不要逐字复述记忆摘要里的句子，可换角度延伸那些信息。
   - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
     const outputFormatSample = `输出格式：
