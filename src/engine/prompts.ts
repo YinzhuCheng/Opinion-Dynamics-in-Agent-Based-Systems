@@ -7,17 +7,6 @@ import {
 
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
-const OUTPUT_ORDER_HINT = `输出顺序（必须严格遵守）：
-1. [[STATE]] …… [[/STATE]]
-2. [[THINK]] …… [[/THINK]]
-3. 正文（自然语言发言）
-4. （立场：X）`;
-
-const OUTPUT_FORMAT_SAMPLE = `示例格式：
-[[STATE]]（长期基线与短期波动示例）[[/STATE]]
-[[THINK]]（即时推理示例）[[/THINK]]
-正文自然语言……（立场：+1）`;
-
 const ENFORCEMENT_WARNING =
   '注意：若缺少 [[STATE]]、[[THINK]]、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
 
@@ -92,21 +81,25 @@ ${trustWeights
           .map((item) => `- ${item.agentName}: ${item.thoughtSummary}`)
           .join('\n')}`
       : '上一轮尚未形成可引用的思考摘要，可自行根据对话与信任权重推断群体情绪。';
-  const innerStateGuidelines = `内在状态机制：
-    - 5~7 句。
-    - [[STATE]] 描述“你是谁、现在的滤镜如何”，需要拆开“长期状态”（人格画像、MBTI、大五人格、价值观、沟通风格、初始观点/立场、记忆摘要）与“短期波动”（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。
-    - 允许把对自己或他人之前发言作为记忆写进 [[STATE]]，允许对记忆进行摘要。
-    - [[STATE]] 应当根据上一轮自己的 [[STATE]]、[[THINK]] 以及上一轮各个 agent 的发言、信任度矩阵中的偏好而改变，尤其是那些短期波动的内在状态。`;
-  const thoughtGuidelines = `思考摘要机制：
+    const innerStateGuidelines = `内在状态机制：
+  - [[STATE]] 描述“你是谁、现在的滤镜如何”，需要拆开“长期状态”（人格画像、MBTI、大五人格、价值观、沟通风格、初始观点/立场、记忆摘要）与“短期波动”（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。
+  - 允许把对自己或他人之前发言作为记忆写进 [[STATE]]，允许对记忆进行摘要。
+  - [[STATE]] 应当根据上一轮自己的 [[STATE]]、[[THINK]] 以及上一轮各个 agent 的发言、信任度矩阵中的偏好而改变，尤其是那些短期波动的内在状态。
+  - 总共 7~9 句。`;
+    const thoughtGuidelines = `思考摘要机制：
   - [[THINK]] 描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
   - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
-  const naturalGuidelines = [
-    '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
-    '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
-    '避免模板化句式或编号，拆成两三句短句更自然。',
-    '每轮正文长度可灵活波动：有时简短回应 1-2 句，有时展开 5-6 句或分段说明，让整体节奏更像真实讨论。',
-    '不要在输出里提到“信任度矩阵”“立场评分”等内部术语。',
-  ].join('\n- ');
+    const bodyLengthTarget = Math.floor(Math.random() * 9) + 2;
+    const naturalGuidelines = `日常表达提示：
+  - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
+  - 使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。
+  - 避免模板化句式或编号，拆成两三句短句更自然。
+  - 正文长度为 ${bodyLengthTarget} 句
+  - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
+    const outputFormatSample = `输出格式：
+[[STATE]]（长期基线与短期波动示例）[[/STATE]]
+[[THINK]]（即时推理示例）[[/THINK]]
+正文自然语言……（立场：+1）`;
 
   const skipInstruction =
     mode === 'random'
@@ -134,14 +127,13 @@ ${trustWeights
 - 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
-    - ${ratingLine}
-    - ${coverageHint}
-      - ${ENFORCEMENT_WARNING}
-    - ${OUTPUT_ORDER_HINT}
-    - ${OUTPUT_FORMAT_SAMPLE}
+  - ${ratingLine}
+  - ${coverageHint}
+  - ${ENFORCEMENT_WARNING}
 
-日常表达提示：
-  - ${naturalGuidelines}`,
+  ${naturalGuidelines}
+
+  ${outputFormatSample}`,
   ].filter(Boolean).join('\n\n');
 };
 
