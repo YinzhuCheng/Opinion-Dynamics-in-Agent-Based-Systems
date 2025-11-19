@@ -502,7 +502,7 @@ class ConversationRunner {
       }
         rawResponse = rawContent;
 
-      const metadataResult = this.extractThinkingArtifacts(rawContent);
+        const metadataResult = this.extractThinkingArtifacts(rawContent);
       thoughtSummary = metadataResult.thoughtSummary?.trim() || undefined;
       innerState = metadataResult.innerState?.trim() || undefined;
       let processedContent = metadataResult.content.trim();
@@ -529,12 +529,20 @@ class ConversationRunner {
       stanceResult = this.processSelfReportedStance(content, discussion);
       content = stanceResult.content;
 
-      const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
-      const stateHasAll = stateTokens.every((token) => innerState?.includes(token));
-      const hasState = Boolean(metadataResult.foundState && innerState && stateHasAll);
+        const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
+        const stateHasAll = stateTokens.every((token) => innerState?.includes(token));
+        const hasState = Boolean(
+          metadataResult.foundState &&
+            metadataResult.stateClosed &&
+            innerState &&
+            stateHasAll,
+        );
       const hasThought = Boolean(
-        metadataResult.foundThought && thoughtSummary && thoughtSummary.trim().length > 0,
-      );
+          metadataResult.foundThought &&
+            metadataResult.thoughtClosed &&
+            thoughtSummary &&
+            thoughtSummary.trim().length > 0,
+        );
       const hasBody = Boolean(content.trim());
       const hasStance = Boolean(stanceResult.stance);
 
@@ -762,27 +770,32 @@ class ConversationRunner {
         }
       }
 
-      return {
-        content: workingContent.trim(),
-        thoughtSummary,
-        innerState,
-        foundState: Boolean(stateResult.found && innerState),
-        foundThought,
-        rawContent: content,
-      };
+    const innerStateClosed = stateResult.closed && Boolean(innerState);
+    const finalContent = workingContent.trim();
+
+    return {
+      content: finalContent,
+      thoughtSummary,
+      innerState,
+      foundState: Boolean(stateResult.found && innerState),
+      foundThought,
+      stateClosed: innerStateClosed,
+      thoughtClosed: foundThought && Boolean(thoughtSummary),
+      rawContent: content,
+    };
     }
 
     private extractTaggedBlock(
       content: string,
       tag: string,
       options?: { stopBeforeTags?: string[] },
-    ): { content: string; value?: string; found: boolean } {
+  ): { content: string; value?: string; found: boolean; closed: boolean } {
       const normalizedTag = tag.toUpperCase();
       const upperContent = content.toUpperCase();
       const openMarker = `[[${normalizedTag}]]`;
       const startIndex = upperContent.indexOf(openMarker);
-      if (startIndex === -1) {
-        return { content, found: false };
+    if (startIndex === -1) {
+      return { content, found: false, closed: false };
       }
       const afterOpen = startIndex + openMarker.length;
       const closingMarker = `[[/${normalizedTag}]]`;
@@ -809,6 +822,7 @@ class ConversationRunner {
         content: remaining,
         value: extracted.length > 0 ? extracted : undefined,
         found: true,
+        closed: closingIndex !== -1,
       };
     }
 
