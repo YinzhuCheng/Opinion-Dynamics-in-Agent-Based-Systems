@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
+import * as echarts from 'echarts';
 import { useAppStore } from '../store/useAppStore';
 import type { Message, SessionResult, RunConfig } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
@@ -74,27 +75,67 @@ export function ResultsPage() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportChart = (type: 'png' | 'svg') => {
-    if (!stanceChartOption) {
-      window.alert('暂无可导出的立场曲线。');
-      return;
-    }
-    const instance = chartRef.current?.getEchartsInstance();
-    if (!instance) {
-      window.alert('图表尚未渲染完成，请稍后再试。');
-      return;
-    }
-    const dataUrl = instance.getDataURL({
-      type,
-      pixelRatio: type === 'png' ? 2 : 1,
-      backgroundColor: '#fff',
-    });
-    const link = document.createElement('a');
-    link.href = dataUrl;
-    const finishedAt = displayResult?.finishedAt ?? Date.now();
-    link.download = `stance-chart-${new Date(finishedAt).toISOString().replace(/[:.]/g, '-')}.${type}`;
-    link.click();
-  };
+    const handleExportChart = async (chartType: 'individual' | 'group', fileType: 'png' | 'svg') => {
+      const option = chartType === 'individual' ? individualChartOption : groupChartOption;
+      if (!option) {
+        window.alert(
+          chartType === 'individual' ? '暂无个体观点曲线可导出。' : '暂无总体观点曲线可导出。',
+        );
+        return;
+      }
+
+      const getDataUrlFromCurrent = () => {
+        const instance = chartRef.current?.getEchartsInstance();
+        if (!instance) {
+          window.alert('图表尚未渲染完成，请稍后再试。');
+          return null;
+        }
+        return instance.getDataURL({
+          type: fileType,
+          pixelRatio: fileType === 'png' ? 2 : 1,
+          backgroundColor: '#fff',
+        });
+      };
+
+      const getDataUrlFromTemporaryChart = () => {
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-9999px';
+        container.style.top = '-9999px';
+        container.style.width = '800px';
+        container.style.height = '360px';
+        container.style.opacity = '0';
+        document.body.appendChild(container);
+        const renderer = fileType === 'svg' ? 'svg' : 'canvas';
+        const instance = echarts.init(container, undefined, { renderer });
+        instance.setOption(option, true);
+        const dataUrl = instance.getDataURL({
+          type: fileType,
+          pixelRatio: fileType === 'png' ? 2 : 1,
+          backgroundColor: '#fff',
+        });
+        instance.dispose();
+        container.remove();
+        return dataUrl;
+      };
+
+      const dataUrl =
+        chartType === chartTab ? getDataUrlFromCurrent() : getDataUrlFromTemporaryChart();
+
+      if (!dataUrl) {
+        return;
+      }
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      const suffix =
+        chartType === 'individual' ? 'individual' : 'group';
+      link.download = `stance-chart-${suffix}-${new Date(finishedAt)
+        .toISOString()
+        .replace(/[:.]/g, '-')}.${fileType}`;
+      link.click();
+    };
 
   const isFinalized = Boolean(result);
   const summaryLine = displayResult
@@ -121,7 +162,6 @@ export function ResultsPage() {
           {displayResult ? (
             <div className="results-summary">
               <p>{summaryLine}</p>
-              <p>摘要：{displayResult.summary || '尚未生成摘要。'}</p>
               <p>立场基准：正方 = {positiveViewpointLabel} ｜ 反方 = {negativeViewpointLabel}</p>
               <p>模式：{translateMode(displayResult.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(displayResult.configSnapshot)}</p>
               <div className="results-actions">
@@ -131,19 +171,32 @@ export function ResultsPage() {
                 <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                   下载完整版（含提示词）
                 </button>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => stanceChartOption && handleExportChart('png')}
-                  disabled={!stanceChartOption}
-                  title={
-                    stanceChartOption
-                      ? '导出当前的观点演化曲线（PNG）'
-                      : '暂无足够的立场数据可绘制曲线'
-                  }
-                >
-                  导出观点演化图（PNG）
-                </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => handleExportChart('individual', 'png')}
+                    disabled={!individualChartOption}
+                    title={
+                      individualChartOption
+                        ? '导出个体观点演化曲线（PNG）'
+                        : '暂无足够的个体曲线数据'
+                    }
+                  >
+                    导出个体观点演化图（PNG）
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => handleExportChart('group', 'png')}
+                    disabled={!groupChartOption}
+                    title={
+                      groupChartOption
+                        ? '导出总体观点演化曲线（PNG）'
+                        : '暂无足够的总体曲线数据'
+                    }
+                  >
+                    导出总体观点演化图（PNG）
+                  </button>
               </div>
             </div>
           ) : (
