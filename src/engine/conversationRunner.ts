@@ -1,6 +1,14 @@
 import { nanoid } from 'nanoid';
 import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
-import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
+import { summarizeAgentMemory } from './memorySummarizer';
+import type {
+  AgentMemorySnapshot,
+  AgentSpec,
+  Message,
+  ModelConfig,
+  RunConfig,
+  RunStatus,
+} from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -19,7 +27,6 @@ type ConversationProgress = {
 
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
-const PRIVATE_MEMORY_WINDOW = 3;
 const MAX_RESPONSE_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
@@ -408,8 +415,7 @@ class ConversationRunner {
         const discussion = this.appStore.getState().runState.config.discussion;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
-          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agent.id, agentNames);
+          const memorySnapshot = this.getAgentMemorySnapshot(agent.id);
 
           const systemPrompt = buildAgentSystemPrompt({
         agent,
@@ -422,8 +428,7 @@ class ConversationRunner {
           positiveViewpoint,
             negativeViewpoint,
               previousRoundMessages,
-            previousThoughtSummaries,
-            previousInnerStates,
+            memorySnapshot,
       });
           const userPrompt = buildAgentUserPrompt({
           agent,
@@ -437,8 +442,7 @@ class ConversationRunner {
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
-            previousThoughtSummaries,
-            previousInnerStates,
+              memorySnapshot,
           selfPreviousMessage,
         });
 
@@ -567,7 +571,7 @@ class ConversationRunner {
       }
     }
 
-    const message: Message = {
+      const message: Message = {
       id: nanoid(),
       agentId: agent.id,
         agentName: agent.name,
@@ -588,6 +592,7 @@ class ConversationRunner {
 
     this.appendMessageSnapshot(message);
     this.updateStatusAfterMessage(message);
+    await this.refreshAgentMemory(agent, round, modelConfig);
 
     return message;
   }
@@ -691,55 +696,37 @@ class ConversationRunner {
     return { previousRoundMessages, lastSpeakerMessage, selfPreviousMessage };
       }
 
-        private collectPreviousThoughtSummaries(
-          round: number,
-          agentId: string,
-          agentNames: Record<string, string>,
-        ): Array<{ agentName: string; thoughtSummary: string; round: number }> {
-          if (round <= 0) return [];
-          const messages = this.appStore.getState().runState.messages;
-          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
-          return messages
-            .filter(
-              (message) =>
-                message.agentId === agentId &&
-                message.round >= startRound &&
-                message.round <= round &&
-                typeof message.thoughtSummary === 'string' &&
-                message.thoughtSummary.trim().length > 0,
-            )
-            .sort((a, b) => a.round - b.round)
-            .map((message) => ({
-              agentName: agentNames[message.agentId] ?? message.agentId,
-              thoughtSummary: (message.thoughtSummary ?? '').trim(),
-              round: message.round,
-            }));
-        }
+  private getAgentMemorySnapshot(agentId: string): AgentMemorySnapshot {
+    const snapshot = this.appStore.getState().runState.agentMemories[agentId];
+    return snapshot ?? { personal: [], peers: [] };
+  }
 
-        private collectPreviousInnerStates(
-          round: number,
-          agentId: string,
-          agentNames: Record<string, string>,
-        ): Array<{ agentName: string; innerState: string; round: number }> {
-          if (round <= 0) return [];
-          const messages = this.appStore.getState().runState.messages;
-          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
-          return messages
-            .filter(
-              (message) =>
-                message.agentId === agentId &&
-                message.round >= startRound &&
-                message.round <= round &&
-                typeof message.innerState === 'string' &&
-                message.innerState.trim().length > 0,
-            )
-            .sort((a, b) => a.round - b.round)
-            .map((message) => ({
-              agentName: agentNames[message.agentId] ?? message.agentId,
-              innerState: (message.innerState ?? '').trim(),
-              round: message.round,
-            }));
-        }
+  private async refreshAgentMemory(agent: AgentSpec, round: number, modelConfig: ModelConfig) {
+    const state = this.appStore.getState().runState;
+    const windowSize = Math.max(1, state.config.memoryWindowSize ?? 3);
+    const startRound = Math.max(1, round - windowSize + 1);
+    const relevantMessages = state.messages.filter(
+      (message) => message.round >= startRound && message.round <= round,
+    );
+    if (relevantMessages.length === 0) {
+      this.appStore.getState().setAgentMemorySnapshot(agent.id, { personal: [], peers: [] });
+      return;
+    }
+    const agentNames = this.getAgentNameMap();
+    try {
+      const snapshot = await summarizeAgentMemory({
+        agent,
+        round,
+        windowSize,
+        messages: relevantMessages,
+        agentNames,
+        modelConfig,
+      });
+      this.appStore.getState().setAgentMemorySnapshot(agent.id, snapshot);
+    } catch (error) {
+      console.error('[memory] Failed to summarize agent memory', error);
+    }
+  }
 
   private extractThinkingArtifacts(content: string): {
     content: string;
