@@ -173,7 +173,7 @@ export function RunSettingsSection() {
         );
         setTestState({
           status: 'success',
-          message: result || '（请求成功但未返回正文）',
+          message: result || '（请求成功但未返回发言内容）',
         });
       } catch (error: any) {
         setTestState({

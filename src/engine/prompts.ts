@@ -8,7 +8,7 @@ import {
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
 const ENFORCEMENT_WARNING =
-  '注意：若缺少 [[STATE]] 与 [[/STATE]] 对应的完整区块、[[THINK]] 与 [[/THINK]] 对应的完整区块、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
+  '注意：若缺少 [[STATE]] 与 [[/STATE]]、[[THINK]] 与 [[/THINK]]、[[CONTENT]] 与 [[/CONTENT]]、[[STANCE]] 与 [[/STANCE]] 这四类区块中的任意一个（或区块内容为空），系统会判定本轮输出无效并强制跳过；请务必完整输出。';
 
 interface AgentPromptOptions {
   agent: AgentSpec;
@@ -62,10 +62,10 @@ ${trustWeights
   const stanceLine = `当前仅讨论一组对立立场：
 - 正向：${positiveDesc}
 - 负向：${negativeDesc}`;
-  const ratingLine = `正文末尾必须紧跟“（立场：X）”，X 属于 [-${maxLevel}, +${maxLevel}] 的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。不得另起一句解释评分。`;
+    const ratingLine = `[[STANCE]] 与 [[/STANCE]] 中必须写“立场：X”，X 属于 [-${maxLevel}, +${maxLevel}] 的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。该区块只能写这一行，不得额外解释评分。`;
   const coverageHint = `刻度示例：${scaleValues.join(' / ')}。负值对应“${negativeDesc}”，正值对应“${positiveDesc}”。多轮对话中请主动探索不同强度，而不是永远停在单一取值。`;
-  const continuityGuidelines = `对话策略：
-  - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
+    const continuityGuidelines = `对话策略：
+    - 参考上一批次的整体氛围构建“潜台词”，但在发言内容里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
   - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
   - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，带争执语气以保持真实感。
   - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
@@ -88,27 +88,36 @@ const innerStateGuidelines = `内在状态机制（[[STATE]] 和 [[/STATE]] 中�
   4. 【短期波动】使用单独一段写 2~3 句，描述此刻的情绪、生理状态、安全感、当前目标、对他人可靠性的判断，并指出最新刺激如何让这些因素发生微调。
   - 记忆摘要必须采用滑动窗口：一旦某段记忆新加入并使该区块达到 3 条，就把最久远的轮次移除，只保留最新条目。
     - 引用时要结合你的上一轮 [[STATE]] 到 [[/STATE]] 的完整区块、[[THINK]] 到 [[/THINK]] 的完整区块，以及上一轮各 Agent 的公开发言与信任度偏好，清楚说明哪些因素保持稳定、哪些被更新。
-  - 记忆摘要里的句子不可在正文里逐字复述，可换角度延伸。`;
+    - 记忆摘要里的句子不可在发言内容里逐字复述，可换角度延伸。`;
     const thoughtGuidelines = `思考摘要机制：
-    - [[THINK]] 和 [[/THINK]] 之间的内容描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
-  - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
-  const bodyLengthTarget = Math.floor(Math.random() * 4) + 2;
-  const includePersonalExample = Math.random() < 0.2;
-  const personalExampleLine = includePersonalExample
-    ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
-    : '';
-const naturalGuidelines = `日常表达提示：
+    - [[THINK]] 和 [[/THINK]] 之间的内容描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织发言内容或反驳。
+  - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述发言内容。`;
+    const bodyLengthTarget = Math.floor(Math.random() * 4) + 2;
+    const includePersonalExample = Math.random() < 0.2;
+    const personalExampleLine = includePersonalExample
+      ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
+      : '';
+    const contentGuidelines = `发言内容机制（[[CONTENT]] 与 [[/CONTENT]] 包裹）：
+    - 这是唯一对外公开的语言输出，请结合 [[STATE]] 与 [[THINK]] 的线索，按照下方“日常表达提示”规定的句数自然表达，回应当前局面或提出新观点。
+    - 区块内只能使用自然语言，不得再次出现任何 [[STATE]]、[[THINK]]、[[CONTENT]]、[[STANCE]] 等标签，也不要粘贴系统提示。
+    - 优先引用上一位发言者、信任度矩阵偏好或长期记忆中的张力，解释你为何做出该轮发言。`;
+    const stanceGuidelines = `情感标签机制（[[STANCE]] 与 [[/STANCE]] 包裹）：
+    - 紧跟在 [[CONTENT]] 区块之后，单独一行写出你的情感 / 立场刻度，格式必须是“立场：X”。
+    - X 的合法范围、含义及极性要求见下方输出要求；不得在该区块添加额外注释，把解释放回发言内容中。
+    - 若上一轮的内在状态或思考摘要已经出现动摇，请在本轮的情感标签里给出相应调整，以便系统追踪波动。`;
+  const naturalGuidelines = `日常表达提示（适用于 [[CONTENT]] 与 [[/CONTENT]] 中的发言内容）：
   - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
   - 使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。
   - 避免模板化句式或编号，拆成两三句短句更自然。
-  - 正文长度为 ${bodyLengthTarget} 句
+    - 发言内容长度为 ${bodyLengthTarget} 句
 ${personalExampleLine}
-  - 正文不要逐字复述记忆摘要里的句子，可换角度延伸那些信息。
+    - 发言内容不要逐字复述记忆摘要里的句子，可换角度延伸那些信息。
   - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
     const outputFormatSample = `输出格式：
-[[STATE]]（长期基线与短期波动示例）[[/STATE]]
-[[THINK]]（即时推理示例）[[/THINK]]
-正文自然语言……（立场：+1）`;
+  [[STATE]]...[[/STATE]]
+  [[THINK]]...[[/THINK]]
+  [[CONTENT]]...[[/CONTENT]]
+  [[STANCE]]...[[/STANCE]]`;
 
   const skipInstruction =
     mode === 'random'
@@ -126,8 +135,10 @@ ${personalExampleLine}
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
-    innerStateGuidelines,
-    thoughtGuidelines,
+      innerStateGuidelines,
+      thoughtGuidelines,
+      contentGuidelines,
+      stanceGuidelines,
     SYNTHESIS_HINT,
     previousInnerStateSection,
     previousThoughtSection,
@@ -135,6 +146,7 @@ ${personalExampleLine}
 - 使用简洁段落阐述论点，可包含条列说明。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
+    - [[CONTENT]] 与 [[/CONTENT]] 中的发言内容必须完整，[[STANCE]] 与 [[/STANCE]] 区块需紧随其后提供“立场：X”情感标签。
   - ${ratingLine}
   - ${coverageHint}
   - ${ENFORCEMENT_WARNING}

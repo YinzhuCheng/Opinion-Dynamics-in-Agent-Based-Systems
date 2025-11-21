@@ -550,7 +550,7 @@ class ConversationRunner {
           rawResponse = undefined;
       }
 
-      stanceResult = this.processSelfReportedStance(content, discussion);
+        stanceResult = this.processSelfReportedStance(content, discussion, metadataResult.stanceBlock);
       content = stanceResult.content;
 
         const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
@@ -567,8 +567,16 @@ class ConversationRunner {
             thoughtSummary &&
             thoughtSummary.trim().length > 0,
         );
-      const hasBody = Boolean(content.trim());
-      const hasStance = Boolean(stanceResult.stance);
+        const hasBody = Boolean(
+            metadataResult.foundContent &&
+              metadataResult.contentClosed &&
+              metadataResult.content.trim().length > 0,
+          );
+        const hasStanceBlock = Boolean(
+            metadataResult.foundStance && metadataResult.stanceClosed,
+          );
+        const stanceParsed = Boolean(stanceResult.stance);
+        const hasStance = hasStanceBlock && stanceParsed;
 
         if (!(hasState && hasThought && hasBody && hasStance)) {
           lastFailureCategory = 'extraction_missing';
@@ -579,12 +587,14 @@ class ConversationRunner {
           if (!hasThought) {
             missingReasons.push('缺少 [[THINK]] 与 [[/THINK]] 的完整区块');
           }
-          if (!hasBody) {
-            missingReasons.push('正文内容为空');
-          }
-          if (!hasStance) {
-            missingReasons.push('缺少“（立场：X）”刻度');
-          }
+            if (!hasBody) {
+              missingReasons.push('缺少 [[CONTENT]] 与 [[/CONTENT]] 的发言内容区块');
+            }
+            if (!hasStanceBlock) {
+              missingReasons.push('缺少 [[STANCE]] 与 [[/STANCE]] 的情感标签区块');
+            } else if (!stanceParsed) {
+              missingReasons.push('情感标签区块未包含有效的“立场：X”刻度');
+            }
           lastFailureReasons =
             missingReasons.length > 0 ? missingReasons : ['输出解析失败（原因未知）'];
         }
@@ -808,30 +818,47 @@ class ConversationRunner {
     stateClosed: boolean;
     thoughtClosed: boolean;
     rawContent: string;
+    foundContent: boolean;
+    contentClosed: boolean;
+    stanceBlock?: string;
+    foundStance: boolean;
+    stanceClosed: boolean;
   } {
-      const stateResult = this.extractTaggedBlock(content, 'STATE', {
-        stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
-      });
-      const innerState = stateResult.value?.trim() || undefined;
-      let workingContent = stateResult.content;
+    const stateResult = this.extractTaggedBlock(content, 'STATE', {
+      stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]', '[[CONTENT]]', '[[STANCE]]'],
+    });
+    const innerState = stateResult.value?.trim() || undefined;
+    let workingContent = stateResult.content;
 
-      const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
-      let thoughtSummary: string | undefined;
-      let foundThought = false;
-      for (const tag of thoughtTags) {
-        const result = this.extractTaggedBlock(workingContent, tag, {
-          stopBeforeTags: ['（立场', '[[STATE]]'],
-        });
-        if (result.found && result.value) {
-          thoughtSummary = result.value?.trim() || undefined;
-          workingContent = result.content;
-          foundThought = Boolean(thoughtSummary);
-          break;
-        }
+    const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
+    let thoughtSummary: string | undefined;
+    let foundThought = false;
+    for (const tag of thoughtTags) {
+      const result = this.extractTaggedBlock(workingContent, tag, {
+        stopBeforeTags: ['[[CONTENT]]', '[[STANCE]]', '[[STATE]]', '（立场'],
+      });
+      if (result.found && result.value) {
+        thoughtSummary = result.value?.trim() || undefined;
+        workingContent = result.content;
+        foundThought = Boolean(thoughtSummary);
+        break;
       }
+    }
+
+    const contentResult = this.extractTaggedBlock(workingContent, 'CONTENT', {
+      stopBeforeTags: ['[[STANCE]]', '[[STATE]]', '[[THINK]]', '[[THOUGHT]]', '[[PSY]]', '（立场'],
+    });
+    const speechContent = contentResult.value?.trim();
+    workingContent = contentResult.content;
+
+    const stanceResult = this.extractTaggedBlock(workingContent, 'STANCE', {
+      stopBeforeTags: ['[[STATE]]', '[[THINK]]', '[[THOUGHT]]', '[[PSY]]', '[[CONTENT]]'],
+    });
+    const stanceBlock = stanceResult.value?.trim();
+    workingContent = stanceResult.content;
 
     const innerStateClosed = stateResult.closed && Boolean(innerState);
-    const finalContent = workingContent.trim();
+    const finalContent = (speechContent ?? workingContent).trim();
 
     return {
       content: finalContent,
@@ -842,8 +869,13 @@ class ConversationRunner {
       stateClosed: innerStateClosed,
       thoughtClosed: foundThought && Boolean(thoughtSummary),
       rawContent: content,
+      foundContent: Boolean(contentResult.found && speechContent),
+      contentClosed: contentResult.closed && Boolean(speechContent),
+      stanceBlock,
+      foundStance: Boolean(stanceResult.found && stanceBlock),
+      stanceClosed: stanceResult.closed && Boolean(stanceBlock),
     };
-    }
+  }
 
     private extractTaggedBlock(
       content: string,
@@ -913,14 +945,16 @@ class ConversationRunner {
       return Math.min(...candidates);
     }
 
-      private processSelfReportedStance(
+    private processSelfReportedStance(
       content: string,
       discussion: RunConfig['discussion'],
+      stanceBlock?: string,
     ): { content: string; stance?: { score: number; note?: string } } {
       const trimmed = content.trim();
-        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)/i;
-        const match = trimmed.match(ratingRegex);
-      if (!match) {
+      const ratingRegex = /(?:\(|（)?\s*(?:立场|情感)\s*[:：]\s*([+-]?\d+)\s*(?:\)|）)?/i;
+      const source = (stanceBlock ?? trimmed).trim();
+      const match = source.match(ratingRegex);
+      if (!match || !match[1]) {
         return { content: trimmed };
       }
       const size = normalizeScaleSize(discussion?.stanceScaleSize);
@@ -930,10 +964,11 @@ class ConversationRunner {
         return { content: trimmed };
       }
       score = Math.max(-maxLevel, Math.min(maxLevel, score));
-        const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
-        const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
+      const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
+      const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
       const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
-        const sanitizedContent = trimmed.replace(match[0], '').trim();
+      const sanitizedContent =
+        stanceBlock !== undefined ? trimmed : trimmed.replace(match[0], '').trim();
       const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
       return {
         content: displayContent,
