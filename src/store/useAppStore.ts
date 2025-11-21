@@ -13,6 +13,7 @@ import type {
   DialogueMode,
   RunStatus,
   TrustMatrix,
+  FailureRecord,
 } from '../types';
 import {
   DEFAULT_NEGATIVE_VIEWPOINT,
@@ -139,6 +140,7 @@ const createEmptyRunState = (): RunState => {
     agents,
     config,
     messages: [],
+    failureRecords: [],
     summary: '',
     visibleWindow: [],
     status: createInitialStatus(config.mode),
@@ -194,6 +196,7 @@ export interface AppStore {
   removeAgent: (agentId: string) => void;
   resetRunState: () => void;
   appendMessage: (message: Message) => void;
+  appendFailureRecord: (record: FailureRecord) => void;
   updateMessage: (messageId: string, updater: (message: Message) => void) => void;
   resetMessages: () => void;
   setSummary: (summary: string) => void;
@@ -295,6 +298,12 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.visibleWindow.push(message);
       }),
     ),
+    appendFailureRecord: (record) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.failureRecords.push(record);
+        }),
+      ),
   updateMessage: (messageId, updater) =>
     set(
       produce((state: AppStore) => {
@@ -312,6 +321,7 @@ export const useAppStore = create<AppStore>((set) => ({
     set(
       produce((state: AppStore) => {
         state.runState.messages = [];
+          state.runState.failureRecords = [];
         state.runState.visibleWindow = [];
         state.runState.summary = '';
         state.runState.status = createInitialStatus(state.runState.config.mode);

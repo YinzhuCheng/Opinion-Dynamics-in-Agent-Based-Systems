@@ -1,6 +1,13 @@
 import { nanoid } from 'nanoid';
 import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
-import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
+import type {
+  AgentSpec,
+  FailureRecord,
+  Message,
+  ModelConfig,
+  RunConfig,
+  RunStatus,
+} from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -457,7 +464,10 @@ class ConversationRunner {
     let stanceResult: { content: string; stance?: { score: number; note?: string } } = {
       content: '__SKIP__',
     };
-    let rawResponse: string | undefined;
+      let rawResponse: string | undefined;
+      let lastRawOutput: string | undefined;
+      let lastFailureReasons: string[] = [];
+      let lastFailureCategory: FailureRecord['category'] = 'unknown';
 
     for (let attempt = 1; attempt <= MAX_RESPONSE_ATTEMPTS; attempt += 1) {
       const controller = new AbortController();
@@ -487,6 +497,17 @@ class ConversationRunner {
           this.inflightControllers.delete(controller);
           return undefined;
         }
+          this.logFailure({
+            agent,
+            round,
+            turn,
+            category: 'request_error',
+            reason: error?.message ?? 'LLM 请求异常',
+            systemPrompt,
+            userPrompt,
+            rawOutput: lastRawOutput,
+            errorMessage: error ? String(error.stack ?? error) : undefined,
+          });
         throw error;
       } finally {
         this.setAwaiting(undefined);
@@ -494,7 +515,10 @@ class ConversationRunner {
       }
 
         rawContent = rawContent.trim() || '__SKIP__';
+        lastRawOutput = rawContent;
         if (rawContent === '__SKIP__') {
+          lastFailureCategory = 'response_empty';
+          lastFailureReasons = ['模型返回空内容或 __SKIP__ 标记，无法解析。'];
         if (attempt === MAX_RESPONSE_ATTEMPTS) {
           content = '__SKIP__';
         }
@@ -546,6 +570,25 @@ class ConversationRunner {
       const hasBody = Boolean(content.trim());
       const hasStance = Boolean(stanceResult.stance);
 
+        if (!(hasState && hasThought && hasBody && hasStance)) {
+          lastFailureCategory = 'extraction_missing';
+          const missingReasons: string[] = [];
+          if (!hasState) {
+            missingReasons.push('缺少 [[STATE]] 与 [[/STATE]] 的完整区块');
+          }
+          if (!hasThought) {
+            missingReasons.push('缺少 [[THINK]] 与 [[/THINK]] 的完整区块');
+          }
+          if (!hasBody) {
+            missingReasons.push('正文内容为空');
+          }
+          if (!hasStance) {
+            missingReasons.push('缺少“（立场：X）”刻度');
+          }
+          lastFailureReasons =
+            missingReasons.length > 0 ? missingReasons : ['输出解析失败（原因未知）'];
+        }
+
       if (hasState && hasThought && hasBody && hasStance) {
         break;
       }
@@ -567,7 +610,22 @@ class ConversationRunner {
       }
     }
 
-    const message: Message = {
+      if (content === '__SKIP__') {
+        const reasonText =
+          lastFailureReasons.length > 0 ? lastFailureReasons.join('；') : '未能解析有效输出';
+        this.logFailure({
+          agent,
+          round,
+          turn,
+          category: lastFailureCategory,
+          reason: reasonText,
+          systemPrompt,
+          userPrompt,
+          rawOutput: lastRawOutput,
+        });
+      }
+
+      const message: Message = {
       id: nanoid(),
       agentId: agent.id,
         agentName: agent.name,
@@ -939,11 +997,44 @@ class ConversationRunner {
     });
   }
 
-  private appendMessageSnapshot(message: Message) {
+    private logFailure(details: {
+      agent: AgentSpec;
+      round: number;
+      turn: number;
+      category: FailureRecord['category'];
+      reason: string;
+      systemPrompt?: string;
+      userPrompt?: string;
+      rawOutput?: string;
+      errorMessage?: string;
+    }) {
+      this.appendFailureRecord({
+        id: nanoid(),
+        agentId: details.agent.id,
+        agentName: details.agent.name,
+        round: details.round,
+        turn: details.turn,
+        category: details.category,
+        reason: details.reason,
+        timestamp: Date.now(),
+        systemPrompt: details.systemPrompt,
+        userPrompt: details.userPrompt,
+        rawOutput: details.rawOutput,
+        errorMessage: details.errorMessage,
+      });
+    }
+
+    private appendMessageSnapshot(message: Message) {
     this.runIfCurrent(() => {
       this.appStore.getState().appendMessage(message);
     });
   }
+
+    private appendFailureRecord(record: FailureRecord) {
+      this.runIfCurrent(() => {
+        this.appStore.getState().appendFailureRecord(record);
+      });
+    }
 
   private setAwaiting(label?: 'response' | 'thinking') {
     this.setStatus((status) => ({
@@ -993,7 +1084,8 @@ class ConversationRunner {
         finishedAt: status.finishedAt ?? Date.now(),
         summary: state.summary,
         configSnapshot: state.config,
-        status,
+          status,
+          failures: state.failureRecords,
       });
     });
   }
