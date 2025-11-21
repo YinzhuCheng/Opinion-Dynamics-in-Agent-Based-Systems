@@ -4,7 +4,7 @@ import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts';
 import { useAppStore } from '../store/useAppStore';
-import type { Message, SessionResult, RunConfig } from '../types';
+import type { Message, SessionResult, RunConfig, FailureRecord } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import {
   ensureNegativeViewpoint,
@@ -35,6 +35,7 @@ export function ResultsPage() {
       summary: runState.summary,
       configSnapshot: runState.config,
       status: runState.status,
+        failures: runState.failureRecords,
     };
   }, [result, runState]);
   const displayResult = result ?? liveResult;
@@ -74,6 +75,27 @@ export function ResultsPage() {
     link.click();
     URL.revokeObjectURL(url);
   };
+
+    const handleDownloadFailureLog = () => {
+      if (!displayResult) {
+        window.alert('暂无可导出的对话。');
+        return;
+      }
+      const failures = displayResult.failures ?? [];
+      if (failures.length === 0) {
+        window.alert('暂无失败记录。');
+        return;
+      }
+      const text = buildFailureLogText(failures);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      link.download = `failure-log-${new Date(finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+      link.click();
+      URL.revokeObjectURL(url);
+    };
 
     const handleExportChart = async (chartType: 'individual' | 'group', fileType: 'png' | 'svg') => {
       const option = chartType === 'individual' ? individualChartOption : groupChartOption;
@@ -171,6 +193,15 @@ export function ResultsPage() {
                 <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                   下载完整版（含提示词）
                 </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={handleDownloadFailureLog}
+                    disabled={(displayResult?.failures?.length ?? 0) === 0}
+                    title="导出失败记录（包含提示词与原始回复）"
+                  >
+                    下载失败记录 .txt
+                  </button>
                   <button
                     type="button"
                     className="button secondary"
@@ -512,6 +543,52 @@ const buildTranscriptText = (
     lines.push('');
   });
   return lines.join('\n');
+};
+
+const buildFailureLogText = (failures: FailureRecord[]): string => {
+  const lines: string[] = [];
+  lines.push(`失败记录导出时间：${new Date().toLocaleString()}`);
+  lines.push(`失败总数：${failures.length}`);
+  lines.push('');
+  failures.forEach((failure, index) => {
+    lines.push(`=== 记录 #${index + 1} ===`);
+    lines.push(`Agent：${failure.agentName ?? failure.agentId}`);
+    lines.push(`轮次：第 ${failure.round} 轮 ｜ 顺位：第 ${failure.turn} 位`);
+    lines.push(`类别：${translateFailureCategory(failure.category)}`);
+    lines.push(`原因：${failure.reason}`);
+    lines.push(`时间：${new Date(failure.timestamp).toLocaleString()}`);
+    if (failure.errorMessage) {
+      lines.push(`错误详情：${failure.errorMessage}`);
+    }
+    lines.push('');
+    lines.push('[System Prompt]');
+    lines.push(failure.systemPrompt ?? '（无）');
+    lines.push('');
+    lines.push('[User Prompt]');
+    lines.push(failure.userPrompt ?? '（无）');
+    lines.push('');
+    lines.push('[LLM Raw Output]');
+    lines.push(failure.rawOutput ?? '（无原始输出）');
+    lines.push('');
+    lines.push('----------------------------------------');
+    lines.push('');
+  });
+  return lines.join('\n');
+};
+
+const translateFailureCategory = (category: FailureRecord['category']): string => {
+  switch (category) {
+    case 'response_empty':
+      return '输出为空或跳过';
+    case 'extraction_missing':
+      return '结构提取失败';
+    case 'format_correction_failed':
+      return '格式校正失败';
+    case 'request_error':
+      return '请求异常';
+    default:
+      return '未知异常';
+  }
 };
 
 const escapeHtml = (content: string) => content.replace(/[&<>"']/g, (char) => htmlEscapes[char]);

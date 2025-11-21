@@ -1,6 +1,17 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
-import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
+import {
+  buildAgentSystemPrompt,
+  buildAgentUserPrompt,
+  AGENT_OUTPUT_JSON_SCHEMA,
+} from './prompts';
+import type {
+  AgentSpec,
+  FailureRecord,
+  Message,
+  ModelConfig,
+  RunConfig,
+  RunStatus,
+} from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -17,10 +28,24 @@ type ConversationProgress = {
   pendingAgentId?: string;
 };
 
+type ParsedAgentJsonData = {
+  content: string;
+  thoughtSummary: string;
+  innerState: string;
+  stance: { score: number; note?: string };
+  normalizedRaw?: string;
+};
+
+type ParseAgentJsonResult = {
+  success: boolean;
+  data?: ParsedAgentJsonData;
+  reason?: string;
+  category?: FailureRecord['category'];
+};
+
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
 const PRIVATE_MEMORY_WINDOW = 3;
-const MAX_RESPONSE_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -454,117 +479,137 @@ class ConversationRunner {
     let content = '__SKIP__';
     let thoughtSummary: string | undefined;
     let innerState: string | undefined;
-    let stanceResult: { content: string; stance?: { score: number; note?: string } } = {
-      content: '__SKIP__',
-    };
+    let stance: { score: number; note?: string } | undefined;
     let rawResponse: string | undefined;
+    let lastRawOutput: string | undefined;
+    let failureDetails:
+      | { category: FailureRecord['category']; reasons: string[] }
+      | undefined;
 
-    for (let attempt = 1; attempt <= MAX_RESPONSE_ATTEMPTS; attempt += 1) {
-      const controller = new AbortController();
-      this.inflightControllers.add(controller);
-        let rawContent = '';
-      try {
-        rawContent =
-          (await chatStream(
-            messages,
-            modelConfig,
-            extra,
-            {
-              onStatus: (status) => {
-                if (status === 'waiting_response' || status === 'responding') {
-                  this.setAwaiting('response');
-                } else if (status === 'thinking') {
-                  this.setAwaiting('thinking');
-                } else if (status === 'done') {
-                  this.setAwaiting(undefined);
-                }
-              },
+    const controller = new AbortController();
+    this.inflightControllers.add(controller);
+    let rawContent = '';
+    try {
+      rawContent =
+        (await chatStream(
+          messages,
+          modelConfig,
+          extra,
+          {
+            onStatus: (status) => {
+              if (status === 'waiting_response' || status === 'responding') {
+                this.setAwaiting('response');
+              } else if (status === 'thinking') {
+                this.setAwaiting('thinking');
+              } else if (status === 'done') {
+                this.setAwaiting(undefined);
+              }
             },
-            controller.signal,
-          )) || '';
-      } catch (error: any) {
-        if (this.isAbortError(error)) {
-          this.inflightControllers.delete(controller);
-          return undefined;
-        }
-        throw error;
-      } finally {
-        this.setAwaiting(undefined);
+          },
+          controller.signal,
+        )) || '';
+    } catch (error: any) {
+      if (this.isAbortError(error)) {
         this.inflightControllers.delete(controller);
+        return undefined;
       }
+      this.logFailure({
+        agent,
+        round,
+        turn,
+        category: 'request_error',
+        reason: error?.message ?? 'LLM 请求异常',
+        systemPrompt,
+        userPrompt,
+        rawOutput: lastRawOutput,
+        errorMessage: error ? String(error.stack ?? error) : undefined,
+      });
+      throw error;
+    } finally {
+      this.setAwaiting(undefined);
+      this.inflightControllers.delete(controller);
+    }
 
-        rawContent = rawContent.trim() || '__SKIP__';
-        if (rawContent === '__SKIP__') {
-        if (attempt === MAX_RESPONSE_ATTEMPTS) {
-          content = '__SKIP__';
-        }
-        continue;
-      }
-        rawResponse = rawContent;
+    rawContent = rawContent.trim();
+    lastRawOutput = rawContent;
 
-        const metadataResult = this.extractThinkingArtifacts(rawContent);
-      thoughtSummary = metadataResult.thoughtSummary?.trim() || undefined;
-      innerState = metadataResult.innerState?.trim() || undefined;
-      let processedContent = metadataResult.content.trim();
-      if (!processedContent) {
-        const fallbackSegments: string[] = [];
-        if (metadataResult.thoughtSummary) {
-          fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
-        }
-        if (metadataResult.innerState) {
-          fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
-        }
-        processedContent = fallbackSegments.join('\n').trim();
-      }
-      if (!processedContent) {
-        processedContent = metadataResult.rawContent.trim();
-      }
-      content = processedContent || '__SKIP__';
-        if (content === '__SKIP__') {
-        thoughtSummary = undefined;
-        innerState = undefined;
-          rawResponse = undefined;
-      }
-
-      stanceResult = this.processSelfReportedStance(content, discussion);
-      content = stanceResult.content;
-
-        const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
-        const stateHasAll = stateTokens.every((token) => innerState?.includes(token));
-        const hasState = Boolean(
-          metadataResult.foundState &&
-            metadataResult.stateClosed &&
-            innerState &&
-            stateHasAll,
+    if (!rawContent || rawContent === '__SKIP__') {
+      failureDetails = {
+        category: 'response_empty',
+        reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
+      };
+      rawResponse = undefined;
+    } else {
+      rawResponse = rawContent;
+      let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
+      let formatCorrectionAttempted = false;
+      let formatCorrectionError: string | undefined;
+      if (!parseResult.success) {
+        const correctionResult = await this.applyFormatCorrection(
+          rawContent,
+          modelConfig,
+          discussion,
         );
-      const hasThought = Boolean(
-          metadataResult.foundThought &&
-            metadataResult.thoughtClosed &&
-            thoughtSummary &&
-            thoughtSummary.trim().length > 0,
-        );
-      const hasBody = Boolean(content.trim());
-      const hasStance = Boolean(stanceResult.stance);
-
-      if (hasState && hasThought && hasBody && hasStance) {
-        break;
+        if (correctionResult) {
+          formatCorrectionAttempted = true;
+          if (correctionResult.output) {
+            const corrected = correctionResult.output.trim();
+            if (corrected.length > 0) {
+              lastRawOutput = corrected;
+              rawResponse = corrected;
+              parseResult = this.parseAgentJsonOutput(corrected, discussion);
+            }
+          }
+          if (correctionResult.error) {
+            formatCorrectionError = correctionResult.error;
+          }
+        }
       }
 
-        if (attempt === MAX_RESPONSE_ATTEMPTS) {
-        if (!(hasState && hasThought && hasBody && hasStance)) {
-          content = '__SKIP__';
-          thoughtSummary = undefined;
-          innerState = undefined;
-            stanceResult = { content: '__SKIP__' };
-            rawResponse = undefined;
-        }
+      if (parseResult.success && parseResult.data) {
+        const parsed = parseResult.data;
+        content = parsed.content;
+        thoughtSummary = parsed.thoughtSummary;
+        innerState = parsed.innerState;
+        stance = parsed.stance;
+        rawResponse = parsed.normalizedRaw ?? rawResponse;
       } else {
+        const category = formatCorrectionAttempted
+          ? 'format_correction_failed'
+          : parseResult.category ?? 'extraction_missing';
+        const reason =
+          parseResult.reason ??
+          formatCorrectionError ??
+          (formatCorrectionAttempted
+            ? '格式校正助手仍未能生成合法 JSON。'
+            : '输出解析失败，缺少必需字段。');
+        failureDetails = {
+          category,
+          reasons: [reason],
+        };
         content = '__SKIP__';
         thoughtSummary = undefined;
         innerState = undefined;
-          stanceResult = { content: '__SKIP__' };
-          rawResponse = undefined;
+        stance = undefined;
+        rawResponse = undefined;
       }
+    }
+
+    if (failureDetails) {
+      const reasonText =
+        failureDetails.reasons.length > 0
+          ? failureDetails.reasons.join('；')
+          : '未能解析有效输出';
+      this.logFailure({
+        agent,
+        round,
+        turn,
+        category: failureDetails.category,
+        reason: reasonText,
+        systemPrompt,
+        userPrompt,
+        rawOutput: lastRawOutput,
+      });
     }
 
     const message: Message = {
@@ -579,11 +624,11 @@ class ConversationRunner {
       turn,
       systemPrompt,
       userPrompt,
-          thoughtSummary,
-          innerState,
+      thoughtSummary,
+      innerState,
     };
-    if (stanceResult.stance) {
-      message.stance = stanceResult.stance;
+    if (stance) {
+      message.stance = stance;
     }
 
     this.appendMessageSnapshot(message);
@@ -741,150 +786,201 @@ class ConversationRunner {
             }));
         }
 
-  private extractThinkingArtifacts(content: string): {
-    content: string;
-    thoughtSummary?: string;
-    innerState?: string;
-    foundState: boolean;
-    foundThought: boolean;
-    stateClosed: boolean;
-    thoughtClosed: boolean;
-    rawContent: string;
-  } {
-      const stateResult = this.extractTaggedBlock(content, 'STATE', {
-        stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
-      });
-      const innerState = stateResult.value?.trim() || undefined;
-      let workingContent = stateResult.content;
-
-      const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
-      let thoughtSummary: string | undefined;
-      let foundThought = false;
-      for (const tag of thoughtTags) {
-        const result = this.extractTaggedBlock(workingContent, tag, {
-          stopBeforeTags: ['（立场', '[[STATE]]'],
-        });
-        if (result.found && result.value) {
-          thoughtSummary = result.value?.trim() || undefined;
-          workingContent = result.content;
-          foundThought = Boolean(thoughtSummary);
-          break;
-        }
-      }
-
-    const innerStateClosed = stateResult.closed && Boolean(innerState);
-    const finalContent = workingContent.trim();
-
-    return {
-      content: finalContent,
-      thoughtSummary,
-      innerState,
-      foundState: Boolean(stateResult.found && innerState),
-      foundThought,
-      stateClosed: innerStateClosed,
-      thoughtClosed: foundThought && Boolean(thoughtSummary),
-      rawContent: content,
-    };
+  private parseAgentJsonOutput(
+    rawContent: string,
+    discussion: RunConfig['discussion'],
+  ): ParseAgentJsonResult {
+    const cleaned = this.stripCodeFences(rawContent).trim();
+    if (!cleaned) {
+      return { success: false, reason: '输出内容为空', category: 'extraction_missing' };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (error: any) {
+      return {
+        success: false,
+        reason: `JSON 解析失败：${error?.message ?? error}`,
+        category: 'extraction_missing',
+      };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { success: false, reason: '输出必须是 JSON 对象', category: 'extraction_missing' };
     }
 
-    private extractTaggedBlock(
-      content: string,
-      tag: string,
-      options?: { stopBeforeTags?: string[] },
-  ): { content: string; value?: string; found: boolean; closed: boolean } {
-      const normalizedTag = tag.toUpperCase();
-      const upperContent = content.toUpperCase();
-      const openMarker = `[[${normalizedTag}]]`;
-      const startIndex = upperContent.indexOf(openMarker);
-    if (startIndex === -1) {
-      return { content, found: false, closed: false };
+    const state = parsed.state;
+    if (!state || typeof state !== 'object') {
+      return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
+    }
+    const stateSections: Array<{ key: string; label: string }> = [
+      { key: 'personal_memory', label: '个人记忆摘要' },
+      { key: 'others_memory', label: '他人记忆摘要' },
+      { key: 'long_term', label: '长期状态' },
+      { key: 'short_term', label: '短期波动' },
+    ];
+    const stateSegments: string[] = [];
+    for (const section of stateSections) {
+      const values = this.normalizeStringArray(state[section.key]);
+      if (!values || values.length === 0) {
+        return {
+          success: false,
+          reason: `state.${section.key} 不能为空`,
+          category: 'extraction_missing',
+        };
       }
-      const afterOpen = startIndex + openMarker.length;
-      const closingMarker = `[[/${normalizedTag}]]`;
-      const closingIndex = upperContent.indexOf(closingMarker, afterOpen);
+      stateSegments.push(this.formatStateSection(section.label, values.slice(-3)));
+    }
+    const innerState = stateSegments.join('\n').trim();
+    if (!innerState) {
+      return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
+    }
 
-      let endIndex: number;
-      let afterIndex: number;
-
-      if (closingIndex !== -1) {
-        endIndex = closingIndex;
-        afterIndex = closingIndex + closingMarker.length;
-      } else {
-        const boundary = this.findNextTaggedBoundary(upperContent, afterOpen, options);
-        endIndex = boundary ?? content.length;
-        afterIndex = boundary ?? content.length;
-      }
-
-      const before = content.slice(0, startIndex);
-      const extracted = content.slice(afterOpen, endIndex).trim();
-      const after = content.slice(afterIndex);
-      const needsSpace = before && after && !before.endsWith('\n') && !after.startsWith('\n');
-      const remaining = `${before}${needsSpace ? ' ' : ''}${after}`.trim();
+    const thinkValues = this.normalizeStringArray(parsed.think);
+    if (!thinkValues || thinkValues.length < 2) {
       return {
-        content: remaining,
-        value: extracted.length > 0 ? extracted : undefined,
-        found: true,
-        closed: closingIndex !== -1,
+        success: false,
+        reason: 'think 数组至少需要 2 句',
+        category: 'extraction_missing',
+      };
+    }
+    const thinkText = thinkValues.join('\n').trim();
+
+    const contentValues = this.normalizeStringArray(parsed.content);
+    if (!contentValues || contentValues.length === 0) {
+      return {
+        success: false,
+        reason: 'content 数组不能为空',
+        category: 'extraction_missing',
+      };
+    }
+    const contentText = contentValues.join('\n').trim();
+    if (!contentText) {
+      return {
+        success: false,
+        reason: 'content 文本为空',
+        category: 'extraction_missing',
       };
     }
 
-    private findNextTaggedBoundary(
-      upperContent: string,
-      fromIndex: number,
-      options?: { stopBeforeTags?: string[] },
-    ): number | undefined {
-      const candidates: number[] = [];
-      const extraStops = options?.stopBeforeTags ?? [];
-      extraStops.forEach((tag) => {
-        const idx = upperContent.indexOf(tag.toUpperCase(), fromIndex);
-        if (idx !== -1) {
-          candidates.push(idx);
-        }
-      });
-      const nextGenericTag = upperContent.indexOf('[[', fromIndex);
-      if (nextGenericTag !== -1) {
-        candidates.push(nextGenericTag);
-      }
-      const stanceIndex = upperContent.indexOf('（立场', fromIndex);
-      if (stanceIndex !== -1) {
-        candidates.push(stanceIndex);
-      }
-      if (candidates.length === 0) {
-        return undefined;
-      }
-      return Math.min(...candidates);
+    const stanceNode = parsed.stance;
+    if (!stanceNode || typeof stanceNode !== 'object') {
+      return { success: false, reason: '缺少 stance 字段', category: 'extraction_missing' };
     }
-
-      private processSelfReportedStance(
-      content: string,
-      discussion: RunConfig['discussion'],
-    ): { content: string; stance?: { score: number; note?: string } } {
-      const trimmed = content.trim();
-        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)/i;
-        const match = trimmed.match(ratingRegex);
-      if (!match) {
-        return { content: trimmed };
-      }
-      const size = normalizeScaleSize(discussion?.stanceScaleSize);
-      const maxLevel = Math.floor(Math.max(3, size) / 2);
-      let score = Number(match[1]);
-      if (!Number.isFinite(score)) {
-        return { content: trimmed };
-      }
-      score = Math.max(-maxLevel, Math.min(maxLevel, score));
-        const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
-        const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
-      const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
-        const sanitizedContent = trimmed.replace(match[0], '').trim();
-      const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
+    let score = Number((stanceNode as any).score);
+    if (!Number.isFinite(score)) {
       return {
-        content: displayContent,
+        success: false,
+        reason: 'stance.score 需要为整数',
+        category: 'extraction_missing',
+      };
+    }
+    const size = normalizeScaleSize(discussion?.stanceScaleSize);
+    const maxLevel = Math.floor(Math.max(3, size) / 2);
+    score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(score)));
+    const userLabel =
+      typeof stanceNode.label === 'string' && stanceNode.label.trim().length > 0
+        ? stanceNode.label.trim()
+        : undefined;
+    const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
+    const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
+    const fallbackLabel = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
+    const note = userLabel ?? fallbackLabel;
+
+    return {
+      success: true,
+      data: {
+        content: contentText,
+        thoughtSummary: thinkText,
+        innerState,
         stance: {
           score,
           note,
         },
-      };
+        normalizedRaw: cleaned,
+      },
+    };
+  }
+
+  private normalizeStringArray(value: unknown): string[] | undefined {
+    if (Array.isArray(value)) {
+      const normalized = value
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0);
+      return normalized.length > 0 ? normalized : undefined;
     }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed ? [trimmed] : undefined;
+    }
+    return undefined;
+  }
+
+  private formatStateSection(label: string, values: string[]): string {
+    const lines = values.map((item) => `- ${item}`).join('\n');
+    return `【${label}】\n${lines}`;
+  }
+
+  private stripCodeFences(text: string): string {
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (match) {
+      return match[1];
+    }
+    return text;
+  }
+
+  private async applyFormatCorrection(
+    rawContent: string,
+    modelConfig: ModelConfig,
+    discussion: RunConfig['discussion'],
+  ): Promise<{ output?: string; error?: string } | undefined> {
+    const systemPrompt =
+      '你是一名格式校正助手，只负责把用户给出的文本整理成合法 JSON，不得改写事实或杜撰内容。';
+    const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(discussion.stanceScaleSize)) / 2);
+    const userPrompt = [
+      '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
+      `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
+      '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；不要输出空数组。',
+      `- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`,
+      '- 禁止添加除上述字段之外的键；若原文缺少某部分，可根据上下文提炼最接近的句子填入，不得凭空虚构事实。',
+      '',
+      'JSON 示例：',
+      AGENT_OUTPUT_JSON_SCHEMA,
+      '',
+      '===== 原始输出 =====',
+      rawContent,
+      '===== 原始输出结束 =====',
+      '请只返回 JSON，勿添加任何解释或代码块标记。',
+    ].join('\n');
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ];
+
+    const controller = new AbortController();
+    this.inflightControllers.add(controller);
+    try {
+      const response =
+        (await chatStream(
+          messages,
+          modelConfig,
+          {
+            temperature: Math.min(0.2, modelConfig.temperature ?? 0.7),
+            maxTokens: modelConfig.max_output_tokens,
+          },
+          undefined,
+          controller.signal,
+        )) || '';
+      return { output: response.trim() };
+    } catch (error: any) {
+      if (this.isAbortError(error)) {
+        return undefined;
+      }
+      return { error: error?.message ?? '格式校正请求失败' };
+    } finally {
+      this.inflightControllers.delete(controller);
+    }
+  }
 
     private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
     if (config.useGlobalModelConfig && config.globalModelConfig) {
@@ -939,11 +1035,44 @@ class ConversationRunner {
     });
   }
 
-  private appendMessageSnapshot(message: Message) {
+    private logFailure(details: {
+      agent: AgentSpec;
+      round: number;
+      turn: number;
+      category: FailureRecord['category'];
+      reason: string;
+      systemPrompt?: string;
+      userPrompt?: string;
+      rawOutput?: string;
+      errorMessage?: string;
+    }) {
+      this.appendFailureRecord({
+        id: nanoid(),
+        agentId: details.agent.id,
+        agentName: details.agent.name,
+        round: details.round,
+        turn: details.turn,
+        category: details.category,
+        reason: details.reason,
+        timestamp: Date.now(),
+        systemPrompt: details.systemPrompt,
+        userPrompt: details.userPrompt,
+        rawOutput: details.rawOutput,
+        errorMessage: details.errorMessage,
+      });
+    }
+
+    private appendMessageSnapshot(message: Message) {
     this.runIfCurrent(() => {
       this.appStore.getState().appendMessage(message);
     });
   }
+
+    private appendFailureRecord(record: FailureRecord) {
+      this.runIfCurrent(() => {
+        this.appStore.getState().appendFailureRecord(record);
+      });
+    }
 
   private setAwaiting(label?: 'response' | 'thinking') {
     this.setStatus((status) => ({
@@ -993,7 +1122,8 @@ class ConversationRunner {
         finishedAt: status.finishedAt ?? Date.now(),
         summary: state.summary,
         configSnapshot: state.config,
-        status,
+          status,
+          failures: state.failureRecords,
       });
     });
   }

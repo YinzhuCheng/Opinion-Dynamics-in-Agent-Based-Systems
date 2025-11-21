@@ -99,10 +99,33 @@ export interface Message {
   innerState?: string;
 }
 
+export type FailureCategory =
+  | 'response_empty'
+  | 'extraction_missing'
+  | 'format_correction_failed'
+  | 'request_error'
+  | 'unknown';
+
+export interface FailureRecord {
+  id: string;
+  agentId: string;
+  agentName?: string;
+  round: number;
+  turn: number;
+  category: FailureCategory;
+  reason: string;
+  timestamp: number;
+  systemPrompt?: string;
+  userPrompt?: string;
+  rawOutput?: string;
+  errorMessage?: string;
+}
+
 export interface RunState {
   agents: AgentSpec[];
   config: RunConfig;
   messages: Message[];
+  failureRecords: FailureRecord[];
   summary: string;
   visibleWindow: Message[];
   status: RunStatus;
@@ -116,6 +139,7 @@ export interface SessionResult {
   summary: string;
   configSnapshot: RunConfig;
   status: RunStatus;
+  failures: FailureRecord[];
 }
 
 export interface RunStatus {
