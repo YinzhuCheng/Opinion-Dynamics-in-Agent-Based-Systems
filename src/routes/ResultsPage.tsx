@@ -582,6 +582,8 @@ const translateFailureCategory = (category: FailureRecord['category']): string =
       return '输出为空或跳过';
     case 'extraction_missing':
       return '结构提取失败';
+    case 'format_correction_failed':
+      return '格式校正失败';
     case 'request_error':
       return '请求异常';
     default:

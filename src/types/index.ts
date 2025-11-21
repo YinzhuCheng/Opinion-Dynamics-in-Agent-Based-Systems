@@ -99,7 +99,12 @@ export interface Message {
   innerState?: string;
 }
 
-export type FailureCategory = 'response_empty' | 'extraction_missing' | 'request_error' | 'unknown';
+export type FailureCategory =
+  | 'response_empty'
+  | 'extraction_missing'
+  | 'format_correction_failed'
+  | 'request_error'
+  | 'unknown';
 
 export interface FailureRecord {
   id: string;
