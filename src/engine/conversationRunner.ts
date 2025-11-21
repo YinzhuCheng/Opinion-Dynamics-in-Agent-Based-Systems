@@ -19,6 +19,8 @@ type ConversationProgress = {
 
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
+const PRIVATE_MEMORY_WINDOW = 3;
+const MAX_RESPONSE_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -406,8 +408,8 @@ class ConversationRunner {
         const discussion = this.appStore.getState().runState.config.discussion;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agentNames);
-          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agentNames);
+          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
+          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agent.id, agentNames);
 
           const systemPrompt = buildAgentSystemPrompt({
         agent,
@@ -449,70 +451,121 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
-    const controller = new AbortController();
-    this.inflightControllers.add(controller);
-    let content = '';
-    try {
-      content =
-        (await chatStream(
-          messages,
-          modelConfig,
-          extra,
-          {
-            onStatus: (status) => {
-              if (status === 'waiting_response' || status === 'responding') {
-                this.setAwaiting('response');
-              } else if (status === 'thinking') {
-                this.setAwaiting('thinking');
-              } else if (status === 'done') {
-                this.setAwaiting(undefined);
-              }
+    let content = '__SKIP__';
+    let thoughtSummary: string | undefined;
+    let innerState: string | undefined;
+    let stanceResult: { content: string; stance?: { score: number; note?: string } } = {
+      content: '__SKIP__',
+    };
+    let rawResponse: string | undefined;
+
+    for (let attempt = 1; attempt <= MAX_RESPONSE_ATTEMPTS; attempt += 1) {
+      const controller = new AbortController();
+      this.inflightControllers.add(controller);
+        let rawContent = '';
+      try {
+        rawContent =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
             },
-          },
-          controller.signal,
-        )) || '';
-    } catch (error: any) {
-      if (this.isAbortError(error)) {
+            controller.signal,
+          )) || '';
+      } catch (error: any) {
+        if (this.isAbortError(error)) {
+          this.inflightControllers.delete(controller);
+          return undefined;
+        }
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
         this.inflightControllers.delete(controller);
-        return undefined;
       }
-      throw error;
-    } finally {
-      this.setAwaiting(undefined);
-      this.inflightControllers.delete(controller);
-    }
 
-      content = content.trim() || '__SKIP__';
-
-      let thoughtSummary: string | undefined;
-      let innerState: string | undefined;
-      if (content !== '__SKIP__') {
-        const metadataResult = this.extractThinkingArtifacts(content);
-        thoughtSummary = metadataResult.thoughtSummary;
-        innerState = metadataResult.innerState;
-        let processedContent = metadataResult.content.trim();
-        if (!processedContent) {
-          const fallbackSegments: string[] = [];
-          if (metadataResult.thoughtSummary) {
-            fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
-          }
-          if (metadataResult.innerState) {
-            fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
-          }
-          processedContent = fallbackSegments.join('\n').trim();
+        rawContent = rawContent.trim() || '__SKIP__';
+        if (rawContent === '__SKIP__') {
+        if (attempt === MAX_RESPONSE_ATTEMPTS) {
+          content = '__SKIP__';
         }
-        if (!processedContent) {
-          processedContent = metadataResult.rawContent.trim();
-        }
-        content = processedContent || '__SKIP__';
+        continue;
       }
-      if (content === '__SKIP__') {
+        rawResponse = rawContent;
+
+        const metadataResult = this.extractThinkingArtifacts(rawContent);
+      thoughtSummary = metadataResult.thoughtSummary?.trim() || undefined;
+      innerState = metadataResult.innerState?.trim() || undefined;
+      let processedContent = metadataResult.content.trim();
+      if (!processedContent) {
+        const fallbackSegments: string[] = [];
+        if (metadataResult.thoughtSummary) {
+          fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
+        }
+        if (metadataResult.innerState) {
+          fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
+        }
+        processedContent = fallbackSegments.join('\n').trim();
+      }
+      if (!processedContent) {
+        processedContent = metadataResult.rawContent.trim();
+      }
+      content = processedContent || '__SKIP__';
+        if (content === '__SKIP__') {
         thoughtSummary = undefined;
         innerState = undefined;
+          rawResponse = undefined;
       }
 
-        const stanceResult = this.processSelfReportedStance(content, discussion);
-        content = stanceResult.content;
+      stanceResult = this.processSelfReportedStance(content, discussion);
+      content = stanceResult.content;
+
+        const stateTokens = ['【个人记忆摘要】', '【他人记忆摘要】', '【长期状态】', '【短期波动】'];
+        const stateHasAll = stateTokens.every((token) => innerState?.includes(token));
+        const hasState = Boolean(
+          metadataResult.foundState &&
+            metadataResult.stateClosed &&
+            innerState &&
+            stateHasAll,
+        );
+      const hasThought = Boolean(
+          metadataResult.foundThought &&
+            metadataResult.thoughtClosed &&
+            thoughtSummary &&
+            thoughtSummary.trim().length > 0,
+        );
+      const hasBody = Boolean(content.trim());
+      const hasStance = Boolean(stanceResult.stance);
+
+      if (hasState && hasThought && hasBody && hasStance) {
+        break;
+      }
+
+        if (attempt === MAX_RESPONSE_ATTEMPTS) {
+        if (!(hasState && hasThought && hasBody && hasStance)) {
+          content = '__SKIP__';
+          thoughtSummary = undefined;
+          innerState = undefined;
+            stanceResult = { content: '__SKIP__' };
+            rawResponse = undefined;
+        }
+      } else {
+        content = '__SKIP__';
+        thoughtSummary = undefined;
+        innerState = undefined;
+          stanceResult = { content: '__SKIP__' };
+          rawResponse = undefined;
+      }
+    }
 
     const message: Message = {
       id: nanoid(),
@@ -520,6 +573,7 @@ class ConversationRunner {
         agentName: agent.name,
       role: 'assistant',
       content,
+      rawContent: rawResponse,
       ts: Date.now(),
       round,
       turn,
@@ -639,50 +693,64 @@ class ConversationRunner {
 
         private collectPreviousThoughtSummaries(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; thoughtSummary: string }> {
+        ): Array<{ agentName: string; thoughtSummary: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
+                message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.thoughtSummary === 'string' &&
                 message.thoughtSummary.trim().length > 0,
             )
+            .sort((a, b) => a.round - b.round)
             .map((message) => ({
               agentName: agentNames[message.agentId] ?? message.agentId,
               thoughtSummary: (message.thoughtSummary ?? '').trim(),
+              round: message.round,
             }));
         }
 
         private collectPreviousInnerStates(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; innerState: string }> {
+        ): Array<{ agentName: string; innerState: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
+                message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.innerState === 'string' &&
                 message.innerState.trim().length > 0,
             )
+            .sort((a, b) => a.round - b.round)
             .map((message) => ({
               agentName: agentNames[message.agentId] ?? message.agentId,
               innerState: (message.innerState ?? '').trim(),
+              round: message.round,
             }));
         }
 
-    private extractThinkingArtifacts(content: string): {
-      content: string;
-      thoughtSummary?: string;
-      innerState?: string;
-      foundState: boolean;
-      foundThought: boolean;
-      rawContent: string;
-    } {
+  private extractThinkingArtifacts(content: string): {
+    content: string;
+    thoughtSummary?: string;
+    innerState?: string;
+    foundState: boolean;
+    foundThought: boolean;
+    stateClosed: boolean;
+    thoughtClosed: boolean;
+    rawContent: string;
+  } {
       const stateResult = this.extractTaggedBlock(content, 'STATE', {
         stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
       });
@@ -704,27 +772,32 @@ class ConversationRunner {
         }
       }
 
-      return {
-        content: workingContent.trim(),
-        thoughtSummary,
-        innerState,
-        foundState: Boolean(stateResult.found && innerState),
-        foundThought,
-        rawContent: content,
-      };
+    const innerStateClosed = stateResult.closed && Boolean(innerState);
+    const finalContent = workingContent.trim();
+
+    return {
+      content: finalContent,
+      thoughtSummary,
+      innerState,
+      foundState: Boolean(stateResult.found && innerState),
+      foundThought,
+      stateClosed: innerStateClosed,
+      thoughtClosed: foundThought && Boolean(thoughtSummary),
+      rawContent: content,
+    };
     }
 
     private extractTaggedBlock(
       content: string,
       tag: string,
       options?: { stopBeforeTags?: string[] },
-    ): { content: string; value?: string; found: boolean } {
+  ): { content: string; value?: string; found: boolean; closed: boolean } {
       const normalizedTag = tag.toUpperCase();
       const upperContent = content.toUpperCase();
       const openMarker = `[[${normalizedTag}]]`;
       const startIndex = upperContent.indexOf(openMarker);
-      if (startIndex === -1) {
-        return { content, found: false };
+    if (startIndex === -1) {
+      return { content, found: false, closed: false };
       }
       const afterOpen = startIndex + openMarker.length;
       const closingMarker = `[[/${normalizedTag}]]`;
@@ -751,6 +824,7 @@ class ConversationRunner {
         content: remaining,
         value: extracted.length > 0 ? extracted : undefined,
         found: true,
+        closed: closingIndex !== -1,
       };
     }
 

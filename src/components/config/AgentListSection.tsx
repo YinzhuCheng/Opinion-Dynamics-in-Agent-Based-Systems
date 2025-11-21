@@ -306,10 +306,8 @@ const TrustMatrixEditor = () => {
   const trustMatrix = useAppStore((state) => state.runState.config.trustMatrix);
   const setTrustValue = useAppStore((state) => state.setTrustValue);
   const normalizeTrustRow = useAppStore((state) => state.normalizeTrustRow);
-  const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
-  const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
-  const lastRandomMatrix = useAppStore((state) => state.runState.lastRandomMatrix);
-  const [matrixFolded, setMatrixFolded] = useState({ W: false, R: true });
+    const randomizeTrustMatrix = useAppStore((state) => state.randomizeTrustMatrix);
+    const uniformTrustMatrix = useAppStore((state) => state.uniformTrustMatrix);
 
   if (agents.length === 0) {
     return null;
@@ -329,13 +327,6 @@ const TrustMatrixEditor = () => {
       setTrustValue(sourceId, targetId, Number.isNaN(numeric) ? 0 : numeric);
     };
 
-  const handleSummaryToggle =
-    (key: 'W' | 'R') => (event: React.MouseEvent<HTMLElement>) => {
-      if ((event.target as HTMLElement).tagName === 'SUMMARY') {
-        event.preventDefault();
-        setMatrixFolded((prev) => ({ ...prev, [key]: !prev[key] }));
-      }
-    };
   return (
     <div className="trust-matrix-block">
       <h4>信任度矩阵（DeGroot）</h4>
@@ -396,12 +387,6 @@ const TrustMatrixEditor = () => {
           </button>
         </div>
       </div>
-      {lastRandomMatrix ? (
-        <details className="trust-matrix-preview" open={!matrixFolded.R} onClick={handleSummaryToggle('R')}>
-          <summary>R：随机矩阵（归一化后）</summary>
-          <pre>{JSON.stringify(lastRandomMatrix, null, 2)}</pre>
-        </details>
-      ) : null}
     </div>
   );
 };

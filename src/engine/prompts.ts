@@ -7,23 +7,6 @@ import {
 
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
-const BLOCK_DEFINITION_HINT = `块含义：
-[[STATE]] = “我是谁＆现在的滤镜”——3~5 句，先讲长期基线（人格画像、MBTI、大五、价值观、沟通风格、初始观点/立场、记忆摘要），再讲短期波动（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。
-[[THINK]] = “我马上要怎么推理”——2~3 句，描述上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳，必须引用至少一个内在状态因素。
-正文 = 口语化发言，像真人聊天那样推进讨论。
-（立场：X） = 以括号包裹的整数刻度，总结本轮立场。`;
-
-const OUTPUT_ORDER_HINT = `输出顺序（必须严格遵守）：
-1. [[STATE]] …… [[/STATE]]
-2. [[THINK]] …… [[/THINK]]
-3. 正文（自然语言发言）
-4. （立场：X）`;
-
-const OUTPUT_FORMAT_SAMPLE = `示例格式：
-[[STATE]]（长期基线与短期波动示例）[[/STATE]]
-[[THINK]]（即时推理示例）[[/THINK]]
-正文自然语言……（立场：+1）`;
-
 const ENFORCEMENT_WARNING =
   '注意：若缺少 [[STATE]]、[[THINK]]、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
 
@@ -39,8 +22,8 @@ interface AgentPromptOptions {
   negativeViewpoint: string;
   previousRoundMessages: Message[];
   lastSpeakerMessage?: Message;
-  previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string }>;
-  previousInnerStates: Array<{ agentName: string; innerState: string }>;
+  previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string; round: number }>;
+  previousInnerStates: Array<{ agentName: string; innerState: string; round: number }>;
   selfPreviousMessage?: Message;
 }
 
@@ -84,34 +67,48 @@ ${trustWeights
   const continuityGuidelines = `对话策略：
   - 参考上一批次的整体氛围构建“潜台词”，但在正文里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
   - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
-  - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，可带一点争执语气以保持真实感。
+  - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，带争执语气以保持真实感。
   - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
-  const previousInnerStateSection =
-    previousInnerStates.length > 0
-      ? `上一轮内在状态快照（只供你内化，不要在正文里引用）：\n${previousInnerStates
-          .map((item) => `- ${item.agentName}: ${item.innerState}`)
-          .join('\n')}`
-      : '上一轮内在状态快照：暂无记录（可能是首轮或上一轮跳过），请结合角色画像自行推断。';
-  const previousThoughtSection =
-    previousThoughtSummaries.length > 0
-      ? `上一轮思考摘要摘录（用于感知潜台词）：\n${previousThoughtSummaries
-          .map((item) => `- ${item.agentName}: ${item.thoughtSummary}`)
-          .join('\n')}`
-      : '上一轮尚未形成可引用的思考摘要，可自行根据对话与信任权重推断群体情绪。';
-const innerStateGuidelines = `内在状态机制：
-  - [[STATE]] 描述“你是谁、现在的滤镜如何”，需要拆开“长期基线”（人格画像、MBTI、大五因子、价值观、沟通风格、初始观点/立场、记忆摘要）与“短期波动”（情绪、生理状态、安全感、当前目标、对他人可靠性的判断）。3~5 句，每句都在讲述“你”的感受，不要泛泛而谈。
-  - 允许把对自己或他人上一轮发言的记忆摘要写进 [[STATE]]，作为长期基线或最新滤镜的一部分，但仍要保持第一人称。
-  - 记得引用上一轮自己的 [[STATE]]、[[THINK]] 以及信任度矩阵中的偏好，说明哪些部分保持稳定、哪些因外界刺激发生变化；[[STATE]] 只供系统记录，正文不要透露这些元信息。`;
-const thoughtGuidelines = `思考摘要机制：
+    const previousInnerStateSection =
+      previousInnerStates.length > 0
+        ? `历史内在状态（仅你本人可见，按轮次从旧到新）：\n${previousInnerStates
+            .map((item) => `- 第 ${item.round} 轮：${item.innerState}`)
+            .join('\n')}`
+        : '历史内在状态：暂无记录（可能是首轮或之前跳过），请结合角色画像自行推断。';
+    const previousThoughtSection =
+      previousThoughtSummaries.length > 0
+        ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
+            .map((item) => `- 第 ${item.round} 轮：${item.thoughtSummary}`)
+            .join('\n')}`
+        : '历史思考摘要：暂无记录，可根据角色设定与对话氛围自我推断。';
+const innerStateGuidelines = `内在状态机制（[[STATE]] 必须按下列顺序与格式书写）：
+  1. 【个人记忆摘要】逐条写 3 句，格式统一为“轮次 X：内容”，其中 X 必须是该记忆对应的真实轮次（例如第 4 轮的记忆就写“轮次 4：…”），概括你最近几轮的核心观点或情绪；若记忆不足，按实际条数输出。
+  2. 【他人记忆摘要】逐条写 3 句，格式为“轮次 X：<Agent 名> - 触发点”，覆盖最近几轮至少两名 Agent 的关键刺激；若素材不足，按实际条数输出，且务必与个人记忆区分开来。
+  3. 【长期状态】使用单独一段写 2~3 句（每句都以该标签开头或紧随其后），描述人格画像、MBTI、大五人格、价值观、沟通风格、初始观点/立场以及累积记忆，明确“我本来是谁、始终坚持什么”。
+  4. 【短期波动】使用单独一段写 2~3 句，描述此刻的情绪、生理状态、安全感、当前目标、对他人可靠性的判断，并指出最新刺激如何让这些因素发生微调。
+  - 记忆摘要必须采用滑动窗口：一旦某段记忆新加入并使该区块达到 3 条，就把最久远的轮次移除，只保留最新条目。
+  - 引用时要结合你的上一轮 [[STATE]]、[[THINK]]，以及上一轮各 Agent 的公开发言与信任度偏好，清楚说明哪些因素保持稳定、哪些被更新。
+  - 记忆摘要里的句子不可在正文里逐字复述，可换角度延伸。`;
+    const thoughtGuidelines = `思考摘要机制：
   - [[THINK]] 描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
   - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
-  const naturalGuidelines = [
-    '像即时聊天一样说话，可包含停顿、语气词或自我修正。',
-    '使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。',
-  '避免模板化句式或编号，拆成两三句短句更自然。',
-  '每轮发言长度可灵活波动：有时简短回应 1-2 句，有时展开 5-6 句或分段说明，让整体节奏更像真实讨论。',
-    '不要在输出里提到“信任度矩阵”“立场评分”等内部术语。',
-  ].join('\n- ');
+  const bodyLengthTarget = Math.floor(Math.random() * 4) + 2;
+  const includePersonalExample = Math.random() < 0.2;
+  const personalExampleLine = includePersonalExample
+    ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
+    : '';
+const naturalGuidelines = `日常表达提示：
+  - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
+  - 使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。
+  - 避免模板化句式或编号，拆成两三句短句更自然。
+  - 正文长度为 ${bodyLengthTarget} 句
+${personalExampleLine}
+  - 正文不要逐字复述记忆摘要里的句子，可换角度延伸那些信息。
+  - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
+    const outputFormatSample = `输出格式：
+[[STATE]]（长期基线与短期波动示例）[[/STATE]]
+[[THINK]]（即时推理示例）[[/THINK]]
+正文自然语言……（立场：+1）`;
 
   const skipInstruction =
     mode === 'random'
@@ -136,18 +133,15 @@ const thoughtGuidelines = `思考摘要机制：
     previousThoughtSection,
       `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
-- 不要以 JSON 或代码格式输出。
 - ${skipInstruction}
 - 如需提出后续行动建议或结论，请在末尾表达。
-    - ${ratingLine}
-    - ${coverageHint}
-      - ${ENFORCEMENT_WARNING}
-    - ${OUTPUT_ORDER_HINT}
-    - ${BLOCK_DEFINITION_HINT}
-    - ${OUTPUT_FORMAT_SAMPLE}
+  - ${ratingLine}
+  - ${coverageHint}
+  - ${ENFORCEMENT_WARNING}
 
-日常表达提示：
-  - ${naturalGuidelines}`,
+  ${naturalGuidelines}
+
+  ${outputFormatSample}`,
   ].filter(Boolean).join('\n\n');
 };
 
@@ -196,18 +190,18 @@ export const buildAgentUserPrompt = ({
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
       }`
     : '本轮尚无上一位发言者，你可以率先开场。';
-  const previousInnerStateHint =
-    previousInnerStates.length > 0
-      ? `上一轮内在状态（请仅作为潜台词吸收，不要逐条引用）：\n${previousInnerStates
-          .map((item) => `- ${item.agentName}: ${item.innerState}`)
-          .join('\n')}`
-      : '上一轮尚未形成可引用的内在状态，可结合人格设定与对话自我推断。';
+    const previousInnerStateHint =
+      previousInnerStates.length > 0
+        ? `历史内在状态（仅限你本人，按轮次排序）：\n${previousInnerStates
+            .map((item) => `- 第 ${item.round} 轮：${item.innerState}`)
+            .join('\n')}`
+        : '暂未记录到你的历史内在状态，可结合角色设定自我推断。';
     const previousThoughtHint =
       previousThoughtSummaries.length > 0
-        ? `上一轮思考摘要摘录（帮助你理解隐含思考与潜台词）：\n${previousThoughtSummaries
-          .map((item) => `- ${item.agentName}: ${item.thoughtSummary}`)
-          .join('\n')}`
-      : '上一轮暂无思考摘要可用。';
+        ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
+            .map((item) => `- 第 ${item.round} 轮：${item.thoughtSummary}`)
+            .join('\n')}`
+        : '暂未记录到思考摘要，可根据当前情境自行补全。';
 
   const modeHint =
     mode === 'sequential'
