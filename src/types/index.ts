@@ -70,7 +70,6 @@ export interface RunConfig {
   useGlobalModelConfig: boolean;
   globalModelConfig?: ModelConfig;
   trustMatrix: TrustMatrix;
-  memoryWindowSize: number;
   discussion: {
     stanceScaleSize: number;
     positiveViewpoint: string;
@@ -82,20 +81,6 @@ export interface RunConfig {
 }
 
 export type TrustMatrix = Record<string, Record<string, number>>;
-
-export interface MemorySummaryLine {
-  round: number;
-  text: string;
-}
-
-export interface MemoryPeerSummaryLine extends MemorySummaryLine {
-  agentName: string;
-}
-
-export interface AgentMemorySnapshot {
-  personal: MemorySummaryLine[];
-  peers: MemoryPeerSummaryLine[];
-}
 
 export interface Message {
   id: string;
@@ -117,7 +102,6 @@ export interface Message {
 export interface RunState {
   agents: AgentSpec[];
   config: RunConfig;
-  agentMemories: Record<string, AgentMemorySnapshot>;
   messages: Message[];
   summary: string;
   visibleWindow: Message[];

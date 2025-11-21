@@ -156,9 +156,8 @@ export function AgentListSection() {
           </button>
         </div>
       </header>
-        <div className="card__body column-gap">
-          <MemoryWindowConfigurator />
-          <GroupConfigurator />
+      <div className="card__body column-gap">
+        <GroupConfigurator />
         {agents.map((agent, index) => (
           <div key={agent.id} className="agent-card">
             <div className="agent-card__header">
@@ -228,28 +227,6 @@ export function AgentListSection() {
     </section>
   );
 }
-
-const MemoryWindowConfigurator = () => {
-  const memoryWindowSize = useAppStore((state) => state.runState.config.memoryWindowSize);
-  const setMemoryWindowSize = useAppStore((state) => state.setMemoryWindowSize);
-
-  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const numeric = Number(event.target.value);
-    if (Number.isNaN(numeric)) return;
-    setMemoryWindowSize(numeric);
-  };
-
-  return (
-    <div className="card-section">
-      <h3 className="card-section-title">发言摘要窗口</h3>
-      <label className="form-field">
-        <span>窗口长度（轮数）</span>
-        <input type="number" min={1} max={10} value={memoryWindowSize} onChange={handleChange} />
-        <p className="form-hint">决定摘要 LLM 参考最近多少轮发言，范围 1-10，推荐 3。</p>
-      </label>
-    </div>
-  );
-};
 
 const GroupConfigurator = () => {
   const stanceScaleSize = useAppStore((state) => state.runState.config.discussion.stanceScaleSize);

@@ -2,14 +2,13 @@ import { produce } from 'immer';
 import { nanoid } from 'nanoid';
 import { create } from 'zustand';
 import type {
-  AgentMemorySnapshot,
   AgentSpec,
   Message,
   ModelConfig,
   PersonaFree,
   RunConfig,
   RunState,
-  SessionResult,
+    SessionResult,
   Vendor,
   DialogueMode,
   RunStatus,
@@ -45,31 +44,6 @@ const createDefaultAgents = (): AgentSpec[] => [
   buildAgent(0),
   buildAgent(1),
 ];
-
-const createEmptyMemorySnapshot = (): AgentMemorySnapshot => ({
-  personal: [],
-  peers: [],
-});
-
-const createAgentMemories = (agents: AgentSpec[]): Record<string, AgentMemorySnapshot> =>
-  agents.reduce<Record<string, AgentMemorySnapshot>>((acc, agent) => {
-    acc[agent.id] = createEmptyMemorySnapshot();
-    return acc;
-  }, {});
-
-const reconcileAgentMemories = (
-  agents: AgentSpec[],
-  existing?: Record<string, AgentMemorySnapshot>,
-): Record<string, AgentMemorySnapshot> =>
-  agents.reduce<Record<string, AgentMemorySnapshot>>((acc, agent) => {
-    acc[agent.id] = existing?.[agent.id]
-      ? {
-          personal: [...existing[agent.id].personal],
-          peers: [...existing[agent.id].peers],
-        }
-      : createEmptyMemorySnapshot();
-    return acc;
-  }, {});
 
 const clampTrustValue = (value: number): number => {
   if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
@@ -146,7 +120,6 @@ const createDefaultRunConfig = (): RunConfig => ({
   maxRounds: 4,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
-  memoryWindowSize: 3,
   visualization: {
     enableStanceChart: true,
   },
@@ -165,7 +138,6 @@ const createEmptyRunState = (): RunState => {
   return {
     agents,
     config,
-    agentMemories: createAgentMemories(agents),
     messages: [],
     summary: '',
     visibleWindow: [],
@@ -246,8 +218,6 @@ export interface AppStore {
     lastRandomMatrix?: TrustMatrix;
   uniformTrustMatrix: () => void;
     configureAgentGroup: (distribution: Record<number, number>) => void;
-    setMemoryWindowSize: (value: number) => void;
-    setAgentMemorySnapshot: (agentId: string, snapshot: AgentMemorySnapshot) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
 }
@@ -275,10 +245,6 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.agents,
             state.runState.config.trustMatrix,
           );
-            state.runState.agentMemories = reconcileAgentMemories(
-              state.runState.agents,
-              state.runState.agentMemories,
-            );
         }),
       ),
       addAgent: (agent) =>
@@ -290,10 +256,6 @@ export const useAppStore = create<AppStore>((set) => ({
               state.runState.agents,
               state.runState.config.trustMatrix,
             );
-              state.runState.agentMemories = reconcileAgentMemories(
-                state.runState.agents,
-                state.runState.agentMemories,
-              );
           }),
         ),
   updateAgent: (agentId, updater) =>
@@ -316,10 +278,6 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.agents,
             state.runState.config.trustMatrix,
           );
-            state.runState.agentMemories = reconcileAgentMemories(
-              state.runState.agents,
-              state.runState.agentMemories,
-            );
         }),
       ),
   resetRunState: () =>
@@ -358,7 +316,6 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.summary = '';
         state.runState.status = createInitialStatus(state.runState.config.mode);
         state.runState.stopRequested = false;
-          state.runState.agentMemories = createAgentMemories(state.runState.agents);
       }),
     ),
   setSummary: (summary) =>
@@ -558,30 +515,9 @@ export const useAppStore = create<AppStore>((set) => ({
             state.runState.agents,
             state.runState.config.trustMatrix,
           );
-            state.runState.agentMemories = reconcileAgentMemories(
-              state.runState.agents,
-              state.runState.agentMemories,
-            );
-        }),
-        ),
-    setMemoryWindowSize: (value) =>
-      set(
-        produce((state: AppStore) => {
-          const numeric = Number.isFinite(value) ? Math.floor(value) : state.runState.config.memoryWindowSize;
-          const clamped = Math.max(1, Math.min(10, numeric));
-          state.runState.config.memoryWindowSize = clamped;
         }),
       ),
-    setAgentMemorySnapshot: (agentId, snapshot) =>
-      set(
-        produce((state: AppStore) => {
-          state.runState.agentMemories[agentId] = {
-            personal: [...snapshot.personal],
-            peers: [...snapshot.peers],
-          };
-        }),
-      ),
-    setRunStatus: (updater) =>
+  setRunStatus: (updater) =>
     set(
       produce((state: AppStore) => {
         const current = state.runState.status;

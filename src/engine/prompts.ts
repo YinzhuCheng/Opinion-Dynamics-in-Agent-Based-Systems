@@ -1,12 +1,12 @@
 import { describePersona } from './persona';
-import type { AgentMemorySnapshot, AgentSpec, DialogueMode, Message } from '../types';
+import type { AgentSpec, DialogueMode, Message } from '../types';
 import {
   ensureNegativeViewpoint,
   ensurePositiveViewpoint,
 } from '../constants/discussion';
 
 const SYNTHESIS_HINT =
-  '思考时需同步感知：你当前的内在状态、系统分发的发言摘要（个人/他人）、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
+  '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
 const ENFORCEMENT_WARNING =
   '注意：若缺少 [[STATE]]、[[THINK]]、正文或结尾的“（立场：X）”，系统会判定本轮输出无效并强制跳过；请务必完整输出。';
 
@@ -22,7 +22,8 @@ interface AgentPromptOptions {
   negativeViewpoint: string;
   previousRoundMessages: Message[];
   lastSpeakerMessage?: Message;
-  memorySnapshot: AgentMemorySnapshot;
+  previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string; round: number }>;
+  previousInnerStates: Array<{ agentName: string; innerState: string; round: number }>;
   selfPreviousMessage?: Message;
 }
 
@@ -33,7 +34,8 @@ export const buildAgentSystemPrompt = ({
   stanceScaleSize,
   positiveViewpoint,
   negativeViewpoint,
-  memorySnapshot,
+  previousThoughtSummaries,
+  previousInnerStates,
 }: AgentPromptOptions): string => {
   const personaRaw = describePersona(agent.persona).trim();
   const personaBlock =
@@ -67,26 +69,26 @@ ${trustWeights
   - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
   - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，带争执语气以保持真实感。
   - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
-  const personalMemorySection =
-    memorySnapshot.personal.length > 0
-      ? `个人发言摘要（旧→新）：\n${memorySnapshot.personal
-          .map((item) => `- 第 ${item.round} 轮：${item.text}`)
-          .join('\n')}`
-      : '个人发言摘要：暂无记录（可能是首轮或上一轮跳过）。';
-  const peerMemorySection =
-    memorySnapshot.peers.length > 0
-      ? `他人发言摘要（旧→新）：\n${memorySnapshot.peers
-          .map((item) => `- 第 ${item.round} 轮｜${item.agentName}：${item.text}`)
-          .join('\n')}`
-      : '他人发言摘要：暂无记录，可关注接下来出现的新观点。';
+    const previousInnerStateSection =
+      previousInnerStates.length > 0
+        ? `历史内在状态（仅你本人可见，按轮次从旧到新）：\n${previousInnerStates
+            .map((item) => `- 第 ${item.round} 轮：${item.innerState}`)
+            .join('\n')}`
+        : '历史内在状态：暂无记录（可能是首轮或之前跳过），请结合角色画像自行推断。';
+    const previousThoughtSection =
+      previousThoughtSummaries.length > 0
+        ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
+            .map((item) => `- 第 ${item.round} 轮：${item.thoughtSummary}`)
+            .join('\n')}`
+        : '历史思考摘要：暂无记录，可根据角色设定与对话氛围自我推断。';
 const innerStateGuidelines = `内在状态机制（[[STATE]] 必须按下列顺序与格式书写）：
-  1. 【个人发言摘要】逐条写 3 句，格式统一为“轮次 X：内容”，其中 X 必须是该摘要对应的真实轮次（例如第 4 轮的摘要就写“轮次 4：…”），概括你最近几轮的核心观点或情绪；若不足 3 条，按实际条数输出。
-  2. 【他人发言摘要】逐条写 3 句，格式为“轮次 X：<Agent 名> - 触发点”，覆盖最近几轮至少两名 Agent 的关键刺激；若素材不足，按实际条数输出，并与个人发言摘要区分开来。
-  3. 【长期状态】使用单独一段写 2~3 句（每句紧随该标签），描述人格画像、MBTI、大五人格、价值观、沟通风格、初始观点/立场以及累积经验，明确“我本来是谁、始终坚持什么”。
+  1. 【个人记忆摘要】逐条写 3 句，格式统一为“轮次 X：内容”，其中 X 必须是该记忆对应的真实轮次（例如第 4 轮的记忆就写“轮次 4：…”），概括你最近几轮的核心观点或情绪；若记忆不足，按实际条数输出。
+  2. 【他人记忆摘要】逐条写 3 句，格式为“轮次 X：<Agent 名> - 触发点”，覆盖最近几轮至少两名 Agent 的关键刺激；若素材不足，按实际条数输出，且务必与个人记忆区分开来。
+  3. 【长期状态】使用单独一段写 2~3 句（每句都以该标签开头或紧随其后），描述人格画像、MBTI、大五人格、价值观、沟通风格、初始观点/立场以及累积记忆，明确“我本来是谁、始终坚持什么”。
   4. 【短期波动】使用单独一段写 2~3 句，描述此刻的情绪、生理状态、安全感、当前目标、对他人可靠性的判断，并指出最新刺激如何让这些因素发生微调。
-  - 发言摘要必须采用滑动窗口：一旦某区块新增条目达到 3 条，就把最久远的轮次移除，只保留最新条目。
-  - 引用时要结合你的上一轮 [[STATE]]、[[THINK]]，以及系统分发的发言摘要，清楚说明哪些因素保持稳定、哪些被更新。
-  - 发言摘要里的句子不可在正文里逐字复述，可换角度延伸。`;
+  - 记忆摘要必须采用滑动窗口：一旦某段记忆新加入并使该区块达到 3 条，就把最久远的轮次移除，只保留最新条目。
+  - 引用时要结合你的上一轮 [[STATE]]、[[THINK]]，以及上一轮各 Agent 的公开发言与信任度偏好，清楚说明哪些因素保持稳定、哪些被更新。
+  - 记忆摘要里的句子不可在正文里逐字复述，可换角度延伸。`;
     const thoughtGuidelines = `思考摘要机制：
   - [[THINK]] 描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织正文或反驳。
   - 至少 2~3 句，明确点名某个内在状态因素（如信任度或情绪）如何影响推理；保持第一人称，不要复述正文。`;
@@ -101,7 +103,7 @@ const naturalGuidelines = `日常表达提示：
   - 避免模板化句式或编号，拆成两三句短句更自然。
   - 正文长度为 ${bodyLengthTarget} 句
 ${personalExampleLine}
-  - 正文不要逐字复述发言摘要里的句子，可换角度延伸那些信息。
+  - 正文不要逐字复述记忆摘要里的句子，可换角度延伸那些信息。
   - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
     const outputFormatSample = `输出格式：
 [[STATE]]（长期基线与短期波动示例）[[/STATE]]
@@ -127,8 +129,8 @@ ${personalExampleLine}
     innerStateGuidelines,
     thoughtGuidelines,
     SYNTHESIS_HINT,
-    personalMemorySection,
-    peerMemorySection,
+    previousInnerStateSection,
+    previousThoughtSection,
       `输出要求：
 - 使用简洁段落阐述论点，可包含条列说明。
 - ${skipInstruction}
@@ -154,7 +156,8 @@ export const buildAgentUserPrompt = ({
   negativeViewpoint: _negativeViewpoint,
   previousRoundMessages,
   lastSpeakerMessage,
-  memorySnapshot,
+  previousThoughtSummaries,
+  previousInnerStates,
   selfPreviousMessage,
 }: AgentPromptOptions): string => {
   const previousRoundTranscript = previousRoundMessages.length
@@ -187,18 +190,18 @@ export const buildAgentUserPrompt = ({
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
       }`
     : '本轮尚无上一位发言者，你可以率先开场。';
-  const personalMemoryHint =
-    memorySnapshot.personal.length > 0
-      ? `个人发言摘要：\n${memorySnapshot.personal
-          .map((item) => `- 第 ${item.round} 轮：${item.text}`)
-          .join('\n')}`
-      : '个人发言摘要：暂无记录（可能是首轮）。';
-  const peerMemoryHint =
-    memorySnapshot.peers.length > 0
-      ? `他人发言摘要：\n${memorySnapshot.peers
-          .map((item) => `- 第 ${item.round} 轮｜${item.agentName}：${item.text}`)
-          .join('\n')}`
-      : '他人发言摘要：暂无记录，可关注后续发言。';
+    const previousInnerStateHint =
+      previousInnerStates.length > 0
+        ? `历史内在状态（仅限你本人，按轮次排序）：\n${previousInnerStates
+            .map((item) => `- 第 ${item.round} 轮：${item.innerState}`)
+            .join('\n')}`
+        : '暂未记录到你的历史内在状态，可结合角色设定自我推断。';
+    const previousThoughtHint =
+      previousThoughtSummaries.length > 0
+        ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
+            .map((item) => `- 第 ${item.round} 轮：${item.thoughtSummary}`)
+            .join('\n')}`
+        : '暂未记录到思考摘要，可根据当前情境自行补全。';
 
   const modeHint =
     mode === 'sequential'
@@ -227,8 +230,8 @@ export const buildAgentUserPrompt = ({
     `上一轮对话（主要用于影响内在状态与思考，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
     previousRoundStanceSummary,
     `上一位发言者（影响内在状态/思考与发言内容，但也不必每次都引用上一位的内容，允许开启新话题）：\n${lastSpeakerLine}`,
-      personalMemoryHint,
-      peerMemoryHint,
+    previousInnerStateHint,
+    previousThoughtHint,
   ];
   return dynamicContext.join('\n\n');
 };
