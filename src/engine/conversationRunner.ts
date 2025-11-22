@@ -433,6 +433,8 @@ class ConversationRunner {
         this.updateVisibleWindow(visibleWindow);
         const trustWeights = this.buildTrustContext(agent.id);
         const discussion = this.appStore.getState().runState.config.discussion;
+        const contentLengthTarget = Math.floor(Math.random() * 3) + 1;
+        const forcePersonalExample = Math.random() < 0.2;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
           const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
@@ -451,6 +453,8 @@ class ConversationRunner {
               previousRoundMessages,
             previousThoughtSummaries,
             previousInnerStates,
+          contentLengthTarget,
+          forcePersonalExample,
       });
           const userPrompt = buildAgentUserPrompt({
           agent,
@@ -467,6 +471,8 @@ class ConversationRunner {
             previousThoughtSummaries,
             previousInnerStates,
           selfPreviousMessage,
+          contentLengthTarget,
+          forcePersonalExample,
         });
 
     const messages: ChatMessage[] = [
