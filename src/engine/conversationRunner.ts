@@ -34,6 +34,8 @@ type ParsedAgentJsonData = {
   innerState: string;
   stance: { score: number; note?: string };
   normalizedRaw?: string;
+  personalMemory: string[];
+  othersMemory: string[];
 };
 
 type ParseAgentJsonResult = {
@@ -480,6 +482,8 @@ class ConversationRunner {
     let thoughtSummary: string | undefined;
     let innerState: string | undefined;
     let stance: { score: number; note?: string } | undefined;
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
     let rawResponse: string | undefined;
     let lastRawOutput: string | undefined;
     let failureDetails:
@@ -572,6 +576,8 @@ class ConversationRunner {
         thoughtSummary = parsed.thoughtSummary;
         innerState = parsed.innerState;
         stance = parsed.stance;
+          personalMemory = parsed.personalMemory;
+          othersMemory = parsed.othersMemory;
         rawResponse = parsed.normalizedRaw ?? rawResponse;
       } else {
         const category = formatCorrectionAttempted
@@ -626,6 +632,8 @@ class ConversationRunner {
       userPrompt,
       thoughtSummary,
       innerState,
+      personalMemory,
+      othersMemory,
     };
     if (stance) {
       message.stance = stance;
@@ -779,11 +787,12 @@ class ConversationRunner {
                 message.innerState.trim().length > 0,
             )
             .sort((a, b) => a.round - b.round)
-            .map((message) => ({
-              agentName: agentNames[message.agentId] ?? message.agentId,
-              innerState: (message.innerState ?? '').trim(),
-              round: message.round,
-            }));
+      .map((message) => ({
+        agentName: agentNames[message.agentId] ?? message.agentId,
+        innerState: this.removeOthersMemorySection(message.innerState),
+        round: message.round,
+      }))
+      .filter((entry) => entry.innerState.length > 0);
         }
 
   private parseAgentJsonOutput(
@@ -812,15 +821,20 @@ class ConversationRunner {
     if (!state || typeof state !== 'object') {
       return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
     }
-    const stateSections: Array<{ key: string; label: string }> = [
+    const stateSections: Array<{
+      key: 'personal_memory' | 'others_memory' | 'long_term' | 'short_term';
+      label: string;
+    }> = [
       { key: 'personal_memory', label: '个人记忆摘要' },
       { key: 'others_memory', label: '他人记忆摘要' },
       { key: 'long_term', label: '长期状态' },
       { key: 'short_term', label: '短期波动' },
     ];
     const stateSegments: string[] = [];
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
     for (const section of stateSections) {
-      const values = this.normalizeStringArray(state[section.key]);
+      const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
       if (!values || values.length === 0) {
         return {
           success: false,
@@ -828,11 +842,24 @@ class ConversationRunner {
           category: 'extraction_missing',
         };
       }
-      stateSegments.push(this.formatStateSection(section.label, values.slice(-3)));
+      const trimmed = values.slice(-3);
+      stateSegments.push(this.formatStateSection(section.label, trimmed));
+      if (section.key === 'personal_memory') {
+        personalMemory = trimmed;
+      } else if (section.key === 'others_memory') {
+        othersMemory = trimmed;
+      }
     }
     const innerState = stateSegments.join('\n').trim();
     if (!innerState) {
       return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
+    }
+    if (!personalMemory || !othersMemory) {
+      return {
+        success: false,
+        reason: 'state.personal_memory / others_memory 解析失败',
+        category: 'extraction_missing',
+      };
     }
 
     const thinkValues = this.normalizeStringArray(parsed.think);
@@ -897,6 +924,8 @@ class ConversationRunner {
           note,
         },
         normalizedRaw: cleaned,
+          personalMemory,
+          othersMemory,
       },
     };
   }
@@ -918,6 +947,15 @@ class ConversationRunner {
   private formatStateSection(label: string, values: string[]): string {
     const lines = values.map((item) => `- ${item}`).join('\n');
     return `【${label}】\n${lines}`;
+  }
+
+  private removeOthersMemorySection(innerState?: string): string {
+    if (!innerState) return '';
+    const sanitized = innerState
+      .replace(/【他人记忆摘要】[\s\S]*?(?=【[^】]+】|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return sanitized;
   }
 
   private stripCodeFences(text: string): string {

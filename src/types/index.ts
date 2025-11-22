@@ -97,6 +97,8 @@ export interface Message {
   stance?: { score: number; note?: string };
   thoughtSummary?: string;
   innerState?: string;
+  personalMemory?: string[];
+  othersMemory?: string[];
 }
 
 export type FailureCategory =
