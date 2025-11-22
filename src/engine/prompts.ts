@@ -94,11 +94,12 @@ ${trustWeights
             .join('\n')}`
         : '历史思考摘要：暂无记录，可根据角色设定与对话氛围自我推断。';
 const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
-  1. state.personal_memory：数组，1~3 句，用第一人称记录你此刻最想保留的记忆（信念、情绪、承诺等）；不要写“第几轮”或编号，这些句子将在下一次出场时原样回放给你。
+  1. state.personal_memory：数组，1~3 句，用第一人称记录你此刻最想保留的记忆（信念、情绪、承诺等）；不要写“第几轮”或编号，这些句子将在下一次出场时原样回放给你，并且只能基于你刚刚公开发言（content）中的真实要点或潜台词。
   2. state.others_memory：数组，1~3 句，以“<Agent 名> - 触发点”的格式记录他人对你的刺激；该部分仅供系统建模，下一轮不会回放给任何人，因此内容要高度凝练。
   3. state.long_term：数组，使用 2~3 句描述人格画像、MBTI、大五人格、价值观、沟通风格、初始立场和累积记忆，明确“我本来是谁、始终坚持什么”。
   4. state.short_term：数组，使用 2~3 句描述此刻的情绪、生理状态、安全感、即时目标、对他人可靠性的判断，并指出最新刺激如何造成微调。
   - 四个数组都采用滑动窗口：多于 3 句时立刻移除最旧句子，只保留最新条目。
+  - 记忆摘要必须与公开发言相互印证：personal_memory 只记录你刚刚说过的关键内容或立即可推导的潜台词；others_memory 只记录他人真实说出的刺激。若本轮发言只有 1~2 句，可少于 3 条，禁止凭空补齐。
   - 引用时结合上一轮保存的 state / think 以及上一轮各 Agent 的公开发言与信任度偏好，明确哪些因素维持稳定、哪些发生更新。
   - state 的句子不可在 content 中逐字复述，可换角度延伸。`;
 const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
@@ -113,9 +114,10 @@ const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
     - content 是唯一对外公开的语言输出，请结合 state 与 think 的线索，按照下方“日常表达提示”给出的句数自然表达，回应当前局面或提出新观点。
     - 数组内只能放自然语言句子，不得嵌入额外 JSON、标签或系统提示；句子之间可通过语气词、顿号等保持口语感。
     - 优先引用上一位发言者、信任度矩阵偏好或长期记忆中的张力，解释你为何做出该轮发言。`;
-    const stanceGuidelines = `情感标签机制（JSON 字段 stance）：
+const stanceGuidelines = `情感标签机制（JSON 字段 stance）：
     - stance 必须是对象，包含 score（整数）与可选 label（你可以用自己的措辞描述此刻的情感或立场备注）。
     - score 的合法范围、含义与极性要求见下方输出要求；若需要解释理由，请写回 content，而不是在 stance 对象里扩展字段。
+  - 如果配置中未给出初始立场，你需要结合人格画像、价值观与初始观点自行推导出最符合角色的起始刻度；一旦配置提供了初始立场或初始观点，必须优先遵守该设定，仅在后续 state / think 表明出现动摇时再调整并说明原因。
     - 若上一轮的 state / think 已显露动摇，本轮的 stance.score 应给出相应调整，以便系统追踪波动。`;
   const naturalGuidelines = `日常表达提示（适用于 content 数组）：
     - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
@@ -238,13 +240,13 @@ export const buildAgentUserPrompt = ({
   const scaleValues = buildScaleValues(stanceScaleSize);
   const initialOpinionHint = agent.initialOpinion
     ? `该角色的初始观点：${agent.initialOpinion}`
-    : '若你尚未明确观点，请结合角色立场在本轮给出你的判断与理由。';
+    : '初始观点未预设，请结合人格画像与价值观推导一个最符合角色的判断，并在发言中给出理由。';
   const selfLastStance = selfPreviousMessage?.stance;
   const stanceHint =
     round === 1
-      ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
-        ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），首轮尽量按照此刻度发言。`
-        : `首轮尚未设定明确立场，可在 ${scaleValues.join(' / ')} 中任选其一作为初始表态。`
+        ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
+          ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），首轮必须以此为起点，除非后续理由充分。`
+          : `首轮尚未设定明确立场，请结合人格画像与初始观点推导出最合理的刻度（参考 ${scaleValues.join(' / ')}），并说明依据。`
         : selfLastStance
           ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
           : '上一轮你未给出立场刻度，可回顾当时的内在状态与思考摘要，自行决定是维持、收敛还是反转。';
