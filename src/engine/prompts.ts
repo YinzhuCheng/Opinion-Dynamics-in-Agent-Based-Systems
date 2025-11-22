@@ -105,7 +105,7 @@ const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
 const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
   - think 是字符串数组，至少 2~3 句，描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织发言内容或反驳。
   - 每句都要点名某个内在状态因素（例如信任度、情绪、记忆条目）如何影响推理；保持第一人称，不要与 content 重复。`;
-    const bodyLengthTarget = Math.floor(Math.random() * 4) + 2;
+    const bodyLengthTarget = Math.floor(Math.random() * 3) + 1;
     const includePersonalExample = Math.random() < 0.2;
     const personalExampleLine = includePersonalExample
       ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
