@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ChangeEvent } from 'react';
-import type { DialogueMode, ModelConfig, Vendor } from '../../types';
+import type { DialogueMode, ModelConfig, Vendor, PromptToggleKey } from '../../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
 import { chatStream } from '../../utils/llmAdapter';
 
@@ -30,6 +31,33 @@ const vendorPlaceholders: Record<Vendor, { baseUrl: string; model: string }> = {
   },
 };
 
+const promptToggleOptions: Array<{
+  key: PromptToggleKey;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: 'persona',
+    label: '人格画像',
+    description: '向模型提供角色描述与大五/MBTI 摘要，让语气与价值观保持一致。',
+  },
+  {
+    key: 'trustMatrix',
+    label: '信任度矩阵',
+    description: '展示 DeGroot 权重与协作策略，指导各 Agent 如何参考彼此发言。',
+  },
+  {
+    key: 'randomLength',
+    label: '随机发言长度机制',
+    description: '为每次出场随机指定 1~3 句并偶尔要求插入个人/身边实例，模拟口语节奏。',
+  },
+  {
+    key: 'memory',
+    label: '记忆机制',
+    description: '包含个人/他人发言记忆的摘要及私密回放提示，强化多轮连续性。',
+  },
+];
+
 type TestState = {
   status: 'idle' | 'loading' | 'success' | 'error';
   message?: string;
@@ -54,6 +82,8 @@ export function RunSettingsSection() {
   const setStanceScaleSize = useAppStore((state) => state.setStanceScaleSize);
   const setPositiveViewpoint = useAppStore((state) => state.setPositiveViewpoint);
   const setNegativeViewpoint = useAppStore((state) => state.setNegativeViewpoint);
+  const setPromptToggle = useAppStore((state) => state.setPromptToggle);
+  const promptToggles = runConfig.promptToggles ?? DEFAULT_PROMPT_TOGGLES;
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -173,7 +203,7 @@ export function RunSettingsSection() {
         );
         setTestState({
           status: 'success',
-          message: result || '（请求成功但未返回正文）',
+          message: result || '（请求成功但未返回发言内容）',
         });
       } catch (error: any) {
         setTestState({
@@ -300,6 +330,34 @@ export function RunSettingsSection() {
                       </p>
                     </label>
                   </div>
+              </div>
+
+              <div className="card-section">
+                <h3 className="card-section-title">提示词构成（可做消融实验）</h3>
+                <p className="form-hint">
+                  取消勾选后，对应的提示片段将不会发送给模型，便于观察缺省某些机制时的行为差异。
+                </p>
+                <div className="grid two-columns">
+                  {promptToggleOptions.map((option) => (
+                    <label key={option.key} className="checkbox-field">
+                      <div className="checkbox-description">
+                        <input
+                          type="checkbox"
+                          checked={
+                            option.key in promptToggles
+                              ? promptToggles[option.key]
+                              : DEFAULT_PROMPT_TOGGLES[option.key]
+                          }
+                          onChange={(event) => setPromptToggle(option.key, event.target.checked)}
+                        />
+                        <div>
+                          <strong>{option.label}</strong>
+                          <p className="form-hint">{option.description}</p>
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
 
           {runConfig.useGlobalModelConfig && (

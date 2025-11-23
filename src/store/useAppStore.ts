@@ -13,7 +13,10 @@ import type {
   DialogueMode,
   RunStatus,
   TrustMatrix,
+  FailureRecord,
+  PromptToggleKey,
 } from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import {
   DEFAULT_NEGATIVE_VIEWPOINT,
   DEFAULT_POSITIVE_VIEWPOINT,
@@ -52,16 +55,9 @@ const clampTrustValue = (value: number): number => {
   return Math.min(1, Math.max(0, value));
 };
 
-const defaultTrustFallback = (rowId: string, colId: string, agentCount: number): number => {
-  if (agentCount <= 1) {
-    return 1;
-  }
-  if (rowId === colId) {
-    return 0.6;
-  }
-  const remainder = 0.4;
-  const others = Math.max(1, agentCount - 1);
-  return Number((remainder / others).toFixed(2));
+const defaultTrustFallback = (_rowId: string, _colId: string, agentCount: number): number => {
+  const normalizedCount = Math.max(1, agentCount);
+  return Number((1 / normalizedCount).toFixed(3));
 };
 
 const ensureTrustMatrix = (agents: AgentSpec[], matrix?: TrustMatrix): TrustMatrix => {
@@ -117,7 +113,7 @@ const sanitizeStanceScaleSize = (value: number | undefined): number => {
 
 const createDefaultRunConfig = (): RunConfig => ({
   mode: 'sequential',
-  maxRounds: 4,
+  maxRounds: 5,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
   visualization: {
@@ -125,10 +121,11 @@ const createDefaultRunConfig = (): RunConfig => ({
   },
   trustMatrix: {},
   discussion: {
-    stanceScaleSize: 3,
+    stanceScaleSize: 7,
     positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
     negativeViewpoint: DEFAULT_NEGATIVE_VIEWPOINT,
   },
+  promptToggles: { ...DEFAULT_PROMPT_TOGGLES },
 });
 
 const createEmptyRunState = (): RunState => {
@@ -139,6 +136,7 @@ const createEmptyRunState = (): RunState => {
     agents,
     config,
     messages: [],
+    failureRecords: [],
     summary: '',
     visibleWindow: [],
     status: createInitialStatus(config.mode),
@@ -187,13 +185,14 @@ export interface AppStore {
   currentPage: 'configuration' | 'dialogue' | 'results';
   vendorDefaults: VendorDefaults;
   setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
-  updateRunConfig: (updater: Partial<RunConfig> | ((config: RunConfig) => RunConfig)) => void;
+    updateRunConfig: (updater: Partial<RunConfig> | ((config: RunConfig) => RunConfig)) => void;
   setAgents: (agents: AgentSpec[]) => void;
   addAgent: (agent?: Partial<AgentSpec>) => void;
   updateAgent: (agentId: string, updater: Partial<AgentSpec>) => void;
   removeAgent: (agentId: string) => void;
   resetRunState: () => void;
   appendMessage: (message: Message) => void;
+  appendFailureRecord: (record: FailureRecord) => void;
   updateMessage: (messageId: string, updater: (message: Message) => void) => void;
   resetMessages: () => void;
   setSummary: (summary: string) => void;
@@ -213,7 +212,8 @@ export interface AppStore {
   normalizeTrustRow: (sourceId: string) => void;
   setStanceScaleSize: (size: number) => void;
   setPositiveViewpoint: (text: string) => void;
-  setNegativeViewpoint: (text: string) => void;
+    setNegativeViewpoint: (text: string) => void;
+    setPromptToggle: (key: PromptToggleKey, value: boolean) => void;
     randomizeTrustMatrix: () => void;
     lastRandomMatrix?: TrustMatrix;
   uniformTrustMatrix: () => void;
@@ -234,6 +234,10 @@ export const useAppStore = create<AppStore>((set) => ({
         const config = state.runState.config;
         state.runState.config =
           typeof updater === 'function' ? updater(config) : { ...config, ...updater };
+          const toggles = state.runState.config.promptToggles;
+          state.runState.config.promptToggles = toggles
+            ? { ...DEFAULT_PROMPT_TOGGLES, ...toggles }
+            : { ...DEFAULT_PROMPT_TOGGLES };
         state.runState.status.mode = state.runState.config.mode;
       }),
     ),
@@ -295,6 +299,12 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.visibleWindow.push(message);
       }),
     ),
+    appendFailureRecord: (record) =>
+      set(
+        produce((state: AppStore) => {
+          state.runState.failureRecords.push(record);
+        }),
+      ),
   updateMessage: (messageId, updater) =>
     set(
       produce((state: AppStore) => {
@@ -312,6 +322,7 @@ export const useAppStore = create<AppStore>((set) => ({
     set(
       produce((state: AppStore) => {
         state.runState.messages = [];
+          state.runState.failureRecords = [];
         state.runState.visibleWindow = [];
         state.runState.summary = '';
         state.runState.status = createInitialStatus(state.runState.config.mode);
@@ -445,6 +456,17 @@ export const useAppStore = create<AppStore>((set) => ({
       set(
         produce((state: AppStore) => {
           state.runState.config.discussion.negativeViewpoint = text;
+        }),
+      ),
+    setPromptToggle: (key, value) =>
+      set(
+        produce((state: AppStore) => {
+          const current =
+            state.runState.config.promptToggles ?? { ...DEFAULT_PROMPT_TOGGLES };
+          state.runState.config.promptToggles = {
+            ...current,
+            [key]: value,
+          };
         }),
       ),
         randomizeTrustMatrix: () =>

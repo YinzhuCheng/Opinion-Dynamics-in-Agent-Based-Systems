@@ -63,6 +63,22 @@ export interface AgentSpec {
 
 export type DialogueMode = 'random' | 'sequential';
 
+export interface PromptToggleConfig {
+  persona: boolean;
+  trustMatrix: boolean;
+  randomLength: boolean;
+  memory: boolean;
+}
+
+export type PromptToggleKey = keyof PromptToggleConfig;
+
+export const DEFAULT_PROMPT_TOGGLES: PromptToggleConfig = {
+  persona: true,
+  trustMatrix: true,
+  randomLength: true,
+  memory: true,
+};
+
 export interface RunConfig {
   mode: DialogueMode;
   maxRounds?: number;
@@ -78,6 +94,7 @@ export interface RunConfig {
   visualization: {
     enableStanceChart: boolean;
   };
+    promptToggles: PromptToggleConfig;
 }
 
 export type TrustMatrix = Record<string, Record<string, number>>;
@@ -88,6 +105,7 @@ export interface Message {
   agentName?: string;
   role: 'assistant';
   content: string;
+  rawContent?: string;
   ts: number;
   round: number;
   turn: number;
@@ -96,12 +114,37 @@ export interface Message {
   stance?: { score: number; note?: string };
   thoughtSummary?: string;
   innerState?: string;
+  personalMemory?: string[];
+  othersMemory?: string[];
+}
+
+export type FailureCategory =
+  | 'response_empty'
+  | 'extraction_missing'
+  | 'format_correction_failed'
+  | 'request_error'
+  | 'unknown';
+
+export interface FailureRecord {
+  id: string;
+  agentId: string;
+  agentName?: string;
+  round: number;
+  turn: number;
+  category: FailureCategory;
+  reason: string;
+  timestamp: number;
+  systemPrompt?: string;
+  userPrompt?: string;
+  rawOutput?: string;
+  errorMessage?: string;
 }
 
 export interface RunState {
   agents: AgentSpec[];
   config: RunConfig;
   messages: Message[];
+  failureRecords: FailureRecord[];
   summary: string;
   visibleWindow: Message[];
   status: RunStatus;
@@ -115,6 +158,7 @@ export interface SessionResult {
   summary: string;
   configSnapshot: RunConfig;
   status: RunStatus;
+  failures: FailureRecord[];
 }
 
 export interface RunStatus {

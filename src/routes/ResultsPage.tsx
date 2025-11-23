@@ -2,8 +2,9 @@ import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
+import * as echarts from 'echarts';
 import { useAppStore } from '../store/useAppStore';
-import type { Message, SessionResult, RunConfig } from '../types';
+import type { Message, SessionResult, RunConfig, FailureRecord } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import {
   ensureNegativeViewpoint,
@@ -34,6 +35,7 @@ export function ResultsPage() {
       summary: runState.summary,
       configSnapshot: runState.config,
       status: runState.status,
+        failures: runState.failureRecords,
     };
   }, [result, runState]);
   const displayResult = result ?? liveResult;
@@ -74,27 +76,88 @@ export function ResultsPage() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportChart = (type: 'png' | 'svg') => {
-    if (!stanceChartOption) {
-      window.alert('暂无可导出的立场曲线。');
-      return;
-    }
-    const instance = chartRef.current?.getEchartsInstance();
-    if (!instance) {
-      window.alert('图表尚未渲染完成，请稍后再试。');
-      return;
-    }
-    const dataUrl = instance.getDataURL({
-      type,
-      pixelRatio: type === 'png' ? 2 : 1,
-      backgroundColor: '#fff',
-    });
-    const link = document.createElement('a');
-    link.href = dataUrl;
-    const finishedAt = displayResult?.finishedAt ?? Date.now();
-    link.download = `stance-chart-${new Date(finishedAt).toISOString().replace(/[:.]/g, '-')}.${type}`;
-    link.click();
-  };
+    const handleDownloadFailureLog = () => {
+      if (!displayResult) {
+        window.alert('暂无可导出的对话。');
+        return;
+      }
+      const failures = displayResult.failures ?? [];
+      if (failures.length === 0) {
+        window.alert('暂无失败记录。');
+        return;
+      }
+      const text = buildFailureLogText(failures);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      link.download = `failure-log-${new Date(finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+      link.click();
+      URL.revokeObjectURL(url);
+    };
+
+    const handleExportChart = async (chartType: 'individual' | 'group', fileType: 'png' | 'svg') => {
+      const option = chartType === 'individual' ? individualChartOption : groupChartOption;
+      if (!option) {
+        window.alert(
+          chartType === 'individual' ? '暂无个体观点曲线可导出。' : '暂无总体观点曲线可导出。',
+        );
+        return;
+      }
+
+      const getDataUrlFromCurrent = () => {
+        const instance = chartRef.current?.getEchartsInstance();
+        if (!instance) {
+          window.alert('图表尚未渲染完成，请稍后再试。');
+          return null;
+        }
+        return instance.getDataURL({
+          type: fileType,
+          pixelRatio: fileType === 'png' ? 2 : 1,
+          backgroundColor: '#fff',
+        });
+      };
+
+      const getDataUrlFromTemporaryChart = () => {
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-9999px';
+        container.style.top = '-9999px';
+        container.style.width = '800px';
+        container.style.height = '360px';
+        container.style.opacity = '0';
+        document.body.appendChild(container);
+        const renderer = fileType === 'svg' ? 'svg' : 'canvas';
+        const instance = echarts.init(container, undefined, { renderer });
+        instance.setOption(option, true);
+        const dataUrl = instance.getDataURL({
+          type: fileType,
+          pixelRatio: fileType === 'png' ? 2 : 1,
+          backgroundColor: '#fff',
+        });
+        instance.dispose();
+        container.remove();
+        return dataUrl;
+      };
+
+      const dataUrl =
+        chartType === chartTab ? getDataUrlFromCurrent() : getDataUrlFromTemporaryChart();
+
+      if (!dataUrl) {
+        return;
+      }
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      const suffix =
+        chartType === 'individual' ? 'individual' : 'group';
+      link.download = `stance-chart-${suffix}-${new Date(finishedAt)
+        .toISOString()
+        .replace(/[:.]/g, '-')}.${fileType}`;
+      link.click();
+    };
 
   const isFinalized = Boolean(result);
   const summaryLine = displayResult
@@ -121,7 +184,6 @@ export function ResultsPage() {
           {displayResult ? (
             <div className="results-summary">
               <p>{summaryLine}</p>
-              <p>摘要：{displayResult.summary || '尚未生成摘要。'}</p>
               <p>立场基准：正方 = {positiveViewpointLabel} ｜ 反方 = {negativeViewpointLabel}</p>
               <p>模式：{translateMode(displayResult.configSnapshot.mode)} ｜ 模型配置：{describeModelConfig(displayResult.configSnapshot)}</p>
               <div className="results-actions">
@@ -131,19 +193,41 @@ export function ResultsPage() {
                 <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                   下载完整版（含提示词）
                 </button>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => stanceChartOption && handleExportChart('png')}
-                  disabled={!stanceChartOption}
-                  title={
-                    stanceChartOption
-                      ? '导出当前的观点演化曲线（PNG）'
-                      : '暂无足够的立场数据可绘制曲线'
-                  }
-                >
-                  导出观点演化图（PNG）
-                </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={handleDownloadFailureLog}
+                    disabled={(displayResult?.failures?.length ?? 0) === 0}
+                    title="导出失败记录（包含提示词与原始回复）"
+                  >
+                    下载失败记录 .txt
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => handleExportChart('individual', 'png')}
+                    disabled={!individualChartOption}
+                    title={
+                      individualChartOption
+                        ? '导出个体观点演化曲线（PNG）'
+                        : '暂无足够的个体曲线数据'
+                    }
+                  >
+                    导出个体观点演化图（PNG）
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => handleExportChart('group', 'png')}
+                    disabled={!groupChartOption}
+                    title={
+                      groupChartOption
+                        ? '导出总体观点演化曲线（PNG）'
+                        : '暂无足够的总体曲线数据'
+                    }
+                  >
+                    导出总体观点演化图（PNG）
+                  </button>
               </div>
             </div>
           ) : (
@@ -427,44 +511,21 @@ const buildTranscriptText = (
     const timestamp = new Date(message.ts).toLocaleTimeString();
     lines.push(`#${idx + 1} ${agentName} @ ${timestamp}${message.content === '__SKIP__' ? '（跳过）' : ''}`);
     if (message.content !== '__SKIP__') {
-      if (mode === 'full') {
-        lines.push('  --- Prompts ---');
-        if (message.systemPrompt) {
-          lines.push('    [System Prompt]');
-          lines.push(`    ${message.systemPrompt.replace(/\n/g, '\n    ')}`);
+        if (mode === 'full') {
+          lines.push('[System Prompt]');
+          lines.push(message.systemPrompt ?? '（无）');
+          lines.push('[User Prompt]');
+          lines.push(message.userPrompt ?? '（无）');
+          lines.push('[LLM Raw Output]');
+          lines.push(message.rawContent ?? message.content);
+          if (message.stance) {
+            lines.push(
+              `[Stance] ${message.stance.score.toFixed(2)}${
+                message.stance.note ? `｜${message.stance.note}` : ''
+              }`,
+            );
+          }
         } else {
-          lines.push('    [System Prompt]（无）');
-        }
-        if (message.userPrompt) {
-          lines.push('    [User Prompt]');
-          lines.push(`    ${message.userPrompt.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [User Prompt]（无）');
-        }
-        lines.push('  --- LLM Response ---');
-        if (message.innerState) {
-          lines.push('    [Inner State]');
-          lines.push(`    ${message.innerState.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [Inner State]（未记录）');
-        }
-        if (message.thoughtSummary) {
-          lines.push('    [Thought Summary]');
-          lines.push(`    ${message.thoughtSummary.replace(/\n/g, '\n    ')}`);
-        } else {
-          lines.push('    [Thought Summary]（未记录）');
-        }
-        lines.push('    [Message]');
-        lines.push(`    ${message.content.replace(/\n/g, '\n    ')}`);
-        if (message.stance) {
-          lines.push(
-            `    [Stance] ${message.stance.score.toFixed(2)}${
-              message.stance.note ? `｜${message.stance.note}` : ''
-            }`,
-          );
-        }
-        lines.push('  --- End Of Turn ---');
-      } else {
         if (message.innerState) {
           lines.push(`  内在状态：${message.innerState.replace(/\n/g, '\n  ')}`);
         }
@@ -482,6 +543,52 @@ const buildTranscriptText = (
     lines.push('');
   });
   return lines.join('\n');
+};
+
+const buildFailureLogText = (failures: FailureRecord[]): string => {
+  const lines: string[] = [];
+  lines.push(`失败记录导出时间：${new Date().toLocaleString()}`);
+  lines.push(`失败总数：${failures.length}`);
+  lines.push('');
+  failures.forEach((failure, index) => {
+    lines.push(`=== 记录 #${index + 1} ===`);
+    lines.push(`Agent：${failure.agentName ?? failure.agentId}`);
+    lines.push(`轮次：第 ${failure.round} 轮 ｜ 顺位：第 ${failure.turn} 位`);
+    lines.push(`类别：${translateFailureCategory(failure.category)}`);
+    lines.push(`原因：${failure.reason}`);
+    lines.push(`时间：${new Date(failure.timestamp).toLocaleString()}`);
+    if (failure.errorMessage) {
+      lines.push(`错误详情：${failure.errorMessage}`);
+    }
+    lines.push('');
+    lines.push('[System Prompt]');
+    lines.push(failure.systemPrompt ?? '（无）');
+    lines.push('');
+    lines.push('[User Prompt]');
+    lines.push(failure.userPrompt ?? '（无）');
+    lines.push('');
+    lines.push('[LLM Raw Output]');
+    lines.push(failure.rawOutput ?? '（无原始输出）');
+    lines.push('');
+    lines.push('----------------------------------------');
+    lines.push('');
+  });
+  return lines.join('\n');
+};
+
+const translateFailureCategory = (category: FailureRecord['category']): string => {
+  switch (category) {
+    case 'response_empty':
+      return '输出为空或跳过';
+    case 'extraction_missing':
+      return '结构提取失败';
+    case 'format_correction_failed':
+      return '格式校正失败';
+    case 'request_error':
+      return '请求异常';
+    default:
+      return '未知异常';
+  }
 };
 
 const escapeHtml = (content: string) => content.replace(/[&<>"']/g, (char) => htmlEscapes[char]);

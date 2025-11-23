@@ -1,6 +1,19 @@
 import { nanoid } from 'nanoid';
-import { buildAgentSystemPrompt, buildAgentUserPrompt } from './prompts';
-import type { AgentSpec, Message, ModelConfig, RunConfig, RunStatus } from '../types';
+import {
+  buildAgentSystemPrompt,
+  buildAgentUserPrompt,
+  AGENT_OUTPUT_JSON_SCHEMA,
+} from './prompts';
+import type {
+  AgentSpec,
+  FailureRecord,
+  Message,
+  ModelConfig,
+  RunConfig,
+  RunStatus,
+  PromptToggleConfig,
+} from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -17,8 +30,27 @@ type ConversationProgress = {
   pendingAgentId?: string;
 };
 
+type ParsedAgentJsonData = {
+  content: string;
+  thoughtSummary: string;
+  innerState: string;
+  stance: { score: number; note?: string };
+  normalizedRaw?: string;
+  personalMemory: string[];
+  othersMemory: string[];
+};
+
+type ParseAgentJsonResult = {
+  success: boolean;
+  data?: ParsedAgentJsonData;
+  reason?: string;
+  category?: FailureRecord['category'];
+};
+
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
+const PRIVATE_MEMORY_WINDOW = 3;
+const MAX_AGENT_OUTPUT_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -403,11 +435,16 @@ class ConversationRunner {
         }
         this.updateVisibleWindow(visibleWindow);
         const trustWeights = this.buildTrustContext(agent.id);
-        const discussion = this.appStore.getState().runState.config.discussion;
+        const configSnapshot = this.appStore.getState().runState.config;
+        const discussion = configSnapshot.discussion;
+        const promptToggles = this.getPromptToggles();
+        const randomLengthEnabled = promptToggles.randomLength !== false;
+        const contentLengthTarget = randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
+        const forcePersonalExample = randomLengthEnabled ? Math.random() < 0.2 : false;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
-          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agentNames);
-          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agentNames);
+          const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
+          const previousInnerStates = this.collectPreviousInnerStates(round - 1, agent.id, agentNames);
 
           const systemPrompt = buildAgentSystemPrompt({
         agent,
@@ -422,6 +459,9 @@ class ConversationRunner {
               previousRoundMessages,
             previousThoughtSummaries,
             previousInnerStates,
+          promptToggles,
+          contentLengthTarget,
+          forcePersonalExample,
       });
           const userPrompt = buildAgentUserPrompt({
           agent,
@@ -438,6 +478,9 @@ class ConversationRunner {
             previousThoughtSummaries,
             previousInnerStates,
           selfPreviousMessage,
+          promptToggles,
+          contentLengthTarget,
+          forcePersonalExample,
         });
 
     const messages: ChatMessage[] = [
@@ -449,70 +492,162 @@ class ConversationRunner {
       maxTokens: modelConfig.max_output_tokens,
     };
 
-    const controller = new AbortController();
-    this.inflightControllers.add(controller);
-    let content = '';
-    try {
-      content =
-        (await chatStream(
-          messages,
-          modelConfig,
-          extra,
-          {
-            onStatus: (status) => {
-              if (status === 'waiting_response' || status === 'responding') {
-                this.setAwaiting('response');
-              } else if (status === 'thinking') {
-                this.setAwaiting('thinking');
-              } else if (status === 'done') {
-                this.setAwaiting(undefined);
-              }
+    let content = '__SKIP__';
+    let thoughtSummary: string | undefined;
+    let innerState: string | undefined;
+    let stance: { score: number; note?: string } | undefined;
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
+    let rawResponse: string | undefined;
+    let lastRawOutput: string | undefined;
+    let finalFailureDetails:
+      | { category: FailureRecord['category']; reasons: string[] }
+      | undefined;
+
+    let attempt = 0;
+    while (attempt < MAX_AGENT_OUTPUT_ATTEMPTS) {
+      attempt += 1;
+      let attemptFailureDetails:
+        | { category: FailureRecord['category']; reasons: string[] }
+        | undefined;
+      const controller = new AbortController();
+      this.inflightControllers.add(controller);
+      let rawContent = '';
+      try {
+        rawContent =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
             },
-          },
-          controller.signal,
-        )) || '';
-    } catch (error: any) {
-      if (this.isAbortError(error)) {
+            controller.signal,
+          )) || '';
+      } catch (error: any) {
+        if (this.isAbortError(error)) {
+          this.inflightControllers.delete(controller);
+          return undefined;
+        }
+        this.logFailure({
+          agent,
+          round,
+          turn,
+          category: 'request_error',
+          reason: error?.message ?? 'LLM 请求异常',
+          systemPrompt,
+          userPrompt,
+          rawOutput: lastRawOutput,
+          errorMessage: error ? String(error.stack ?? error) : undefined,
+        });
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
         this.inflightControllers.delete(controller);
-        return undefined;
       }
-      throw error;
-    } finally {
-      this.setAwaiting(undefined);
-      this.inflightControllers.delete(controller);
+
+      rawContent = rawContent.trim();
+      lastRawOutput = rawContent;
+
+      if (!rawContent || rawContent === '__SKIP__') {
+        attemptFailureDetails = {
+          category: 'response_empty',
+          reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
+        };
+        rawResponse = undefined;
+      } else {
+        rawResponse = rawContent;
+        let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
+        let formatCorrectionAttempted = false;
+        let formatCorrectionError: string | undefined;
+        if (!parseResult.success) {
+          const correctionResult = await this.applyFormatCorrection(
+            rawContent,
+            modelConfig,
+            discussion,
+          );
+          if (correctionResult) {
+            formatCorrectionAttempted = true;
+            if (correctionResult.output) {
+              const corrected = correctionResult.output.trim();
+              if (corrected.length > 0) {
+                lastRawOutput = corrected;
+                rawResponse = corrected;
+                parseResult = this.parseAgentJsonOutput(corrected, discussion);
+              }
+            }
+            if (correctionResult.error) {
+              formatCorrectionError = correctionResult.error;
+            }
+          }
+        }
+
+        if (parseResult.success && parseResult.data) {
+          const parsed = parseResult.data;
+          content = parsed.content;
+          thoughtSummary = parsed.thoughtSummary;
+          innerState = parsed.innerState;
+          stance = parsed.stance;
+          personalMemory = parsed.personalMemory;
+          othersMemory = parsed.othersMemory;
+          rawResponse = parsed.normalizedRaw ?? rawResponse;
+          finalFailureDetails = undefined;
+          break;
+        } else {
+          const category = formatCorrectionAttempted
+            ? 'format_correction_failed'
+            : parseResult.category ?? 'extraction_missing';
+          const reason =
+            parseResult.reason ??
+            formatCorrectionError ??
+            (formatCorrectionAttempted
+              ? '格式校正助手仍未能生成合法 JSON。'
+              : '输出解析失败，缺少必需字段。');
+          attemptFailureDetails = {
+            category,
+            reasons: [reason],
+          };
+          content = '__SKIP__';
+          thoughtSummary = undefined;
+          innerState = undefined;
+          stance = undefined;
+          personalMemory = undefined;
+          othersMemory = undefined;
+          rawResponse = undefined;
+        }
+      }
+
+      if (!attemptFailureDetails) {
+        finalFailureDetails = undefined;
+        break;
+      }
+      finalFailureDetails = attemptFailureDetails;
     }
 
-      content = content.trim() || '__SKIP__';
-
-      let thoughtSummary: string | undefined;
-      let innerState: string | undefined;
-      if (content !== '__SKIP__') {
-        const metadataResult = this.extractThinkingArtifacts(content);
-        thoughtSummary = metadataResult.thoughtSummary;
-        innerState = metadataResult.innerState;
-        let processedContent = metadataResult.content.trim();
-        if (!processedContent) {
-          const fallbackSegments: string[] = [];
-          if (metadataResult.thoughtSummary) {
-            fallbackSegments.push(`【思考摘要补全】${metadataResult.thoughtSummary}`);
-          }
-          if (metadataResult.innerState) {
-            fallbackSegments.push(`【内在状态参考】${metadataResult.innerState}`);
-          }
-          processedContent = fallbackSegments.join('\n').trim();
-        }
-        if (!processedContent) {
-          processedContent = metadataResult.rawContent.trim();
-        }
-        content = processedContent || '__SKIP__';
-      }
-      if (content === '__SKIP__') {
-        thoughtSummary = undefined;
-        innerState = undefined;
-      }
-
-        const stanceResult = this.processSelfReportedStance(content, discussion);
-        content = stanceResult.content;
+    if (finalFailureDetails) {
+      const reasonText =
+        finalFailureDetails.reasons.length > 0
+          ? finalFailureDetails.reasons.join('；')
+          : '未能解析有效输出';
+      this.logFailure({
+        agent,
+        round,
+        turn,
+        category: finalFailureDetails.category,
+        reason: reasonText,
+        systemPrompt,
+        userPrompt,
+        rawOutput: lastRawOutput,
+      });
+    }
 
     const message: Message = {
       id: nanoid(),
@@ -520,16 +655,19 @@ class ConversationRunner {
         agentName: agent.name,
       role: 'assistant',
       content,
+      rawContent: rawResponse,
       ts: Date.now(),
       round,
       turn,
       systemPrompt,
       userPrompt,
-          thoughtSummary,
-          innerState,
+      thoughtSummary,
+      innerState,
+      personalMemory,
+      othersMemory,
     };
-    if (stanceResult.stance) {
-      message.stance = stanceResult.stance;
+    if (stance) {
+      message.stance = stance;
     }
 
     this.appendMessageSnapshot(message);
@@ -600,6 +738,11 @@ class ConversationRunner {
       return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
 
+  private getPromptToggles(): PromptToggleConfig {
+    const toggles = this.appStore.getState().runState.config.promptToggles;
+    return toggles ? { ...DEFAULT_PROMPT_TOGGLES, ...toggles } : { ...DEFAULT_PROMPT_TOGGLES };
+  }
+
       private getAgentNameMap(): Record<string, string> {
         const agents = this.appStore.getState().runState.agents;
         return agents.reduce<Record<string, string>>((map, agent) => {
@@ -639,178 +782,279 @@ class ConversationRunner {
 
         private collectPreviousThoughtSummaries(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; thoughtSummary: string }> {
+        ): Array<{ agentName: string; thoughtSummary: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
+                message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.thoughtSummary === 'string' &&
                 message.thoughtSummary.trim().length > 0,
             )
+            .sort((a, b) => a.round - b.round)
             .map((message) => ({
               agentName: agentNames[message.agentId] ?? message.agentId,
               thoughtSummary: (message.thoughtSummary ?? '').trim(),
+              round: message.round,
             }));
         }
 
         private collectPreviousInnerStates(
           round: number,
+          agentId: string,
           agentNames: Record<string, string>,
-        ): Array<{ agentName: string; innerState: string }> {
+        ): Array<{ agentName: string; innerState: string; round: number }> {
           if (round <= 0) return [];
           const messages = this.appStore.getState().runState.messages;
+          const startRound = Math.max(1, round - PRIVATE_MEMORY_WINDOW + 1);
           return messages
             .filter(
               (message) =>
-                message.round === round &&
+                message.agentId === agentId &&
+                message.round >= startRound &&
+                message.round <= round &&
                 typeof message.innerState === 'string' &&
                 message.innerState.trim().length > 0,
             )
-            .map((message) => ({
-              agentName: agentNames[message.agentId] ?? message.agentId,
-              innerState: (message.innerState ?? '').trim(),
-            }));
+            .sort((a, b) => a.round - b.round)
+      .map((message) => ({
+        agentName: agentNames[message.agentId] ?? message.agentId,
+        innerState: this.removeOthersMemorySection(message.innerState),
+        round: message.round,
+      }))
+      .filter((entry) => entry.innerState.length > 0);
         }
 
-    private extractThinkingArtifacts(content: string): {
-      content: string;
-      thoughtSummary?: string;
-      innerState?: string;
-      foundState: boolean;
-      foundThought: boolean;
-      rawContent: string;
-    } {
-      const stateResult = this.extractTaggedBlock(content, 'STATE', {
-        stopBeforeTags: ['[[THINK]]', '[[THOUGHT]]', '[[PSY]]'],
-      });
-      const innerState = stateResult.value?.trim() || undefined;
-      let workingContent = stateResult.content;
-
-      const thoughtTags = ['THINK', 'THOUGHT', 'PSY'];
-      let thoughtSummary: string | undefined;
-      let foundThought = false;
-      for (const tag of thoughtTags) {
-        const result = this.extractTaggedBlock(workingContent, tag, {
-          stopBeforeTags: ['（立场', '[[STATE]]'],
-        });
-        if (result.found && result.value) {
-          thoughtSummary = result.value?.trim() || undefined;
-          workingContent = result.content;
-          foundThought = Boolean(thoughtSummary);
-          break;
-        }
-      }
-
+  private parseAgentJsonOutput(
+    rawContent: string,
+    discussion: RunConfig['discussion'],
+  ): ParseAgentJsonResult {
+    const cleaned = this.stripCodeFences(rawContent).trim();
+    if (!cleaned) {
+      return { success: false, reason: '输出内容为空', category: 'extraction_missing' };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (error: any) {
       return {
-        content: workingContent.trim(),
-        thoughtSummary,
+        success: false,
+        reason: `JSON 解析失败：${error?.message ?? error}`,
+        category: 'extraction_missing',
+      };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { success: false, reason: '输出必须是 JSON 对象', category: 'extraction_missing' };
+    }
+
+    const state = parsed.state;
+    if (!state || typeof state !== 'object') {
+      return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
+    }
+    const stateSections: Array<{
+      key: 'personal_memory' | 'others_memory' | 'long_term' | 'short_term';
+      label: string;
+    }> = [
+      { key: 'personal_memory', label: '个人发言记忆' },
+      { key: 'others_memory', label: '他人发言记忆' },
+      { key: 'long_term', label: '长期状态' },
+      { key: 'short_term', label: '短期波动' },
+    ];
+    const stateSegments: string[] = [];
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
+    for (const section of stateSections) {
+      const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
+      if (!values || values.length === 0) {
+        return {
+          success: false,
+          reason: `state.${section.key} 不能为空`,
+          category: 'extraction_missing',
+        };
+      }
+      const trimmed = values.slice(-3);
+      stateSegments.push(this.formatStateSection(section.label, trimmed));
+      if (section.key === 'personal_memory') {
+        personalMemory = trimmed;
+      } else if (section.key === 'others_memory') {
+        othersMemory = trimmed;
+      }
+    }
+    const innerState = stateSegments.join('\n').trim();
+    if (!innerState) {
+      return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
+    }
+    if (!personalMemory || !othersMemory) {
+      return {
+        success: false,
+        reason: 'state.personal_memory / others_memory 解析失败',
+        category: 'extraction_missing',
+      };
+    }
+
+    const thinkValues = this.normalizeStringArray(parsed.think);
+    if (!thinkValues || thinkValues.length < 2) {
+      return {
+        success: false,
+        reason: 'think 数组至少需要 2 句',
+        category: 'extraction_missing',
+      };
+    }
+    const thinkText = thinkValues.join('\n').trim();
+
+    const contentValues = this.normalizeStringArray(parsed.content);
+    if (!contentValues || contentValues.length === 0) {
+      return {
+        success: false,
+        reason: 'content 数组不能为空',
+        category: 'extraction_missing',
+      };
+    }
+    const contentText = contentValues.join('\n').trim();
+    if (!contentText) {
+      return {
+        success: false,
+        reason: 'content 文本为空',
+        category: 'extraction_missing',
+      };
+    }
+
+    const stanceNode = parsed.stance;
+    if (!stanceNode || typeof stanceNode !== 'object') {
+      return { success: false, reason: '缺少 stance 字段', category: 'extraction_missing' };
+    }
+    let score = Number((stanceNode as any).score);
+    if (!Number.isFinite(score)) {
+      return {
+        success: false,
+        reason: 'stance.score 需要为整数',
+        category: 'extraction_missing',
+      };
+    }
+    const size = normalizeScaleSize(discussion?.stanceScaleSize);
+    const maxLevel = Math.floor(Math.max(3, size) / 2);
+    score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(score)));
+    const userLabel =
+      typeof stanceNode.label === 'string' && stanceNode.label.trim().length > 0
+        ? stanceNode.label.trim()
+        : undefined;
+    const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
+    const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
+    const fallbackLabel = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
+    const note = userLabel ?? fallbackLabel;
+
+    return {
+      success: true,
+      data: {
+        content: contentText,
+        thoughtSummary: thinkText,
         innerState,
-        foundState: Boolean(stateResult.found && innerState),
-        foundThought,
-        rawContent: content,
-      };
-    }
-
-    private extractTaggedBlock(
-      content: string,
-      tag: string,
-      options?: { stopBeforeTags?: string[] },
-    ): { content: string; value?: string; found: boolean } {
-      const normalizedTag = tag.toUpperCase();
-      const upperContent = content.toUpperCase();
-      const openMarker = `[[${normalizedTag}]]`;
-      const startIndex = upperContent.indexOf(openMarker);
-      if (startIndex === -1) {
-        return { content, found: false };
-      }
-      const afterOpen = startIndex + openMarker.length;
-      const closingMarker = `[[/${normalizedTag}]]`;
-      const closingIndex = upperContent.indexOf(closingMarker, afterOpen);
-
-      let endIndex: number;
-      let afterIndex: number;
-
-      if (closingIndex !== -1) {
-        endIndex = closingIndex;
-        afterIndex = closingIndex + closingMarker.length;
-      } else {
-        const boundary = this.findNextTaggedBoundary(upperContent, afterOpen, options);
-        endIndex = boundary ?? content.length;
-        afterIndex = boundary ?? content.length;
-      }
-
-      const before = content.slice(0, startIndex);
-      const extracted = content.slice(afterOpen, endIndex).trim();
-      const after = content.slice(afterIndex);
-      const needsSpace = before && after && !before.endsWith('\n') && !after.startsWith('\n');
-      const remaining = `${before}${needsSpace ? ' ' : ''}${after}`.trim();
-      return {
-        content: remaining,
-        value: extracted.length > 0 ? extracted : undefined,
-        found: true,
-      };
-    }
-
-    private findNextTaggedBoundary(
-      upperContent: string,
-      fromIndex: number,
-      options?: { stopBeforeTags?: string[] },
-    ): number | undefined {
-      const candidates: number[] = [];
-      const extraStops = options?.stopBeforeTags ?? [];
-      extraStops.forEach((tag) => {
-        const idx = upperContent.indexOf(tag.toUpperCase(), fromIndex);
-        if (idx !== -1) {
-          candidates.push(idx);
-        }
-      });
-      const nextGenericTag = upperContent.indexOf('[[', fromIndex);
-      if (nextGenericTag !== -1) {
-        candidates.push(nextGenericTag);
-      }
-      const stanceIndex = upperContent.indexOf('（立场', fromIndex);
-      if (stanceIndex !== -1) {
-        candidates.push(stanceIndex);
-      }
-      if (candidates.length === 0) {
-        return undefined;
-      }
-      return Math.min(...candidates);
-    }
-
-      private processSelfReportedStance(
-      content: string,
-      discussion: RunConfig['discussion'],
-    ): { content: string; stance?: { score: number; note?: string } } {
-      const trimmed = content.trim();
-        const ratingRegex = /(?:\(|（)\s*(?:立场|情感)[:：]\s*([+-]?\d+)\s*(?:\)|）)/i;
-        const match = trimmed.match(ratingRegex);
-      if (!match) {
-        return { content: trimmed };
-      }
-      const size = normalizeScaleSize(discussion?.stanceScaleSize);
-      const maxLevel = Math.floor(Math.max(3, size) / 2);
-      let score = Number(match[1]);
-      if (!Number.isFinite(score)) {
-        return { content: trimmed };
-      }
-      score = Math.max(-maxLevel, Math.min(maxLevel, score));
-        const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
-        const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
-      const note = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
-        const sanitizedContent = trimmed.replace(match[0], '').trim();
-      const displayContent = sanitizedContent.length > 0 ? sanitizedContent : trimmed;
-      return {
-        content: displayContent,
         stance: {
           score,
           note,
         },
-      };
+        normalizedRaw: cleaned,
+          personalMemory,
+          othersMemory,
+      },
+    };
+  }
+
+  private normalizeStringArray(value: unknown): string[] | undefined {
+    if (Array.isArray(value)) {
+      const normalized = value
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0);
+      return normalized.length > 0 ? normalized : undefined;
     }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed ? [trimmed] : undefined;
+    }
+    return undefined;
+  }
+
+  private formatStateSection(label: string, values: string[]): string {
+    const lines = values.map((item) => `- ${item}`).join('\n');
+    return `【${label}】\n${lines}`;
+  }
+
+  private removeOthersMemorySection(innerState?: string): string {
+    if (!innerState) return '';
+    const sanitized = innerState
+      .replace(/【他人发言记忆】[\s\S]*?(?=【[^】]+】|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return sanitized;
+  }
+
+  private stripCodeFences(text: string): string {
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (match) {
+      return match[1];
+    }
+    return text;
+  }
+
+  private async applyFormatCorrection(
+    rawContent: string,
+    modelConfig: ModelConfig,
+    discussion: RunConfig['discussion'],
+  ): Promise<{ output?: string; error?: string } | undefined> {
+    const systemPrompt =
+      '你是一名格式校正助手，只负责把用户给出的文本整理成合法 JSON，不得改写事实或杜撰内容。';
+    const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(discussion.stanceScaleSize)) / 2);
+    const userPrompt = [
+      '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
+      `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
+      '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；不要输出空数组。',
+      `- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`,
+      '- 禁止添加除上述字段之外的键；若原文缺少某部分，可根据上下文提炼最接近的句子填入，不得凭空虚构事实。',
+      '',
+      'JSON 示例：',
+      AGENT_OUTPUT_JSON_SCHEMA,
+      '',
+      '===== 原始输出 =====',
+      rawContent,
+      '===== 原始输出结束 =====',
+      '请只返回 JSON，勿添加任何解释或代码块标记。',
+    ].join('\n');
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ];
+
+    const controller = new AbortController();
+    this.inflightControllers.add(controller);
+    try {
+      const response =
+        (await chatStream(
+          messages,
+          modelConfig,
+          {
+            temperature: Math.min(0.2, modelConfig.temperature ?? 0.7),
+            maxTokens: modelConfig.max_output_tokens,
+          },
+          undefined,
+          controller.signal,
+        )) || '';
+      return { output: response.trim() };
+    } catch (error: any) {
+      if (this.isAbortError(error)) {
+        return undefined;
+      }
+      return { error: error?.message ?? '格式校正请求失败' };
+    } finally {
+      this.inflightControllers.delete(controller);
+    }
+  }
 
     private resolveModelConfig(agent: AgentSpec, config: RunConfig): ModelConfig {
     if (config.useGlobalModelConfig && config.globalModelConfig) {
@@ -865,11 +1109,44 @@ class ConversationRunner {
     });
   }
 
-  private appendMessageSnapshot(message: Message) {
+    private logFailure(details: {
+      agent: AgentSpec;
+      round: number;
+      turn: number;
+      category: FailureRecord['category'];
+      reason: string;
+      systemPrompt?: string;
+      userPrompt?: string;
+      rawOutput?: string;
+      errorMessage?: string;
+    }) {
+      this.appendFailureRecord({
+        id: nanoid(),
+        agentId: details.agent.id,
+        agentName: details.agent.name,
+        round: details.round,
+        turn: details.turn,
+        category: details.category,
+        reason: details.reason,
+        timestamp: Date.now(),
+        systemPrompt: details.systemPrompt,
+        userPrompt: details.userPrompt,
+        rawOutput: details.rawOutput,
+        errorMessage: details.errorMessage,
+      });
+    }
+
+    private appendMessageSnapshot(message: Message) {
     this.runIfCurrent(() => {
       this.appStore.getState().appendMessage(message);
     });
   }
+
+    private appendFailureRecord(record: FailureRecord) {
+      this.runIfCurrent(() => {
+        this.appStore.getState().appendFailureRecord(record);
+      });
+    }
 
   private setAwaiting(label?: 'response' | 'thinking') {
     this.setStatus((status) => ({
@@ -919,7 +1196,8 @@ class ConversationRunner {
         finishedAt: status.finishedAt ?? Date.now(),
         summary: state.summary,
         configSnapshot: state.config,
-        status,
+          status,
+          failures: state.failureRecords,
       });
     });
   }
