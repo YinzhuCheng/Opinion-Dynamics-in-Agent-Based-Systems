@@ -11,7 +11,9 @@ import type {
   ModelConfig,
   RunConfig,
   RunStatus,
+  PromptToggleConfig,
 } from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -34,6 +36,8 @@ type ParsedAgentJsonData = {
   innerState: string;
   stance: { score: number; note?: string };
   normalizedRaw?: string;
+  personalMemory: string[];
+  othersMemory: string[];
 };
 
 type ParseAgentJsonResult = {
@@ -46,6 +50,7 @@ type ParseAgentJsonResult = {
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
 const PRIVATE_MEMORY_WINDOW = 3;
+const MAX_AGENT_OUTPUT_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -430,7 +435,12 @@ class ConversationRunner {
         }
         this.updateVisibleWindow(visibleWindow);
         const trustWeights = this.buildTrustContext(agent.id);
-        const discussion = this.appStore.getState().runState.config.discussion;
+        const configSnapshot = this.appStore.getState().runState.config;
+        const discussion = configSnapshot.discussion;
+        const promptToggles = this.getPromptToggles();
+        const randomLengthEnabled = promptToggles.randomLength !== false;
+        const contentLengthTarget = randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
+        const forcePersonalExample = randomLengthEnabled ? Math.random() < 0.2 : false;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
           const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
@@ -449,6 +459,9 @@ class ConversationRunner {
               previousRoundMessages,
             previousThoughtSummaries,
             previousInnerStates,
+          promptToggles,
+          contentLengthTarget,
+          forcePersonalExample,
       });
           const userPrompt = buildAgentUserPrompt({
           agent,
@@ -465,6 +478,9 @@ class ConversationRunner {
             previousThoughtSummaries,
             previousInnerStates,
           selfPreviousMessage,
+          promptToggles,
+          contentLengthTarget,
+          forcePersonalExample,
         });
 
     const messages: ChatMessage[] = [
@@ -480,131 +496,152 @@ class ConversationRunner {
     let thoughtSummary: string | undefined;
     let innerState: string | undefined;
     let stance: { score: number; note?: string } | undefined;
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
     let rawResponse: string | undefined;
     let lastRawOutput: string | undefined;
-    let failureDetails:
+    let finalFailureDetails:
       | { category: FailureRecord['category']; reasons: string[] }
       | undefined;
 
-    const controller = new AbortController();
-    this.inflightControllers.add(controller);
-    let rawContent = '';
-    try {
-      rawContent =
-        (await chatStream(
-          messages,
-          modelConfig,
-          extra,
-          {
-            onStatus: (status) => {
-              if (status === 'waiting_response' || status === 'responding') {
-                this.setAwaiting('response');
-              } else if (status === 'thinking') {
-                this.setAwaiting('thinking');
-              } else if (status === 'done') {
-                this.setAwaiting(undefined);
-              }
+    let attempt = 0;
+    while (attempt < MAX_AGENT_OUTPUT_ATTEMPTS) {
+      attempt += 1;
+      let attemptFailureDetails:
+        | { category: FailureRecord['category']; reasons: string[] }
+        | undefined;
+      const controller = new AbortController();
+      this.inflightControllers.add(controller);
+      let rawContent = '';
+      try {
+        rawContent =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
             },
-          },
-          controller.signal,
-        )) || '';
-    } catch (error: any) {
-      if (this.isAbortError(error)) {
+            controller.signal,
+          )) || '';
+      } catch (error: any) {
+        if (this.isAbortError(error)) {
+          this.inflightControllers.delete(controller);
+          return undefined;
+        }
+        this.logFailure({
+          agent,
+          round,
+          turn,
+          category: 'request_error',
+          reason: error?.message ?? 'LLM 请求异常',
+          systemPrompt,
+          userPrompt,
+          rawOutput: lastRawOutput,
+          errorMessage: error ? String(error.stack ?? error) : undefined,
+        });
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
         this.inflightControllers.delete(controller);
-        return undefined;
       }
-      this.logFailure({
-        agent,
-        round,
-        turn,
-        category: 'request_error',
-        reason: error?.message ?? 'LLM 请求异常',
-        systemPrompt,
-        userPrompt,
-        rawOutput: lastRawOutput,
-        errorMessage: error ? String(error.stack ?? error) : undefined,
-      });
-      throw error;
-    } finally {
-      this.setAwaiting(undefined);
-      this.inflightControllers.delete(controller);
-    }
 
-    rawContent = rawContent.trim();
-    lastRawOutput = rawContent;
+      rawContent = rawContent.trim();
+      lastRawOutput = rawContent;
 
-    if (!rawContent || rawContent === '__SKIP__') {
-      failureDetails = {
-        category: 'response_empty',
-        reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
-      };
-      rawResponse = undefined;
-    } else {
-      rawResponse = rawContent;
-      let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
-      let formatCorrectionAttempted = false;
-      let formatCorrectionError: string | undefined;
-      if (!parseResult.success) {
-        const correctionResult = await this.applyFormatCorrection(
-          rawContent,
-          modelConfig,
-          discussion,
-        );
-        if (correctionResult) {
-          formatCorrectionAttempted = true;
-          if (correctionResult.output) {
-            const corrected = correctionResult.output.trim();
-            if (corrected.length > 0) {
-              lastRawOutput = corrected;
-              rawResponse = corrected;
-              parseResult = this.parseAgentJsonOutput(corrected, discussion);
+      if (!rawContent || rawContent === '__SKIP__') {
+        attemptFailureDetails = {
+          category: 'response_empty',
+          reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
+        };
+        rawResponse = undefined;
+      } else {
+        rawResponse = rawContent;
+        let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
+        let formatCorrectionAttempted = false;
+        let formatCorrectionError: string | undefined;
+        if (!parseResult.success) {
+          const correctionResult = await this.applyFormatCorrection(
+            rawContent,
+            modelConfig,
+            discussion,
+          );
+          if (correctionResult) {
+            formatCorrectionAttempted = true;
+            if (correctionResult.output) {
+              const corrected = correctionResult.output.trim();
+              if (corrected.length > 0) {
+                lastRawOutput = corrected;
+                rawResponse = corrected;
+                parseResult = this.parseAgentJsonOutput(corrected, discussion);
+              }
+            }
+            if (correctionResult.error) {
+              formatCorrectionError = correctionResult.error;
             }
           }
-          if (correctionResult.error) {
-            formatCorrectionError = correctionResult.error;
-          }
+        }
+
+        if (parseResult.success && parseResult.data) {
+          const parsed = parseResult.data;
+          content = parsed.content;
+          thoughtSummary = parsed.thoughtSummary;
+          innerState = parsed.innerState;
+          stance = parsed.stance;
+          personalMemory = parsed.personalMemory;
+          othersMemory = parsed.othersMemory;
+          rawResponse = parsed.normalizedRaw ?? rawResponse;
+          finalFailureDetails = undefined;
+          break;
+        } else {
+          const category = formatCorrectionAttempted
+            ? 'format_correction_failed'
+            : parseResult.category ?? 'extraction_missing';
+          const reason =
+            parseResult.reason ??
+            formatCorrectionError ??
+            (formatCorrectionAttempted
+              ? '格式校正助手仍未能生成合法 JSON。'
+              : '输出解析失败，缺少必需字段。');
+          attemptFailureDetails = {
+            category,
+            reasons: [reason],
+          };
+          content = '__SKIP__';
+          thoughtSummary = undefined;
+          innerState = undefined;
+          stance = undefined;
+          personalMemory = undefined;
+          othersMemory = undefined;
+          rawResponse = undefined;
         }
       }
 
-      if (parseResult.success && parseResult.data) {
-        const parsed = parseResult.data;
-        content = parsed.content;
-        thoughtSummary = parsed.thoughtSummary;
-        innerState = parsed.innerState;
-        stance = parsed.stance;
-        rawResponse = parsed.normalizedRaw ?? rawResponse;
-      } else {
-        const category = formatCorrectionAttempted
-          ? 'format_correction_failed'
-          : parseResult.category ?? 'extraction_missing';
-        const reason =
-          parseResult.reason ??
-          formatCorrectionError ??
-          (formatCorrectionAttempted
-            ? '格式校正助手仍未能生成合法 JSON。'
-            : '输出解析失败，缺少必需字段。');
-        failureDetails = {
-          category,
-          reasons: [reason],
-        };
-        content = '__SKIP__';
-        thoughtSummary = undefined;
-        innerState = undefined;
-        stance = undefined;
-        rawResponse = undefined;
+      if (!attemptFailureDetails) {
+        finalFailureDetails = undefined;
+        break;
       }
+      finalFailureDetails = attemptFailureDetails;
     }
 
-    if (failureDetails) {
+    if (finalFailureDetails) {
       const reasonText =
-        failureDetails.reasons.length > 0
-          ? failureDetails.reasons.join('；')
+        finalFailureDetails.reasons.length > 0
+          ? finalFailureDetails.reasons.join('；')
           : '未能解析有效输出';
       this.logFailure({
         agent,
         round,
         turn,
-        category: failureDetails.category,
+        category: finalFailureDetails.category,
         reason: reasonText,
         systemPrompt,
         userPrompt,
@@ -626,6 +663,8 @@ class ConversationRunner {
       userPrompt,
       thoughtSummary,
       innerState,
+      personalMemory,
+      othersMemory,
     };
     if (stance) {
       message.stance = stance;
@@ -698,6 +737,11 @@ class ConversationRunner {
       }
       return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
+
+  private getPromptToggles(): PromptToggleConfig {
+    const toggles = this.appStore.getState().runState.config.promptToggles;
+    return toggles ? { ...DEFAULT_PROMPT_TOGGLES, ...toggles } : { ...DEFAULT_PROMPT_TOGGLES };
+  }
 
       private getAgentNameMap(): Record<string, string> {
         const agents = this.appStore.getState().runState.agents;
@@ -779,11 +823,12 @@ class ConversationRunner {
                 message.innerState.trim().length > 0,
             )
             .sort((a, b) => a.round - b.round)
-            .map((message) => ({
-              agentName: agentNames[message.agentId] ?? message.agentId,
-              innerState: (message.innerState ?? '').trim(),
-              round: message.round,
-            }));
+      .map((message) => ({
+        agentName: agentNames[message.agentId] ?? message.agentId,
+        innerState: this.removeOthersMemorySection(message.innerState),
+        round: message.round,
+      }))
+      .filter((entry) => entry.innerState.length > 0);
         }
 
   private parseAgentJsonOutput(
@@ -812,15 +857,20 @@ class ConversationRunner {
     if (!state || typeof state !== 'object') {
       return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
     }
-    const stateSections: Array<{ key: string; label: string }> = [
-      { key: 'personal_memory', label: '个人记忆摘要' },
-      { key: 'others_memory', label: '他人记忆摘要' },
+    const stateSections: Array<{
+      key: 'personal_memory' | 'others_memory' | 'long_term' | 'short_term';
+      label: string;
+    }> = [
+      { key: 'personal_memory', label: '个人发言记忆' },
+      { key: 'others_memory', label: '他人发言记忆' },
       { key: 'long_term', label: '长期状态' },
       { key: 'short_term', label: '短期波动' },
     ];
     const stateSegments: string[] = [];
+    let personalMemory: string[] | undefined;
+    let othersMemory: string[] | undefined;
     for (const section of stateSections) {
-      const values = this.normalizeStringArray(state[section.key]);
+      const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
       if (!values || values.length === 0) {
         return {
           success: false,
@@ -828,11 +878,24 @@ class ConversationRunner {
           category: 'extraction_missing',
         };
       }
-      stateSegments.push(this.formatStateSection(section.label, values.slice(-3)));
+      const trimmed = values.slice(-3);
+      stateSegments.push(this.formatStateSection(section.label, trimmed));
+      if (section.key === 'personal_memory') {
+        personalMemory = trimmed;
+      } else if (section.key === 'others_memory') {
+        othersMemory = trimmed;
+      }
     }
     const innerState = stateSegments.join('\n').trim();
     if (!innerState) {
       return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
+    }
+    if (!personalMemory || !othersMemory) {
+      return {
+        success: false,
+        reason: 'state.personal_memory / others_memory 解析失败',
+        category: 'extraction_missing',
+      };
     }
 
     const thinkValues = this.normalizeStringArray(parsed.think);
@@ -897,6 +960,8 @@ class ConversationRunner {
           note,
         },
         normalizedRaw: cleaned,
+          personalMemory,
+          othersMemory,
       },
     };
   }
@@ -918,6 +983,15 @@ class ConversationRunner {
   private formatStateSection(label: string, values: string[]): string {
     const lines = values.map((item) => `- ${item}`).join('\n');
     return `【${label}】\n${lines}`;
+  }
+
+  private removeOthersMemorySection(innerState?: string): string {
+    if (!innerState) return '';
+    const sanitized = innerState
+      .replace(/【他人发言记忆】[\s\S]*?(?=【[^】]+】|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return sanitized;
   }
 
   private stripCodeFences(text: string): string {

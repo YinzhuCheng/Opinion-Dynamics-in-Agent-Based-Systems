@@ -36,11 +36,11 @@ const vendorFallbacks: Record<Vendor, { baseUrl: string; model: string }> = {
 
 const defaultBig5Persona = (): PersonaBig5 => ({
   type: 'big5',
-  O: 60,
-  C: 60,
+  O: 50,
+  C: 50,
   E: 50,
-  A: 55,
-  N: 45,
+  A: 50,
+  N: 50,
 });
 
 const defaultMBTIPersona = (): PersonaMBTI => ({
