@@ -55,16 +55,9 @@ const clampTrustValue = (value: number): number => {
   return Math.min(1, Math.max(0, value));
 };
 
-const defaultTrustFallback = (rowId: string, colId: string, agentCount: number): number => {
-  if (agentCount <= 1) {
-    return 1;
-  }
-  if (rowId === colId) {
-    return 0.6;
-  }
-  const remainder = 0.4;
-  const others = Math.max(1, agentCount - 1);
-  return Number((remainder / others).toFixed(2));
+const defaultTrustFallback = (_rowId: string, _colId: string, agentCount: number): number => {
+  const normalizedCount = Math.max(1, agentCount);
+  return Number((1 / normalizedCount).toFixed(3));
 };
 
 const ensureTrustMatrix = (agents: AgentSpec[], matrix?: TrustMatrix): TrustMatrix => {
@@ -120,7 +113,7 @@ const sanitizeStanceScaleSize = (value: number | undefined): number => {
 
 const createDefaultRunConfig = (): RunConfig => ({
   mode: 'sequential',
-  maxRounds: 4,
+  maxRounds: 5,
   useGlobalModelConfig: true,
   globalModelConfig: { ...defaultModelConfig },
   visualization: {
@@ -128,7 +121,7 @@ const createDefaultRunConfig = (): RunConfig => ({
   },
   trustMatrix: {},
   discussion: {
-    stanceScaleSize: 3,
+    stanceScaleSize: 7,
     positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
     negativeViewpoint: DEFAULT_NEGATIVE_VIEWPOINT,
   },
