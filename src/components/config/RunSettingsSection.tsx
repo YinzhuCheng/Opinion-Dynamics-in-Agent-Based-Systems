@@ -54,7 +54,7 @@ const promptToggleOptions: Array<{
   {
     key: 'memory',
     label: '记忆机制',
-    description: '包含个人/他人记忆摘要及私密回放提示，强化多轮连续性。',
+    description: '包含个人/他人发言记忆的摘要及私密回放提示，强化多轮连续性。',
   },
 ];
 

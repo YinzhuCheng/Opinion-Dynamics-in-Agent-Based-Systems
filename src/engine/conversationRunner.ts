@@ -843,8 +843,8 @@ class ConversationRunner {
       key: 'personal_memory' | 'others_memory' | 'long_term' | 'short_term';
       label: string;
     }> = [
-      { key: 'personal_memory', label: '个人记忆摘要' },
-      { key: 'others_memory', label: '他人记忆摘要' },
+      { key: 'personal_memory', label: '个人发言记忆' },
+      { key: 'others_memory', label: '他人发言记忆' },
       { key: 'long_term', label: '长期状态' },
       { key: 'short_term', label: '短期波动' },
     ];
@@ -970,7 +970,7 @@ class ConversationRunner {
   private removeOthersMemorySection(innerState?: string): string {
     if (!innerState) return '';
     const sanitized = innerState
-      .replace(/【他人记忆摘要】[\s\S]*?(?=【[^】]+】|$)/g, '')
+      .replace(/【他人发言记忆】[\s\S]*?(?=【[^】]+】|$)/g, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
     return sanitized;
