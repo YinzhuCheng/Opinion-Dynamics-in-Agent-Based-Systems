@@ -11,7 +11,9 @@ import type {
   ModelConfig,
   RunConfig,
   RunStatus,
+  PromptToggleConfig,
 } from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { chatStream } from '../utils/llmAdapter';
 import type { ChatMessage } from '../utils/llmAdapter';
@@ -432,9 +434,12 @@ class ConversationRunner {
         }
         this.updateVisibleWindow(visibleWindow);
         const trustWeights = this.buildTrustContext(agent.id);
-        const discussion = this.appStore.getState().runState.config.discussion;
-        const contentLengthTarget = Math.floor(Math.random() * 3) + 1;
-        const forcePersonalExample = Math.random() < 0.2;
+        const configSnapshot = this.appStore.getState().runState.config;
+        const discussion = configSnapshot.discussion;
+        const promptToggles = this.getPromptToggles();
+        const randomLengthEnabled = promptToggles.randomLength !== false;
+        const contentLengthTarget = randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
+        const forcePersonalExample = randomLengthEnabled ? Math.random() < 0.2 : false;
           const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
           const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
           const previousThoughtSummaries = this.collectPreviousThoughtSummaries(round - 1, agent.id, agentNames);
@@ -453,6 +458,7 @@ class ConversationRunner {
               previousRoundMessages,
             previousThoughtSummaries,
             previousInnerStates,
+          promptToggles,
           contentLengthTarget,
           forcePersonalExample,
       });
@@ -471,6 +477,7 @@ class ConversationRunner {
             previousThoughtSummaries,
             previousInnerStates,
           selfPreviousMessage,
+          promptToggles,
           contentLengthTarget,
           forcePersonalExample,
         });
@@ -712,6 +719,11 @@ class ConversationRunner {
       }
       return entries.map((entry) => ({ ...entry, weight: Number((entry.weight / total).toFixed(3)) }));
     }
+
+  private getPromptToggles(): PromptToggleConfig {
+    const toggles = this.appStore.getState().runState.config.promptToggles;
+    return toggles ? { ...DEFAULT_PROMPT_TOGGLES, ...toggles } : { ...DEFAULT_PROMPT_TOGGLES };
+  }
 
       private getAgentNameMap(): Record<string, string> {
         const agents = this.appStore.getState().runState.agents;

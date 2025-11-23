@@ -14,7 +14,9 @@ import type {
   RunStatus,
   TrustMatrix,
   FailureRecord,
+  PromptToggleKey,
 } from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import {
   DEFAULT_NEGATIVE_VIEWPOINT,
   DEFAULT_POSITIVE_VIEWPOINT,
@@ -130,6 +132,7 @@ const createDefaultRunConfig = (): RunConfig => ({
     positiveViewpoint: DEFAULT_POSITIVE_VIEWPOINT,
     negativeViewpoint: DEFAULT_NEGATIVE_VIEWPOINT,
   },
+  promptToggles: { ...DEFAULT_PROMPT_TOGGLES },
 });
 
 const createEmptyRunState = (): RunState => {
@@ -189,7 +192,7 @@ export interface AppStore {
   currentPage: 'configuration' | 'dialogue' | 'results';
   vendorDefaults: VendorDefaults;
   setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
-  updateRunConfig: (updater: Partial<RunConfig> | ((config: RunConfig) => RunConfig)) => void;
+    updateRunConfig: (updater: Partial<RunConfig> | ((config: RunConfig) => RunConfig)) => void;
   setAgents: (agents: AgentSpec[]) => void;
   addAgent: (agent?: Partial<AgentSpec>) => void;
   updateAgent: (agentId: string, updater: Partial<AgentSpec>) => void;
@@ -216,7 +219,8 @@ export interface AppStore {
   normalizeTrustRow: (sourceId: string) => void;
   setStanceScaleSize: (size: number) => void;
   setPositiveViewpoint: (text: string) => void;
-  setNegativeViewpoint: (text: string) => void;
+    setNegativeViewpoint: (text: string) => void;
+    setPromptToggle: (key: PromptToggleKey, value: boolean) => void;
     randomizeTrustMatrix: () => void;
     lastRandomMatrix?: TrustMatrix;
   uniformTrustMatrix: () => void;
@@ -237,6 +241,10 @@ export const useAppStore = create<AppStore>((set) => ({
         const config = state.runState.config;
         state.runState.config =
           typeof updater === 'function' ? updater(config) : { ...config, ...updater };
+          const toggles = state.runState.config.promptToggles;
+          state.runState.config.promptToggles = toggles
+            ? { ...DEFAULT_PROMPT_TOGGLES, ...toggles }
+            : { ...DEFAULT_PROMPT_TOGGLES };
         state.runState.status.mode = state.runState.config.mode;
       }),
     ),
@@ -455,6 +463,17 @@ export const useAppStore = create<AppStore>((set) => ({
       set(
         produce((state: AppStore) => {
           state.runState.config.discussion.negativeViewpoint = text;
+        }),
+      ),
+    setPromptToggle: (key, value) =>
+      set(
+        produce((state: AppStore) => {
+          const current =
+            state.runState.config.promptToggles ?? { ...DEFAULT_PROMPT_TOGGLES };
+          state.runState.config.promptToggles = {
+            ...current,
+            [key]: value,
+          };
         }),
       ),
         randomizeTrustMatrix: () =>

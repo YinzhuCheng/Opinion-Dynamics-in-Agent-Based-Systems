@@ -1,5 +1,6 @@
 import { describePersona } from './persona';
-import type { AgentSpec, DialogueMode, Message } from '../types';
+import type { AgentSpec, DialogueMode, Message, PromptToggleConfig } from '../types';
+import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import {
   ensureNegativeViewpoint,
   ensurePositiveViewpoint,
@@ -37,6 +38,7 @@ interface AgentPromptOptions {
   previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string; round: number }>;
   previousInnerStates: Array<{ agentName: string; innerState: string; round: number }>;
   selfPreviousMessage?: Message;
+  promptToggles?: PromptToggleConfig;
   contentLengthTarget?: number;
   forcePersonalExample?: boolean;
 }
@@ -50,18 +52,29 @@ export const buildAgentSystemPrompt = ({
   negativeViewpoint,
   previousThoughtSummaries,
   previousInnerStates,
+  promptToggles,
   contentLengthTarget,
   forcePersonalExample,
 }: AgentPromptOptions): string => {
+  const toggles = promptToggles
+    ? { ...DEFAULT_PROMPT_TOGGLES, ...promptToggles }
+    : { ...DEFAULT_PROMPT_TOGGLES };
+  const personaEnabled = toggles.persona !== false;
+  const trustMatrixEnabled = toggles.trustMatrix !== false;
+  const randomLengthEnabled = toggles.randomLength !== false;
+  const memoryEnabled = toggles.memory !== false;
   const personaRaw = describePersona(agent.persona).trim();
   const personaBlock =
-    personaRaw.length > 0
+    personaEnabled && personaRaw.length > 0
       ? `人格画像：【\n${personaRaw}\n】`
-      : '人格画像：【（未提供画像，请保持中性口吻）】';
-  const personaAlignmentHint =
-    '请让“内在状态 + 思考摘要 + 外显措辞”始终贴合人格画像 / MBTI / 大五人格与初始立场设定，不可自相矛盾。';
+      : personaEnabled
+        ? '人格画像：【（未提供画像，请保持中性口吻）】'
+        : undefined;
+  const personaAlignmentHint = personaEnabled
+    ? '请让“内在状态 + 思考摘要 + 外显措辞”始终贴合人格画像 / MBTI / 大五人格与初始立场设定，不可自相矛盾。'
+    : undefined;
   const trustSection =
-    trustWeights.length > 0
+    trustMatrixEnabled && trustWeights.length > 0
       ? `信任度矩阵（上一批次发言的参考权重，符合 DeGroot 聚合思路）：
 ${trustWeights
   .map((item) => {
@@ -70,7 +83,9 @@ ${trustWeights
   })
   .join('\n')}
 权重越大代表越信任；对你自己（标记为“我”）的权重代表自我参考的稳定程度，其余权重代表你对他人观点的吸收强度。`
-      : '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。';
+      : trustMatrixEnabled
+        ? '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。'
+        : undefined;
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
   const positiveDesc = ensurePositiveViewpoint(positiveViewpoint);
@@ -86,17 +101,21 @@ ${trustWeights
   - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，带争执语气以保持真实感。
   - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
     const previousInnerStateSection =
-      previousInnerStates.length > 0
-        ? `历史内在状态（仅你本人可见，按时间从旧到新）：\n${previousInnerStates
-            .map((item) => `- ${item.innerState}`)
-            .join('\n')}`
-        : '历史内在状态：暂无记录（可能是首轮或之前跳过），请结合角色画像自行推断。';
+      memoryEnabled
+        ? previousInnerStates.length > 0
+          ? `历史内在状态（仅你本人可见，按时间从旧到新）：\n${previousInnerStates
+              .map((item) => `- ${item.innerState}`)
+              .join('\n')}`
+          : '历史内在状态：暂无记录（可能是首轮或之前跳过），请结合角色画像自行推断。'
+        : undefined;
     const previousThoughtSection =
-      previousThoughtSummaries.length > 0
-        ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
-            .map((item) => `- ${item.thoughtSummary}`)
-            .join('\n')}`
-        : '历史思考摘要：暂无记录，可根据角色设定与对话氛围自我推断。';
+      memoryEnabled
+        ? previousThoughtSummaries.length > 0
+          ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
+              .map((item) => `- ${item.thoughtSummary}`)
+              .join('\n')}`
+          : '历史思考摘要：暂无记录，可根据角色设定与对话氛围自我推断。'
+        : undefined;
 const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
   1. state.personal_memory：数组，1~3 句，用第一人称记录你此刻最想保留的记忆（信念、情绪、承诺等）；不要写“第几轮”或编号，这些句子将在下一次出场时原样回放给你，可以源自你过往所有公开发言（content）或这些发言隐含的潜台词，也可以对你已接收到的关键信息做内化总结。
   2. state.others_memory：数组，1~3 句，以“<Agent 名> - 触发点”的格式记录他人对你的刺激；可回顾所有你听到过的发言，提炼最具影响力的线索；该部分仅供系统建模，下一轮不会回放给任何人，因此内容要高度凝练。
@@ -106,24 +125,28 @@ const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
   - 记忆摘要必须与对话中已经出现的信息相互印证：personal_memory 只记录你曾经公开说过或立即可推导的潜台词；others_memory 只记录你真实听到的触发点。若素材不足可少于 3 条，禁止凭空补齐。
   - 引用时结合上一轮保存的 state / think 以及上一轮各 Agent 的公开发言与信任度偏好，明确哪些因素维持稳定、哪些发生更新。
   - state 的句子不可在 content 中逐字复述，可换角度延伸。`;
+const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;
 const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
   - think 是字符串数组，至少 2~3 句，描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织发言内容或反驳。
   - 每句都要点名某个内在状态因素（例如信任度、情绪、记忆条目）如何影响推理；保持第一人称，不要与 content 重复。`;
+    const clampLengthTarget = (value: number) => Math.max(1, Math.min(3, Math.round(value)));
     const bodyLengthTarget =
       typeof contentLengthTarget === 'number'
-        ? Math.max(1, Math.min(3, Math.round(contentLengthTarget)))
-        : Math.floor(Math.random() * 3) + 1;
+        ? clampLengthTarget(contentLengthTarget)
+        : randomLengthEnabled
+          ? Math.floor(Math.random() * 3) + 1
+          : 2;
     const includePersonalExample =
-      typeof forcePersonalExample === 'boolean' ? forcePersonalExample : Math.random() < 0.2;
-    const personalExampleLine = includePersonalExample
-      ? '  - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。'
-      : '';
+      randomLengthEnabled &&
+      (typeof forcePersonalExample === 'boolean' ? forcePersonalExample : Math.random() < 0.2);
+    const referenceLine = trustMatrixEnabled
+      ? '- 优先引用上一位发言者、信任度矩阵偏好或长期记忆中的张力，解释你为何做出该轮发言。'
+      : '- 优先引用上一位发言者或长期记忆中的张力，解释你为何做出该轮发言。';
     const contentGuidelines = `发言内容机制（JSON 字段 content）：
       - content 是唯一对外公开的语言输出，请结合 state 与 think 的线索，按照下方“日常表达提示”给出的句数自然表达，回应当前局面或提出新观点。
       - 数组内只能放自然语言句子，不得嵌入额外 JSON、标签或系统提示；句子之间可通过语气词、顿号等保持口语感。
-      - 优先引用上一位发言者、信任度矩阵偏好或长期记忆中的张力，解释你为何做出该轮发言。
-      - 发言内容长度为 ${bodyLengthTarget} 句
-${personalExampleLine}
+      ${referenceLine}
+      - 发言内容长度为 ${bodyLengthTarget} 句${includePersonalExample ? '\n      - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。' : ''}
       - 发言内容不要逐字复述 state 或 think 的句子，可换角度延伸那些信息。
       - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
     const stanceGuidelines = `情感标签机制（JSON 字段 stance）：
@@ -155,7 +178,7 @@ ${AGENT_OUTPUT_JSON_SCHEMA}`;
 - 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
 - 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
-      innerStateGuidelines,
+      innerStateGuidelinesBlock,
       thoughtGuidelines,
       contentGuidelines,
       stanceGuidelines,
@@ -190,9 +213,12 @@ export const buildAgentUserPrompt = ({
   previousThoughtSummaries,
   previousInnerStates,
   selfPreviousMessage,
-  contentLengthTarget: _contentLengthTarget,
-  forcePersonalExample: _forcePersonalExample,
+  promptToggles,
 }: AgentPromptOptions): string => {
+  const toggles = promptToggles
+    ? { ...DEFAULT_PROMPT_TOGGLES, ...promptToggles }
+    : { ...DEFAULT_PROMPT_TOGGLES };
+  const memoryEnabled = toggles.memory !== false;
   const previousRoundTranscript = previousRoundMessages.length
     ? previousRoundMessages
         .map((message) => {
@@ -223,24 +249,27 @@ export const buildAgentUserPrompt = ({
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
       }`
     : '本轮尚无上一位发言者，你可以率先开场。';
-  const previousInnerStateHint =
-    previousInnerStates.length > 0
+  const previousInnerStateHint = memoryEnabled
+    ? previousInnerStates.length > 0
       ? `历史内在状态（仅限你本人，按时间排序）：\n${previousInnerStates
           .map((item) => `- ${item.innerState}`)
           .join('\n')}`
-      : '暂未记录到你的历史内在状态，可结合角色设定自我推断。';
-  const previousThoughtHint =
-    previousThoughtSummaries.length > 0
+      : '暂未记录到你的历史内在状态，可结合角色设定自我推断。'
+    : undefined;
+  const previousThoughtHint = memoryEnabled
+    ? previousThoughtSummaries.length > 0
       ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
           .map((item) => `- ${item.thoughtSummary}`)
           .join('\n')}`
-      : '暂未记录到思考摘要，可根据当前情境自行补全。';
-  const personalMemoryHint =
-    selfPreviousMessage?.personalMemory && selfPreviousMessage.personalMemory.length > 0
+      : '暂未记录到思考摘要，可根据当前情境自行补全。'
+    : undefined;
+  const personalMemoryHint = memoryEnabled
+    ? selfPreviousMessage?.personalMemory && selfPreviousMessage.personalMemory.length > 0
       ? `你的记忆存档（你在上一轮 state.personal_memory 中留下的 1~3 句，将在下一轮继续回放）：\n${selfPreviousMessage.personalMemory
           .map((item, index) => `- 记忆 ${index + 1}: ${item}`)
           .join('\n')}`
-      : '你的记忆存档：暂无。请在本轮 state.personal_memory 中写下 1~3 句关键信息，方便下次回放。';
+      : '你的记忆存档：暂无。请在本轮 state.personal_memory 中写下 1~3 句关键信息，方便下次回放。'
+    : undefined;
 
   const modeHint =
     mode === 'sequential'
@@ -261,7 +290,7 @@ export const buildAgentUserPrompt = ({
         : selfLastStance
           ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
           : '上一轮你未给出立场刻度，可回顾当时的内在状态与思考摘要，自行决定是维持、收敛还是反转。';
-  const dynamicContext: string[] = [
+  const dynamicContext: Array<string | undefined> = [
     modeHint,
     initialOpinionHint,
     stanceHint,
@@ -272,7 +301,7 @@ export const buildAgentUserPrompt = ({
     previousThoughtHint,
     personalMemoryHint,
   ];
-  return dynamicContext.join('\n\n');
+  return dynamicContext.filter(Boolean).join('\n\n');
 };
 
 const buildScaleValues = (size: number): number[] => {

@@ -63,6 +63,22 @@ export interface AgentSpec {
 
 export type DialogueMode = 'random' | 'sequential';
 
+export interface PromptToggleConfig {
+  persona: boolean;
+  trustMatrix: boolean;
+  randomLength: boolean;
+  memory: boolean;
+}
+
+export type PromptToggleKey = keyof PromptToggleConfig;
+
+export const DEFAULT_PROMPT_TOGGLES: PromptToggleConfig = {
+  persona: true,
+  trustMatrix: true,
+  randomLength: true,
+  memory: true,
+};
+
 export interface RunConfig {
   mode: DialogueMode;
   maxRounds?: number;
@@ -78,6 +94,7 @@ export interface RunConfig {
   visualization: {
     enableStanceChart: boolean;
   };
+    promptToggles: PromptToggleConfig;
 }
 
 export type TrustMatrix = Record<string, Record<string, number>>;
