@@ -50,6 +50,7 @@ type ParseAgentJsonResult = {
 let activeRunner: ConversationRunner | undefined;
 let currentRunRevision = 0;
 const PRIVATE_MEMORY_WINDOW = 3;
+const MAX_AGENT_OUTPUT_ATTEMPTS = 3;
 
 const runConversation = async (mode: RunnerMode) => {
   const revision = ++currentRunRevision;
@@ -499,131 +500,148 @@ class ConversationRunner {
     let othersMemory: string[] | undefined;
     let rawResponse: string | undefined;
     let lastRawOutput: string | undefined;
-    let failureDetails:
+    let finalFailureDetails:
       | { category: FailureRecord['category']; reasons: string[] }
       | undefined;
 
-    const controller = new AbortController();
-    this.inflightControllers.add(controller);
-    let rawContent = '';
-    try {
-      rawContent =
-        (await chatStream(
-          messages,
-          modelConfig,
-          extra,
-          {
-            onStatus: (status) => {
-              if (status === 'waiting_response' || status === 'responding') {
-                this.setAwaiting('response');
-              } else if (status === 'thinking') {
-                this.setAwaiting('thinking');
-              } else if (status === 'done') {
-                this.setAwaiting(undefined);
-              }
+    let attempt = 0;
+    while (attempt < MAX_AGENT_OUTPUT_ATTEMPTS) {
+      attempt += 1;
+      let attemptFailureDetails:
+        | { category: FailureRecord['category']; reasons: string[] }
+        | undefined;
+      const controller = new AbortController();
+      this.inflightControllers.add(controller);
+      let rawContent = '';
+      try {
+        rawContent =
+          (await chatStream(
+            messages,
+            modelConfig,
+            extra,
+            {
+              onStatus: (status) => {
+                if (status === 'waiting_response' || status === 'responding') {
+                  this.setAwaiting('response');
+                } else if (status === 'thinking') {
+                  this.setAwaiting('thinking');
+                } else if (status === 'done') {
+                  this.setAwaiting(undefined);
+                }
+              },
             },
-          },
-          controller.signal,
-        )) || '';
-    } catch (error: any) {
-      if (this.isAbortError(error)) {
+            controller.signal,
+          )) || '';
+      } catch (error: any) {
+        if (this.isAbortError(error)) {
+          this.inflightControllers.delete(controller);
+          return undefined;
+        }
+        this.logFailure({
+          agent,
+          round,
+          turn,
+          category: 'request_error',
+          reason: error?.message ?? 'LLM 请求异常',
+          systemPrompt,
+          userPrompt,
+          rawOutput: lastRawOutput,
+          errorMessage: error ? String(error.stack ?? error) : undefined,
+        });
+        throw error;
+      } finally {
+        this.setAwaiting(undefined);
         this.inflightControllers.delete(controller);
-        return undefined;
       }
-      this.logFailure({
-        agent,
-        round,
-        turn,
-        category: 'request_error',
-        reason: error?.message ?? 'LLM 请求异常',
-        systemPrompt,
-        userPrompt,
-        rawOutput: lastRawOutput,
-        errorMessage: error ? String(error.stack ?? error) : undefined,
-      });
-      throw error;
-    } finally {
-      this.setAwaiting(undefined);
-      this.inflightControllers.delete(controller);
-    }
 
-    rawContent = rawContent.trim();
-    lastRawOutput = rawContent;
+      rawContent = rawContent.trim();
+      lastRawOutput = rawContent;
 
-    if (!rawContent || rawContent === '__SKIP__') {
-      failureDetails = {
-        category: 'response_empty',
-        reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
-      };
-      rawResponse = undefined;
-    } else {
-      rawResponse = rawContent;
-      let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
-      let formatCorrectionAttempted = false;
-      let formatCorrectionError: string | undefined;
-      if (!parseResult.success) {
-        const correctionResult = await this.applyFormatCorrection(
-          rawContent,
-          modelConfig,
-          discussion,
-        );
-        if (correctionResult) {
-          formatCorrectionAttempted = true;
-          if (correctionResult.output) {
-            const corrected = correctionResult.output.trim();
-            if (corrected.length > 0) {
-              lastRawOutput = corrected;
-              rawResponse = corrected;
-              parseResult = this.parseAgentJsonOutput(corrected, discussion);
+      if (!rawContent || rawContent === '__SKIP__') {
+        attemptFailureDetails = {
+          category: 'response_empty',
+          reasons: ['模型返回空内容或 __SKIP__ 标记，无法解析。'],
+        };
+        rawResponse = undefined;
+      } else {
+        rawResponse = rawContent;
+        let parseResult = this.parseAgentJsonOutput(rawContent, discussion);
+        let formatCorrectionAttempted = false;
+        let formatCorrectionError: string | undefined;
+        if (!parseResult.success) {
+          const correctionResult = await this.applyFormatCorrection(
+            rawContent,
+            modelConfig,
+            discussion,
+          );
+          if (correctionResult) {
+            formatCorrectionAttempted = true;
+            if (correctionResult.output) {
+              const corrected = correctionResult.output.trim();
+              if (corrected.length > 0) {
+                lastRawOutput = corrected;
+                rawResponse = corrected;
+                parseResult = this.parseAgentJsonOutput(corrected, discussion);
+              }
+            }
+            if (correctionResult.error) {
+              formatCorrectionError = correctionResult.error;
             }
           }
-          if (correctionResult.error) {
-            formatCorrectionError = correctionResult.error;
-          }
+        }
+
+        if (parseResult.success && parseResult.data) {
+          const parsed = parseResult.data;
+          content = parsed.content;
+          thoughtSummary = parsed.thoughtSummary;
+          innerState = parsed.innerState;
+          stance = parsed.stance;
+          personalMemory = parsed.personalMemory;
+          othersMemory = parsed.othersMemory;
+          rawResponse = parsed.normalizedRaw ?? rawResponse;
+          finalFailureDetails = undefined;
+          break;
+        } else {
+          const category = formatCorrectionAttempted
+            ? 'format_correction_failed'
+            : parseResult.category ?? 'extraction_missing';
+          const reason =
+            parseResult.reason ??
+            formatCorrectionError ??
+            (formatCorrectionAttempted
+              ? '格式校正助手仍未能生成合法 JSON。'
+              : '输出解析失败，缺少必需字段。');
+          attemptFailureDetails = {
+            category,
+            reasons: [reason],
+          };
+          content = '__SKIP__';
+          thoughtSummary = undefined;
+          innerState = undefined;
+          stance = undefined;
+          personalMemory = undefined;
+          othersMemory = undefined;
+          rawResponse = undefined;
         }
       }
 
-      if (parseResult.success && parseResult.data) {
-        const parsed = parseResult.data;
-        content = parsed.content;
-        thoughtSummary = parsed.thoughtSummary;
-        innerState = parsed.innerState;
-        stance = parsed.stance;
-          personalMemory = parsed.personalMemory;
-          othersMemory = parsed.othersMemory;
-        rawResponse = parsed.normalizedRaw ?? rawResponse;
-      } else {
-        const category = formatCorrectionAttempted
-          ? 'format_correction_failed'
-          : parseResult.category ?? 'extraction_missing';
-        const reason =
-          parseResult.reason ??
-          formatCorrectionError ??
-          (formatCorrectionAttempted
-            ? '格式校正助手仍未能生成合法 JSON。'
-            : '输出解析失败，缺少必需字段。');
-        failureDetails = {
-          category,
-          reasons: [reason],
-        };
-        content = '__SKIP__';
-        thoughtSummary = undefined;
-        innerState = undefined;
-        stance = undefined;
-        rawResponse = undefined;
+      if (!attemptFailureDetails) {
+        finalFailureDetails = undefined;
+        break;
       }
+      finalFailureDetails = attemptFailureDetails;
     }
 
-    if (failureDetails) {
+    if (finalFailureDetails) {
       const reasonText =
-        failureDetails.reasons.length > 0
-          ? failureDetails.reasons.join('；')
+        finalFailureDetails.reasons.length > 0
+          ? finalFailureDetails.reasons.join('；')
           : '未能解析有效输出';
       this.logFailure({
         agent,
         round,
         turn,
-        category: failureDetails.category,
+        category: finalFailureDetails.category,
         reason: reasonText,
         systemPrompt,
         userPrompt,
