@@ -106,7 +106,7 @@ ${trustWeights
           ? `历史内在状态（仅你本人可见，按时间从旧到新）：\n${previousInnerStates
               .map((item) => `- ${item.innerState}`)
               .join('\n')}`
-          : '历史内在状态：暂无记录（可能是首轮或之前跳过），需要与个人的初始立场和初始观点一致。'
+          : '历史内在状态：暂无记录（首轮），需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像。'
         : undefined;
     const previousThoughtSection =
       memoryEnabled
@@ -114,7 +114,7 @@ ${trustWeights
           ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
               .map((item) => `- ${item.thoughtSummary}`)
               .join('\n')}`
-          : '历史思考摘要：暂无记录，需要与个人的初始立场和初始观点一致。'
+          : '历史思考摘要：暂无记录，需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像。'
         : undefined;
 const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
   1. state.personal_memory（个人发言记忆）：数组，1~3 句，用第一人称记录你此刻最想保留的发言要点（信念、情绪、承诺等）；不要写“第几轮”或编号，这些句子将在下一次出场时原样回放给你，可源自你过往所有公开发言（content）或这些发言隐含的潜台词，也可以对你已接收到的关键信息做内化总结。
@@ -233,7 +233,7 @@ export const buildAgentUserPrompt = ({
           return `${speaker}: ${content}${stanceNote}`;
         })
         .join('\n')
-      : '上一轮暂无对话（是首轮，需要与个人的初始立场和初始观点一致）。';
+      : '上一轮暂无对话（是首轮，需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像）。';
   const previousRoundStanceSummary = previousRoundMessages.length
     ? `上一轮立场速记（不含你自己）：\n${previousRoundMessages
         .map((message) => {
