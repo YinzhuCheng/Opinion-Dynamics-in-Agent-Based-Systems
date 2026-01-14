@@ -237,7 +237,7 @@ export interface AppStore {
   importConfiguration: (payload: unknown) => { applied: boolean; warnings: string[] };
 }
 
-export const useAppStore = create<AppStore>((set) => ({
+export const useAppStore = create<AppStore>((set, get) => ({
   runState: createEmptyRunState(),
   currentResult: undefined,
   experiments: [],
@@ -593,8 +593,8 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.stopRequested = value;
       }),
     ),
-  exportConfiguration: () => {
-    const state = useAppStore.getState().runState;
+  exportConfiguration: (): unknown => {
+    const state = get().runState;
     return {
       version: 1,
       exportedAt: new Date().toISOString(),
@@ -614,7 +614,7 @@ export const useAppStore = create<AppStore>((set) => ({
       return { applied: false, warnings: ['导入失败：未找到 agents/config 字段。'] };
     }
 
-    const current = useAppStore.getState().runState;
+    const current = get().runState;
     const nextAgents = importedAgentsRaw ? sanitizeImportedAgents(importedAgentsRaw, warnings) : current.agents;
     const nextConfig = importedConfigRaw ? mergeImportedConfig(current.config, importedConfigRaw, nextAgents, warnings) : current.config;
 
@@ -709,6 +709,7 @@ const mergeImportedConfig = (current: RunConfig, imported: any, agents: AgentSpe
         ...exp,
         agentIds: [agents[0].id, agents[1].id],
       };
+      warnings.push('已根据导入的前两名 Agent 重建 personaTraversalExperiment.agentIds。');
     } else {
       merged.personaTraversalExperiment = exp;
     }
