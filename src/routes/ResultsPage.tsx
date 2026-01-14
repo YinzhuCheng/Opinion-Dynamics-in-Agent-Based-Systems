@@ -14,6 +14,7 @@ import type {
   Big5TraitKey,
 } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
+import { exportResultsZip } from '../utils/exportZip';
 import {
   ensureNegativeViewpoint,
   ensurePositiveViewpoint,
@@ -163,6 +164,45 @@ export function ResultsPage() {
     link.download = `conversation${suffix}-${new Date(displayResult.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportAllResultsZip = async () => {
+    try {
+      await exportResultsZip({
+        conversation: displayResult ?? undefined,
+        experiments,
+      });
+    } catch (error: any) {
+      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    }
+  };
+
+  const handleExportSelectedExperimentZip = async () => {
+    if (!selectedExperiment) {
+      window.alert('暂无可导出的实验。');
+      return;
+    }
+    try {
+      await exportResultsZip({
+        experiments: [selectedExperiment],
+      });
+    } catch (error: any) {
+      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    }
+  };
+
+  const handleExportAllExperimentsZip = async () => {
+    if (!experiments || experiments.length === 0) {
+      window.alert('暂无可导出的实验。');
+      return;
+    }
+    try {
+      await exportResultsZip({
+        experiments,
+      });
+    } catch (error: any) {
+      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    }
   };
 
   const handleExportExperimentJson = (data: PersonaTraversalExperimentResult) => {
@@ -348,6 +388,15 @@ export function ResultsPage() {
                 <button type="button" className="button secondary" onClick={() => handleDownloadTranscript('full')}>
                   下载完整版（含提示词）
                 </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={handleExportAllResultsZip}
+                  disabled={!displayResult && experiments.length === 0}
+                  title="导出：对话记录（每段对话一个文件）+ 观点曲线（每段对话一个文件夹），并遍历所有实验轨道"
+                >
+                  导出全部结果（ZIP）
+                </button>
                   <button
                     type="button"
                     className="button secondary"
@@ -405,6 +454,24 @@ export function ResultsPage() {
                 disabled={!selectedExperiment.result}
               >
                 导出全部轨道（JSON）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleExportSelectedExperimentZip}
+                disabled={!selectedExperiment?.result}
+                title="导出该实验下所有轨道：对话记录 + 观点曲线（ZIP）"
+              >
+                导出该实验（ZIP）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleExportAllExperimentsZip}
+                disabled={experiments.length === 0}
+                title="遍历导出所有实验：对话记录 + 观点曲线（ZIP）"
+              >
+                导出全部实验（ZIP）
               </button>
               <button
                 type="button"
