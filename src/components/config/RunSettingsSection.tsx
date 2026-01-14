@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import type { ChangeEvent } from 'react';
-import type { DialogueMode, ModelConfig, Vendor, PromptToggleKey } from '../../types';
+import type {
+  DialogueMode,
+  ModelConfig,
+  Vendor,
+  PromptToggleKey,
+  Big5TraitKey,
+  PersonaTraversalExperimentConfig,
+} from '../../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
 import { chatStream } from '../../utils/llmAdapter';
@@ -70,6 +77,7 @@ export function RunSettingsSection() {
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
 
   const runConfig = useAppStore((state) => state.runState.config);
+  const agents = useAppStore((state) => state.runState.agents);
   const discussion = useAppStore((state) => state.runState.config.discussion);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
@@ -83,7 +91,67 @@ export function RunSettingsSection() {
   const setPositiveViewpoint = useAppStore((state) => state.setPositiveViewpoint);
   const setNegativeViewpoint = useAppStore((state) => state.setNegativeViewpoint);
   const setPromptToggle = useAppStore((state) => state.setPromptToggle);
+  const updateRunConfig = useAppStore((state) => state.updateRunConfig);
   const promptToggles = runConfig.promptToggles ?? DEFAULT_PROMPT_TOGGLES;
+  const experiment = runConfig.personaTraversalExperiment;
+
+  const experimentLevels = [10, 30, 50, 70, 90];
+  const baseDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
+  const isExperimentSupported = agents.length === 2;
+  const resolvedExperimentDimensions = experiment?.dimensions?.length
+    ? experiment.dimensions
+    : baseDimensions;
+  const experimentM = resolvedExperimentDimensions.length * experimentLevels.length;
+  const clampedExperimentConcurrency = Math.max(1, Math.min(experimentM || 1, experiment?.concurrency ?? 1));
+
+  const setExperimentConfig = (partial: Partial<PersonaTraversalExperimentConfig>) => {
+    if (!isExperimentSupported) return;
+    const targetAgentId = (partial.targetAgentId ?? experiment?.targetAgentId ?? agents[0]?.id) || agents[0]?.id;
+    const nextDimensions = partial.dimensions ?? resolvedExperimentDimensions;
+    const nextLevels = partial.levels ?? (experiment?.levels?.length ? experiment.levels : experimentLevels);
+    const M = Math.max(1, nextDimensions.length * nextLevels.length);
+    const nextConcurrency = Math.max(1, Math.min(M, partial.concurrency ?? clampedExperimentConcurrency));
+    updateRunConfig((config) => ({
+      ...config,
+      personaTraversalExperiment: {
+        enabled: partial.enabled ?? experiment?.enabled ?? false,
+        targetAgentId,
+        dimensions: nextDimensions,
+        levels: nextLevels,
+        concurrency: nextConcurrency,
+        ...partial,
+      },
+    }));
+  };
+
+  const handleExperimentEnabledChange = (checked: boolean) => {
+    if (!isExperimentSupported) return;
+    if (!checked) {
+      updateRunConfig((config) => ({ ...config, personaTraversalExperiment: undefined }));
+      return;
+    }
+    updateRunConfig((config) => ({
+      ...config,
+      personaTraversalExperiment: {
+        enabled: true,
+        targetAgentId: agents[0]?.id ?? '',
+        dimensions: baseDimensions,
+        levels: experimentLevels,
+        concurrency: 1,
+      },
+    }));
+  };
+
+  const includeDimension = (key: Big5TraitKey) => resolvedExperimentDimensions.includes(key);
+  const toggleOptionalDimension = (key: Big5TraitKey, checked: boolean) => {
+    const required = new Set<Big5TraitKey>(baseDimensions);
+    const current = new Set<Big5TraitKey>(resolvedExperimentDimensions);
+    if (required.has(key)) return;
+    if (checked) current.add(key);
+    else current.delete(key);
+    const next = Array.from(current);
+    setExperimentConfig({ dimensions: next });
+  };
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -359,6 +427,120 @@ export function RunSettingsSection() {
                   ))}
                 </div>
               </div>
+
+              {isExperimentSupported ? (
+                <div className="card-section">
+                  <h3 className="card-section-title">人格遍历实验（2 Agent）</h3>
+                  <p className="form-hint">
+                    固定其他参数，仅遍历指定人格维度（取值 10/30/50/70/90）。遍历某个维度时，其余维度一律设为 50。总实验规模记为 M，并支持并发 k（k ≤ M）。
+                  </p>
+                  <label className="checkbox-field">
+                    <div className="checkbox-description">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(experiment?.enabled)}
+                        onChange={(event) => handleExperimentEnabledChange(event.target.checked)}
+                      />
+                      <div>
+                        <strong>启用人格遍历实验</strong>
+                        <p className="form-hint">启用后，“开始对话”将启动批量实验轨道，而不是单次对话。</p>
+                      </div>
+                    </div>
+                  </label>
+
+                  {experiment?.enabled ? (
+                    <div className="grid two-columns">
+                      <label className="form-field">
+                        <span>被遍历的 Agent</span>
+                        <select
+                          value={experiment.targetAgentId}
+                          onChange={(event) => setExperimentConfig({ targetAgentId: event.target.value })}
+                        >
+                          {agents.map((agent) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="form-hint">该 Agent 的人格将被覆盖为 Big5 基线（50）并按维度单独遍历。</p>
+                      </label>
+
+                      <label className="form-field">
+                        <span>并发轨道数 k（≤ M）</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={experimentM}
+                          value={clampedExperimentConcurrency}
+                          onChange={(event) => setExperimentConfig({ concurrency: Number(event.target.value) || 1 })}
+                        />
+                        <p className="form-hint">
+                          当前实验规模 M = {experimentM}（维度 {resolvedExperimentDimensions.join(', ')} × 5 档位）。
+                        </p>
+                      </label>
+
+                      <div className="form-field">
+                        <span>遍历维度</span>
+                        <div className="grid two-columns">
+                          <label className="checkbox-field">
+                            <div className="checkbox-description">
+                              <input type="checkbox" checked disabled />
+                              <div>
+                                <strong>O（开放性）</strong>
+                                <p className="form-hint">必选</p>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="checkbox-field">
+                            <div className="checkbox-description">
+                              <input type="checkbox" checked disabled />
+                              <div>
+                                <strong>A（宜人性）</strong>
+                                <p className="form-hint">必选</p>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="checkbox-field">
+                            <div className="checkbox-description">
+                              <input type="checkbox" checked disabled />
+                              <div>
+                                <strong>N（神经质）</strong>
+                                <p className="form-hint">必选</p>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="checkbox-field">
+                            <div className="checkbox-description">
+                              <input
+                                type="checkbox"
+                                checked={includeDimension('C')}
+                                onChange={(event) => toggleOptionalDimension('C', event.target.checked)}
+                              />
+                              <div>
+                                <strong>C（尽责性）</strong>
+                                <p className="form-hint">可选（不选则始终为 50）</p>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="checkbox-field">
+                            <div className="checkbox-description">
+                              <input
+                                type="checkbox"
+                                checked={includeDimension('E')}
+                                onChange={(event) => toggleOptionalDimension('E', event.target.checked)}
+                              />
+                              <div>
+                                <strong>E（外向性）</strong>
+                                <p className="form-hint">可选（不选则始终为 50）</p>
+                              </div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
           {runConfig.useGlobalModelConfig && (
             <div className="global-model-card">

@@ -1,5 +1,7 @@
 export type Vendor = 'openai' | 'anthropic' | 'gemini';
 
+export type Big5TraitKey = 'O' | 'C' | 'E' | 'A' | 'N';
+
 export interface ModelConfig {
   vendor: Vendor;
   baseUrl?: string;
@@ -95,9 +97,42 @@ export interface RunConfig {
     enableStanceChart: boolean;
   };
     promptToggles: PromptToggleConfig;
+  personaTraversalExperiment?: PersonaTraversalExperimentConfig;
 }
 
 export type TrustMatrix = Record<string, Record<string, number>>;
+
+export interface PersonaTraversalExperimentConfig {
+  enabled: boolean;
+  /** Only supported when exactly 2 agents. */
+  targetAgentId: string;
+  /** Default: ['O','A','N'], optionally include C/E. */
+  dimensions: Big5TraitKey[];
+  /** Default: [10,30,50,70,90] */
+  levels: number[];
+  /** Concurrency pool size, 1..M */
+  concurrency: number;
+}
+
+export interface ExperimentTrackMeta {
+  index: number;
+  trait: Big5TraitKey;
+  value: number;
+}
+
+export interface ExperimentTrackResult {
+  id: string;
+  meta: ExperimentTrackMeta;
+  result: SessionResult;
+}
+
+export interface PersonaTraversalExperimentResult {
+  config: PersonaTraversalExperimentConfig;
+  totalTracks: number;
+  startedAt: number;
+  finishedAt: number;
+  tracks: ExperimentTrackResult[];
+}
 
 export interface Message {
   id: string;
