@@ -475,7 +475,7 @@ export function ResultsPage() {
       {selectedExperiment ? (
         <section className="card">
           <header className="card__header">
-            <h2>人格遍历实验结果</h2>
+            <h2>遍历实验结果</h2>
             <div className="card__actions">
               <button
                 type="button"

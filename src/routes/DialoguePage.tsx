@@ -255,9 +255,9 @@ export function DialoguePage() {
                   type="button"
                   className="button secondary"
                   onClick={handleStartExperiment}
-                  title="启动人格遍历实验（多轨并行）"
+                  title="启动遍历实验（多轨并行）"
                 >
-                  开始人格遍历实验
+                  开始遍历实验
                 </button>
               ) : null}
               {experiments.length > 0 ? (
@@ -265,9 +265,9 @@ export function DialoguePage() {
                   type="button"
                   className="button secondary"
                   onClick={handleStopExperiment}
-                  title="停止人格遍历实验（中止所有在途轨道）"
+                  title="停止遍历实验（中止所有在途轨道）"
                 >
-                  停止人格遍历实验
+                  停止遍历实验
                 </button>
               ) : null}
             <Link to="/" className="button secondary">
