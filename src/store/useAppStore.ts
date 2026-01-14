@@ -6,9 +6,14 @@ import type {
   Message,
   ModelConfig,
   PersonaFree,
+  Persona,
+  PersonaBig5,
+  PersonaTraversalExperimentConfig,
   RunConfig,
   RunState,
     SessionResult,
+  PersonaTraversalExperimentRecord,
+  ExperimentTrackSelector,
   Vendor,
   DialogueMode,
   RunStatus,
@@ -182,6 +187,9 @@ const createVendorDefaults = (): VendorDefaults => ({
 export interface AppStore {
   runState: RunState;
   currentResult?: SessionResult;
+  experiments: PersonaTraversalExperimentRecord[];
+  activeExperimentId?: string;
+  activeExperimentTrack?: ExperimentTrackSelector;
   currentPage: 'configuration' | 'dialogue' | 'results';
   vendorDefaults: VendorDefaults;
   setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
@@ -198,6 +206,11 @@ export interface AppStore {
   setSummary: (summary: string) => void;
   setVisibleWindow: (messages: Message[]) => void;
   setResult: (result?: SessionResult) => void;
+  addExperiment: (record: PersonaTraversalExperimentRecord) => void;
+  updateExperiment: (id: string, updater: (record: PersonaTraversalExperimentRecord) => PersonaTraversalExperimentRecord) => void;
+  setActiveExperimentId: (id?: string) => void;
+  setActiveExperimentTrack: (selector?: ExperimentTrackSelector) => void;
+  resetExperiments: () => void;
   setVendorBaseUrl: (vendor: Vendor, baseUrl: string) => void;
   setVendorModel: (vendor: Vendor, model: string) => void;
   setVendorApiKey: (vendor: Vendor, apiKey: string) => void;
@@ -220,11 +233,16 @@ export interface AppStore {
     configureAgentGroup: (distribution: Record<number, number>) => void;
   setRunStatus: (updater: Partial<RunStatus> | ((status: RunStatus) => RunStatus)) => void;
   setStopRequested: (value: boolean) => void;
+  exportConfiguration: () => unknown;
+  importConfiguration: (payload: unknown) => { applied: boolean; warnings: string[] };
 }
 
-export const useAppStore = create<AppStore>((set) => ({
+export const useAppStore = create<AppStore>((set, get) => ({
   runState: createEmptyRunState(),
   currentResult: undefined,
+  experiments: [],
+  activeExperimentId: undefined,
+  activeExperimentTrack: undefined,
   currentPage: 'configuration',
   vendorDefaults: createVendorDefaults(),
   setCurrentPage: (page) => set({ currentPage: page }),
@@ -289,6 +307,8 @@ export const useAppStore = create<AppStore>((set) => ({
       produce((state: AppStore) => {
         state.runState = createEmptyRunState();
         state.currentResult = undefined;
+        state.experiments = [];
+        state.activeExperimentId = undefined;
         state.currentPage = 'configuration';
       }),
     ),
@@ -342,6 +362,26 @@ export const useAppStore = create<AppStore>((set) => ({
       }),
     ),
     setResult: (result) => set({ currentResult: result }),
+    addExperiment: (record) =>
+      set(
+        produce((state: AppStore) => {
+          state.experiments.unshift(record);
+          state.activeExperimentId = record.id;
+          state.activeExperimentTrack = undefined;
+        }),
+      ),
+    updateExperiment: (id, updater) =>
+      set(
+        produce((state: AppStore) => {
+          const index = state.experiments.findIndex((exp) => exp.id === id);
+          if (index >= 0) {
+            state.experiments[index] = updater(state.experiments[index]);
+          }
+        }),
+      ),
+    setActiveExperimentId: (id) => set({ activeExperimentId: id, activeExperimentTrack: undefined }),
+    setActiveExperimentTrack: (selector) => set({ activeExperimentTrack: selector }),
+    resetExperiments: () => set({ experiments: [], activeExperimentId: undefined, activeExperimentTrack: undefined }),
     setVendorBaseUrl: (vendor, baseUrl) =>
       set(
         produce((state: AppStore) => {
@@ -553,4 +593,129 @@ export const useAppStore = create<AppStore>((set) => ({
         state.runState.stopRequested = value;
       }),
     ),
+  exportConfiguration: (): unknown => {
+    const state = get().runState;
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      agents: state.agents,
+      config: state.config,
+    };
+  },
+  importConfiguration: (payload) => {
+    const warnings: string[] = [];
+    if (!payload || typeof payload !== 'object') {
+      return { applied: false, warnings: ['导入失败：文件内容不是 JSON 对象。'] };
+    }
+    const root = payload as any;
+    const importedAgentsRaw = Array.isArray(root.agents) ? root.agents : undefined;
+    const importedConfigRaw = root.config && typeof root.config === 'object' ? root.config : undefined;
+    if (!importedAgentsRaw && !importedConfigRaw) {
+      return { applied: false, warnings: ['导入失败：未找到 agents/config 字段。'] };
+    }
+
+    const current = get().runState;
+    const nextAgents = importedAgentsRaw ? sanitizeImportedAgents(importedAgentsRaw, warnings) : current.agents;
+    const nextConfig = importedConfigRaw ? mergeImportedConfig(current.config, importedConfigRaw, nextAgents, warnings) : current.config;
+
+    set(
+      produce((state: AppStore) => {
+        state.runState.agents = nextAgents;
+        state.runState.config = nextConfig;
+        state.runState.config.trustMatrix = ensureTrustMatrix(nextAgents, nextConfig.trustMatrix);
+        // importing a new configuration invalidates any in-progress conversation history
+        state.runState.messages = [];
+        state.runState.failureRecords = [];
+        state.runState.summary = '';
+        state.runState.visibleWindow = [];
+        state.runState.status = createInitialStatus(state.runState.config.mode);
+        state.runState.stopRequested = false;
+      }),
+    );
+
+    return { applied: true, warnings };
+  },
 }));
+
+const sanitizeImportedAgents = (items: unknown[], warnings: string[]): AgentSpec[] => {
+  const agents: AgentSpec[] = [];
+  items.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object') {
+      warnings.push(`agents[${index}] 无效，已跳过。`);
+      return;
+    }
+    const node = raw as any;
+    const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : nanoid();
+    const name = typeof node.name === 'string' && node.name.trim() ? node.name.trim() : `A${index + 1}`;
+    const persona = sanitizeImportedPersona(node.persona, warnings, index);
+    const initialOpinion = typeof node.initialOpinion === 'string' ? node.initialOpinion : '';
+    const initialStance =
+      typeof node.initialStance === 'number' && Number.isFinite(node.initialStance) ? node.initialStance : undefined;
+    const modelConfig = typeof node.modelConfig === 'object' && node.modelConfig ? (node.modelConfig as ModelConfig) : undefined;
+    agents.push({ id, name, persona, initialOpinion, initialStance, modelConfig });
+  });
+  if (agents.length === 0) {
+    warnings.push('导入 agents 为空，已保留默认 2 个 Agent。');
+    return createDefaultAgents();
+  }
+  return agents;
+};
+
+const sanitizeImportedPersona = (persona: unknown, warnings: string[], index: number): Persona => {
+  if (!persona || typeof persona !== 'object') {
+    warnings.push(`agents[${index}].persona 缺失，已设为 free。`);
+    return createFreePersona();
+  }
+  const p = persona as any;
+  const type = p.type;
+  if (type === 'big5') {
+    const clamp = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : 50);
+    const big5: PersonaBig5 = {
+      type: 'big5',
+      O: clamp(p.O),
+      C: clamp(p.C),
+      E: clamp(p.E),
+      A: clamp(p.A),
+      N: clamp(p.N),
+    };
+    return big5;
+  }
+  if (type === 'mbti' && typeof p.mbti === 'string') {
+    return { type: 'mbti', mbti: p.mbti } as any;
+  }
+  if (type === 'free') {
+    return { type: 'free', description: typeof p.description === 'string' ? p.description : '' };
+  }
+  warnings.push(`agents[${index}].persona.type 无法识别，已设为 free。`);
+  return createFreePersona();
+};
+
+const mergeImportedConfig = (current: RunConfig, imported: any, agents: AgentSpec[], warnings: string[]): RunConfig => {
+  const merged: RunConfig = {
+    ...current,
+    ...imported,
+    discussion: { ...current.discussion, ...(imported.discussion ?? {}) },
+    visualization: { ...current.visualization, ...(imported.visualization ?? {}) },
+    promptToggles: { ...DEFAULT_PROMPT_TOGGLES, ...(current.promptToggles ?? {}), ...(imported.promptToggles ?? {}) },
+    globalModelConfig: imported.globalModelConfig
+      ? { ...(current.globalModelConfig ?? { ...defaultModelConfig }), ...imported.globalModelConfig }
+      : current.globalModelConfig,
+  };
+  merged.discussion.stanceScaleSize = sanitizeStanceScaleSize(merged.discussion.stanceScaleSize);
+  if (imported.personaTraversalExperiment) {
+    const exp = imported.personaTraversalExperiment as PersonaTraversalExperimentConfig;
+    if (agents.length >= 2) {
+      merged.personaTraversalExperiment = {
+        ...exp,
+        agentIds: [agents[0].id, agents[1].id],
+      };
+      warnings.push('已根据导入的前两名 Agent 重建 personaTraversalExperiment.agentIds。');
+    } else {
+      merged.personaTraversalExperiment = exp;
+    }
+  }
+  if (!merged.trustMatrix) {
+    merged.trustMatrix = {};
+  }
+  return merged;
+};

@@ -4,7 +4,15 @@ import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts';
 import { useAppStore } from '../store/useAppStore';
-import type { Message, SessionResult, RunConfig, FailureRecord } from '../types';
+import type {
+  Message,
+  SessionResult,
+  RunConfig,
+  FailureRecord,
+  PersonaTraversalExperimentResult,
+  ExperimentTrackResult,
+  Big5TraitKey,
+} from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import {
   ensureNegativeViewpoint,
@@ -15,6 +23,11 @@ type ReactEChartsInstance = InstanceType<typeof ReactECharts>;
 
 export function ResultsPage() {
   const result = useAppStore((state) => state.currentResult);
+  const experiments = useAppStore((state) => state.experiments);
+  const activeExperimentId = useAppStore((state) => state.activeExperimentId);
+  const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
+  const activeExperimentTrack = useAppStore((state) => state.activeExperimentTrack);
+  const setActiveExperimentTrack = useAppStore((state) => state.setActiveExperimentTrack);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
@@ -39,14 +52,90 @@ export function ResultsPage() {
     };
   }, [result, runState]);
   const displayResult = result ?? liveResult;
-  const discussionSnapshot = displayResult?.configSnapshot.discussion;
-  const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
-  const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
+  const selectedExperiment = useMemo(() => {
+    if (experiments.length === 0) return undefined;
+    if (activeExperimentId) {
+      const found = experiments.find((exp) => exp.id === activeExperimentId);
+      if (found) return found;
+    }
+    return experiments[0];
+  }, [experiments, activeExperimentId]);
+  const experimentAgentNameMap = useMemo(
+    () => resolveAgentNameMap(selectedExperiment?.agentsSnapshot ?? runState.agents),
+    [selectedExperiment, runState.agents],
+  );
+
+  const selectedExperimentResult = selectedExperiment?.result;
+  const trackTraitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
+  const trackLevelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
+  const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+  const defaultTrait = trackTraitOptions[0];
+  const defaultAValue = trackLevelOptions[0];
+  const defaultBValue = trackLevelOptions[0];
+  const resolvedTrackSelector =
+    selectedExperimentResult && defaultTrait != null && defaultAValue != null && defaultBValue != null
+      ? (activeExperimentTrack ?? {
+          trait: defaultTrait,
+          agentAValue: defaultAValue,
+          agentBValue: defaultBValue,
+        })
+      : undefined;
+  const selectedTrack = useMemo(() => {
+    if (!selectedExperimentResult || !resolvedTrackSelector) return undefined;
+    return selectedExperimentResult.tracks.find(
+      (track) =>
+        track.meta.trait === resolvedTrackSelector.trait &&
+        track.meta.agentAValue === resolvedTrackSelector.agentAValue &&
+        track.meta.agentBValue === resolvedTrackSelector.agentBValue,
+    );
+  }, [selectedExperimentResult, resolvedTrackSelector]);
+
+  const selectedTrackLiveMessages = useMemo(() => {
+    if (!selectedExperiment || !resolvedTrackSelector) return undefined;
+    const key = `${resolvedTrackSelector.trait}-${resolvedTrackSelector.agentAValue}-${resolvedTrackSelector.agentBValue}`;
+    return selectedExperiment.trackLiveMessages?.[key];
+  }, [selectedExperiment, resolvedTrackSelector]);
+
+  const chartResult = useMemo<SessionResult | undefined>(() => {
+    // Prefer the active experiment track (completed or live) when available.
+    if (selectedExperiment && resolvedTrackSelector) {
+      if (selectedTrack?.result) return selectedTrack.result;
+      if (selectedTrackLiveMessages && selectedTrackLiveMessages.length > 0) {
+        return {
+          messages: selectedTrackLiveMessages,
+          finishedAt: Date.now(),
+          summary: '',
+          configSnapshot: selectedExperiment.runConfigSnapshot,
+          status: {
+            phase: 'running',
+            mode: selectedExperiment.runConfigSnapshot.mode,
+            startedAt: selectedExperiment.status.startedAt,
+            finishedAt: undefined,
+            currentRound: 0,
+            currentTurn: 0,
+            totalMessages: selectedTrackLiveMessages.length,
+            summarizedCount: 0,
+            lastAgentId: selectedTrackLiveMessages[selectedTrackLiveMessages.length - 1]?.agentId,
+            error: undefined,
+            awaitingLabel: undefined,
+            sessionId: 0,
+          },
+          failures: [],
+        };
+      }
+    }
+    return displayResult ?? undefined;
+  }, [displayResult, resolvedTrackSelector, selectedExperiment, selectedTrack, selectedTrackLiveMessages]);
+
+  const conversationDiscussionSnapshot = displayResult?.configSnapshot.discussion;
+  const positiveViewpointLabel = ensurePositiveViewpoint(conversationDiscussionSnapshot?.positiveViewpoint);
+  const negativeViewpointLabel = ensureNegativeViewpoint(conversationDiscussionSnapshot?.negativeViewpoint);
 
   const stanceDataset = useMemo(() => {
-    if (!displayResult) return null;
-    return prepareStanceDataset(displayResult, agentNameMap);
-  }, [displayResult, agentNameMap]);
+    if (!chartResult) return null;
+    const nameMap = selectedExperiment && resolvedTrackSelector ? experimentAgentNameMap : agentNameMap;
+    return prepareStanceDataset(chartResult, nameMap);
+  }, [agentNameMap, chartResult, experimentAgentNameMap, resolvedTrackSelector, selectedExperiment]);
 
   const individualChartOption = useMemo<EChartsOption | null>(() => {
     if (!stanceDataset) return null;
@@ -72,6 +161,72 @@ export function ResultsPage() {
     link.href = url;
     const suffix = mode === 'full' ? '-full' : '-standard';
     link.download = `conversation${suffix}-${new Date(displayResult.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportExperimentJson = (data: PersonaTraversalExperimentResult) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `persona-traversal-experiment-${new Date(data.finishedAt).toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const buildExperimentTranscriptText = (
+    data: PersonaTraversalExperimentResult,
+    mode: 'standard' | 'full',
+  ): string => {
+    const lines: string[] = [];
+    lines.push(`实验结束时间：${new Date(data.finishedAt).toLocaleString()}`);
+    lines.push(`总轨道数 M：${data.totalTracks}`);
+    lines.push(`维度：${data.config.dimensions.join(', ')}`);
+    lines.push(`档位：${data.config.levels.join(' / ')}`);
+    lines.push(`并发 k：${data.config.concurrency}`);
+    lines.push('');
+    data.tracks.forEach((track) => {
+      lines.push('============================================================');
+      const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;
+      const bName = agentNameMap[track.meta.agentBId] ?? track.meta.agentBId;
+      lines.push(
+        `轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait}（${aName}=${track.meta.agentAValue}, ${bName}=${track.meta.agentBValue}）`,
+      );
+      lines.push(`结束时间：${new Date(track.result.finishedAt).toLocaleString()}`);
+      lines.push('');
+      lines.push(buildTranscriptText(track.result, agentNameMap, mode));
+      lines.push('');
+    });
+    return lines.join('\n');
+  };
+
+  const handleExportExperimentTranscript = (
+    data: PersonaTraversalExperimentResult,
+    mode: 'standard' | 'full',
+  ) => {
+    const text = buildExperimentTranscriptText(data, mode);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const suffix = mode === 'full' ? '-full' : '-standard';
+    link.download = `persona-traversal-experiment${suffix}-${new Date(data.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadTrackTranscript = (
+    track: ExperimentTrackResult,
+    mode: 'standard' | 'full',
+  ) => {
+    const text = buildTranscriptText(track.result, agentNameMap, mode);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const suffix = mode === 'full' ? '-full' : '-standard';
+    link.download = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -150,7 +305,7 @@ export function ResultsPage() {
 
       const link = document.createElement('a');
       link.href = dataUrl;
-      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      const finishedAt = chartResult?.finishedAt ?? displayResult?.finishedAt ?? Date.now();
       const suffix =
         chartType === 'individual' ? 'individual' : 'group';
       link.download = `stance-chart-${suffix}-${new Date(finishedAt)
@@ -237,6 +392,204 @@ export function ResultsPage() {
           )}
         </div>
       </section>
+
+      {selectedExperiment ? (
+        <section className="card">
+          <header className="card__header">
+            <h2>人格遍历实验结果</h2>
+            <div className="card__actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => selectedExperiment.result && handleExportExperimentJson(selectedExperiment.result)}
+                disabled={!selectedExperiment.result}
+              >
+                导出全部轨道（JSON）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => selectedExperiment.result && handleExportExperimentTranscript(selectedExperiment.result, 'standard')}
+                disabled={!selectedExperiment.result}
+              >
+                导出全部轨道文本（精简）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => selectedExperiment.result && handleExportExperimentTranscript(selectedExperiment.result, 'full')}
+                disabled={!selectedExperiment.result}
+              >
+                导出全部轨道文本（完整版）
+              </button>
+            </div>
+          </header>
+          <div className="card__body">
+            <label className="form-field">
+              <span>选择实验</span>
+              <select
+                value={selectedExperiment.id}
+                onChange={(event) => setActiveExperimentId(event.target.value)}
+              >
+                {experiments.map((exp) => (
+                  <option key={exp.id} value={exp.id}>
+                    {exp.id} ｜ {exp.name} ｜ {exp.status.phase} ({exp.status.completedTracks}/{exp.status.totalTracks})
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedExperiment.result ? (
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>轨道检索：维度</span>
+                  <select
+                    value={resolvedTrackSelector?.trait ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: event.target.value as Big5TraitKey,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {trackTraitOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{agentNameMap[agentAId] ?? agentAId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentAValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: Number(event.target.value),
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {trackLevelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{agentNameMap[agentBId] ?? agentBId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentBValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: Number(event.target.value),
+                      })
+                    }
+                  >
+                    {trackLevelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="form-field">
+                  <span>当前轨道</span>
+                  <p className="form-hint">
+                    {resolvedTrackSelector
+                      ? `${resolvedTrackSelector.trait}（${agentNameMap[agentAId] ?? agentAId}=${resolvedTrackSelector.agentAValue}，${agentNameMap[agentBId] ?? agentBId}=${resolvedTrackSelector.agentBValue}）`
+                      : '（未选择）'}
+                    {selectedTrack ? '' : ' —— 暂无结果（可能还在跑）'}
+                  </p>
+                  {selectedTrack ? (
+                    <div className="results-actions">
+                      <button
+                        type="button"
+                        className="button tertiary"
+                        onClick={() => handleDownloadTrackTranscript(selectedTrack, 'standard')}
+                      >
+                        导出该轨道（精简）
+                      </button>
+                      <button
+                        type="button"
+                        className="button tertiary"
+                        onClick={() => handleDownloadTrackTranscript(selectedTrack, 'full')}
+                      >
+                        导出该轨道（完整版）
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <p className="form-hint">
+              {selectedExperiment.result
+                ? `规模 M = ${selectedExperiment.result.totalTracks}（维度 ${selectedExperiment.result.config.dimensions.join(', ')} × 5×5 网格），并发 k = ${selectedExperiment.result.config.concurrency}。`
+                : null}
+              {` 当前状态：${selectedExperiment.status.phase}（已完成 ${selectedExperiment.status.completedTracks}/${selectedExperiment.status.totalTracks}）`}
+            </p>
+            {!selectedExperiment.result || selectedExperiment.result.tracks.length === 0 ? (
+              <div className="empty-state">
+                <p>暂无实验轨道结果。</p>
+              </div>
+            ) : (
+              <div className="results-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>轨道</th>
+                      <th>维度</th>
+                      <th>取值（A1 × A2）</th>
+                      <th>结束时间</th>
+                      <th>有效消息数</th>
+                      <th>导出</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedExperiment.result.tracks.map((track) => {
+                      const finishedAt = track.result.finishedAt;
+                      const visibleCount = countVisibleMessages(track.result.messages);
+                      const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;
+                      const bName = agentNameMap[track.meta.agentBId] ?? track.meta.agentBId;
+                      return (
+                        <tr key={track.id}>
+                          <td>#{track.meta.index + 1}</td>
+                          <td>{track.meta.trait}</td>
+                          <td>
+                            {aName}={track.meta.agentAValue} × {bName}={track.meta.agentBValue}
+                          </td>
+                          <td>{new Date(finishedAt).toLocaleString()}</td>
+                          <td>{visibleCount}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button tertiary"
+                              onClick={() => handleDownloadTrackTranscript(track, 'standard')}
+                            >
+                              精简 .txt
+                            </button>
+                            <button
+                              type="button"
+                              className="button tertiary"
+                              onClick={() => handleDownloadTrackTranscript(track, 'full')}
+                            >
+                              完整 .txt
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       <section className="card">
         <header className="card__header">

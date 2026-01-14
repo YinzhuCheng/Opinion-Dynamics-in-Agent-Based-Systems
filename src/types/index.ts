@@ -1,5 +1,7 @@
 export type Vendor = 'openai' | 'anthropic' | 'gemini';
 
+export type Big5TraitKey = 'O' | 'C' | 'E' | 'A' | 'N';
+
 export interface ModelConfig {
   vendor: Vendor;
   baseUrl?: string;
@@ -67,6 +69,10 @@ export interface PromptToggleConfig {
   persona: boolean;
   trustMatrix: boolean;
   randomLength: boolean;
+  /** When false, do not request / parse the structured inner state (state). */
+  outputInnerState: boolean;
+  /** When false, do not request / parse the structured thought summary (think). */
+  outputThink: boolean;
   memory: boolean;
 }
 
@@ -76,6 +82,8 @@ export const DEFAULT_PROMPT_TOGGLES: PromptToggleConfig = {
   persona: true,
   trustMatrix: true,
   randomLength: true,
+  outputInnerState: true,
+  outputThink: true,
   memory: true,
 };
 
@@ -95,9 +103,91 @@ export interface RunConfig {
     enableStanceChart: boolean;
   };
     promptToggles: PromptToggleConfig;
+  personaTraversalExperiment?: PersonaTraversalExperimentConfig;
 }
 
 export type TrustMatrix = Record<string, Record<string, number>>;
+
+export interface PersonaTraversalExperimentConfig {
+  enabled: boolean;
+  /**
+   * Only supported when exactly 2 agents.
+   * The experiment always traverses BOTH agents' Big5 values.
+   */
+  agentIds: [string, string];
+  /** Selected dimensions to traverse. M = dimensions.length * (levels.length ^ 2). */
+  dimensions: Big5TraitKey[];
+  /** Default: [10,30,50,70,90] */
+  levels: number[];
+  /** Concurrency pool size, 1..M */
+  concurrency: number;
+}
+
+export interface ExperimentTrackMeta {
+  index: number;
+  trait: Big5TraitKey;
+  agentAId: string;
+  agentBId: string;
+  agentAValue: number;
+  agentBValue: number;
+}
+
+export interface ExperimentTrackResult {
+  id: string;
+  meta: ExperimentTrackMeta;
+  result: SessionResult;
+}
+
+export interface PersonaTraversalExperimentResult {
+  config: PersonaTraversalExperimentConfig;
+  totalTracks: number;
+  startedAt: number;
+  finishedAt: number;
+  tracks: ExperimentTrackResult[];
+}
+
+export type ExperimentPhase = 'idle' | 'running' | 'completed' | 'cancelled' | 'error';
+
+export interface PersonaTraversalExperimentStatus {
+  phase: ExperimentPhase;
+  totalTracks: number;
+  completedTracks: number;
+  runningTracks: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+}
+
+export interface PersonaTraversalExperimentRecord {
+  id: string;
+  name: string;
+  createdAt: number;
+  agentsSnapshot: AgentSpec[];
+  runConfigSnapshot: RunConfig;
+  status: PersonaTraversalExperimentStatus;
+  trackProgress?: ExperimentTrackProgress[];
+  trackLiveMessages?: Record<string, Message[]>;
+  result?: PersonaTraversalExperimentResult;
+}
+
+export interface ExperimentTrackSelector {
+  trait: Big5TraitKey;
+  agentAValue: number;
+  agentBValue: number;
+}
+
+export type ExperimentTrackPhase = 'queued' | 'running' | 'completed' | 'cancelled' | 'error';
+
+export interface ExperimentTrackProgress {
+  index: number;
+  selector: ExperimentTrackSelector;
+  phase: ExperimentTrackPhase;
+  completedMessages: number;
+  totalMessagesTarget: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+}
 
 export interface Message {
   id: string;

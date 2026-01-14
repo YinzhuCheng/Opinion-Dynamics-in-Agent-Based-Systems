@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import type { ChangeEvent } from 'react';
-import type { DialogueMode, ModelConfig, Vendor, PromptToggleKey } from '../../types';
+import type {
+  DialogueMode,
+  ModelConfig,
+  Vendor,
+  PromptToggleKey,
+  Big5TraitKey,
+  PersonaTraversalExperimentConfig,
+} from '../../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
 import { chatStream } from '../../utils/llmAdapter';
@@ -52,6 +59,17 @@ const promptToggleOptions: Array<{
     description: '为每次出场随机指定 1~3 句并偶尔要求插入个人/身边实例，模拟口语节奏。',
   },
   {
+    key: 'outputInnerState',
+    label: '输出内在状态（state）',
+    description:
+      '要求模型输出结构化内在状态（personal/others/long/short）。关闭后将改用“完整对话回灌”作为记忆来源，以节省 token 并支持消融实验。',
+  },
+  {
+    key: 'outputThink',
+    label: '输出思考摘要（think）',
+    description: '要求模型输出 2~3 句思考摘要。关闭后将只生成 content（以及可选 stance）。',
+  },
+  {
     key: 'memory',
     label: '记忆机制',
     description: '包含个人/他人发言记忆的摘要及私密回放提示，强化多轮连续性。',
@@ -70,6 +88,7 @@ export function RunSettingsSection() {
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
 
   const runConfig = useAppStore((state) => state.runState.config);
+  const agents = useAppStore((state) => state.runState.agents);
   const discussion = useAppStore((state) => state.runState.config.discussion);
   const vendorDefaults = useAppStore((state) => state.vendorDefaults);
   const setVendorBaseUrl = useAppStore((state) => state.setVendorBaseUrl);
@@ -83,7 +102,96 @@ export function RunSettingsSection() {
   const setPositiveViewpoint = useAppStore((state) => state.setPositiveViewpoint);
   const setNegativeViewpoint = useAppStore((state) => state.setNegativeViewpoint);
   const setPromptToggle = useAppStore((state) => state.setPromptToggle);
+  const updateRunConfig = useAppStore((state) => state.updateRunConfig);
+  const updateAgent = useAppStore((state) => state.updateAgent);
   const promptToggles = runConfig.promptToggles ?? DEFAULT_PROMPT_TOGGLES;
+  const experiment = runConfig.personaTraversalExperiment;
+  const [initialStanceA, setInitialStanceA] = useState<string>('');
+  const [initialStanceB, setInitialStanceB] = useState<string>('');
+
+  const experimentLevels = [10, 30, 50, 70, 90];
+  const defaultDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
+  const isExperimentSupported = agents.length === 2;
+  const resolvedExperimentDimensions = experiment?.dimensions ?? [];
+  const resolvedExperimentLevels = experiment?.levels?.length ? experiment.levels : experimentLevels;
+  const experimentM =
+    resolvedExperimentDimensions.length > 0
+      ? resolvedExperimentDimensions.length * resolvedExperimentLevels.length * resolvedExperimentLevels.length
+      : 0;
+  const clampedExperimentConcurrency = Math.max(1, Math.min(experimentM || 1, experiment?.concurrency ?? 1));
+
+  const setExperimentConfig = (partial: Partial<PersonaTraversalExperimentConfig>) => {
+    if (!isExperimentSupported) return;
+    const agentIds: [string, string] =
+      partial.agentIds ??
+      experiment?.agentIds ??
+      ([agents[0]?.id ?? '', agents[1]?.id ?? ''] as [string, string]);
+    const nextDimensions = partial.dimensions ?? resolvedExperimentDimensions;
+    const nextLevels = partial.levels ?? resolvedExperimentLevels;
+    const M =
+      nextDimensions.length > 0 ? nextDimensions.length * nextLevels.length * nextLevels.length : 0;
+    const nextConcurrency = Math.max(1, Math.min(M || 1, partial.concurrency ?? clampedExperimentConcurrency));
+    updateRunConfig((config) => ({
+      ...config,
+      personaTraversalExperiment: {
+        enabled: partial.enabled ?? experiment?.enabled ?? false,
+        agentIds,
+        dimensions: nextDimensions,
+        levels: nextLevels,
+        concurrency: nextConcurrency,
+        ...partial,
+      },
+    }));
+  };
+
+  const handleExperimentEnabledChange = (checked: boolean) => {
+    if (!isExperimentSupported) return;
+    if (!checked) {
+      updateRunConfig((config) => ({ ...config, personaTraversalExperiment: undefined }));
+      return;
+    }
+    updateRunConfig((config) => ({
+      ...config,
+      personaTraversalExperiment: {
+        enabled: true,
+        agentIds: [agents[0]?.id ?? '', agents[1]?.id ?? ''],
+        dimensions: defaultDimensions,
+        levels: experimentLevels,
+        concurrency: 1,
+      },
+    }));
+  };
+
+  const includeDimension = (key: Big5TraitKey) => resolvedExperimentDimensions.includes(key);
+  const toggleDimension = (key: Big5TraitKey, checked: boolean) => {
+    const current = new Set<Big5TraitKey>(resolvedExperimentDimensions);
+    if (checked) current.add(key);
+    else current.delete(key);
+    setExperimentConfig({ dimensions: Array.from(current) });
+  };
+
+  const maxLevel = Math.floor(Math.max(3, discussion.stanceScaleSize) / 2);
+  const applyInitialStances = () => {
+    if (!isExperimentSupported) return;
+    const a = Number(initialStanceA);
+    const b = Number(initialStanceB);
+    if (Number.isFinite(a)) {
+      const clampedA = Math.max(-maxLevel, Math.min(maxLevel, Math.round(a)));
+      if (agents[0]) updateAgent(agents[0].id, { initialStance: clampedA });
+    }
+    if (Number.isFinite(b)) {
+      const clampedB = Math.max(-maxLevel, Math.min(maxLevel, Math.round(b)));
+      if (agents[1]) updateAgent(agents[1].id, { initialStance: clampedB });
+    }
+  };
+
+  const clearInitialStances = () => {
+    if (!isExperimentSupported) return;
+    setInitialStanceA('');
+    setInitialStanceB('');
+    if (agents[0]) updateAgent(agents[0].id, { initialStance: undefined });
+    if (agents[1]) updateAgent(agents[1].id, { initialStance: undefined });
+  };
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setRunMode(event.target.value as DialogueMode);
@@ -359,6 +467,124 @@ export function RunSettingsSection() {
                   ))}
                 </div>
               </div>
+
+              {isExperimentSupported ? (
+                <div className="card-section">
+                  <h3 className="card-section-title">人格遍历实验（2 Agent）</h3>
+                  <p className="form-hint">
+                    固定其他参数，对两位 Agent 的同一人格维度做 5×5 网格遍历（取值 10/30/50/70/90）。
+                    遍历某个维度时，其余人格维度一律设为 50。总实验规模记为 M，并支持并发 k（k ≤ M）。
+                  </p>
+                  <label className="checkbox-field">
+                    <div className="checkbox-description">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(experiment?.enabled)}
+                        onChange={(event) => handleExperimentEnabledChange(event.target.checked)}
+                      />
+                      <div>
+                        <strong>启用人格遍历实验</strong>
+                        <p className="form-hint">启用后，可在对话页点击“开始实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
+                      </div>
+                    </div>
+                  </label>
+
+                  {experiment?.enabled ? (
+                    <div className="grid two-columns">
+                      <div className="form-field">
+                        <span>参与遍历的 Agent</span>
+                        <p className="form-hint">
+                          本实验固定为 2 Agent：<strong>{agents[0]?.name}</strong> 与 <strong>{agents[1]?.name}</strong>。
+                          每条轨道会同时覆盖两者的 Big5 为基线（50），再在所选维度上做 5×5 组合遍历。
+                        </p>
+                      </div>
+
+                      <label className="form-field">
+                        <span>并发轨道数 k（≤ M）</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={experimentM}
+                          value={clampedExperimentConcurrency}
+                          onChange={(event) => setExperimentConfig({ concurrency: Number(event.target.value) || 1 })}
+                        />
+                        <p className="form-hint">
+                          当前实验规模 M = {experimentM || 0}（维度 {resolvedExperimentDimensions.join(', ') || '（未选择）'} × 5×5 档位组合）。
+                        </p>
+                      </label>
+
+                      <div className="form-field">
+                        <span>初始立场（A1/A2，可选，独立）</span>
+                        <div className="grid two-columns">
+                          <label className="form-field">
+                            <span>{agents[0]?.name ?? 'A1'} 初始立场</span>
+                            <input
+                              type="number"
+                              value={initialStanceA}
+                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                              onChange={(event) => setInitialStanceA(event.target.value)}
+                            />
+                          </label>
+                          <label className="form-field">
+                            <span>{agents[1]?.name ?? 'A2'} 初始立场</span>
+                            <input
+                              type="number"
+                              value={initialStanceB}
+                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                              onChange={(event) => setInitialStanceB(event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="vendor-card__actions">
+                          <button
+                            type="button"
+                            className="button tertiary"
+                            onClick={applyInitialStances}
+                            title="分别写入两位 Agent 的 initialStance（首轮锁死）"
+                          >
+                            应用
+                          </button>
+                          <button
+                            type="button"
+                            className="button ghost"
+                            onClick={clearInitialStances}
+                            title="清空两位 Agent 的 initialStance（不再锁死首轮立场）"
+                          >
+                            清空
+                          </button>
+                        </div>
+                        <p className="form-hint">
+                          人格遍历只覆盖 Big5；initialStance 与人格独立。首轮立场锁死仅在对应 Agent 的 initialStance 有值时生效。
+                        </p>
+                      </div>
+
+                      <div className="form-field">
+                        <span>遍历维度</span>
+                        <div className="grid two-columns">
+                          {(['O', 'C', 'E', 'A', 'N'] as Big5TraitKey[]).map((key) => (
+                            <label key={key} className="checkbox-field">
+                              <div className="checkbox-description">
+                                <input
+                                  type="checkbox"
+                                  checked={includeDimension(key)}
+                                  onChange={(event) => toggleDimension(key, event.target.checked)}
+                                />
+                                <div>
+                                  <strong>{key}</strong>
+                                  <p className="form-hint">未勾选则该维度始终为 50</p>
+                                </div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="form-hint">
+                          至少选择 1 个维度才会生成轨道；不选则 M=0，实验无法启动。
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
           {runConfig.useGlobalModelConfig && (
             <div className="global-model-card">
