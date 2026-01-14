@@ -15,6 +15,8 @@ import type {
   PersonaBig5,
   PersonaTraversalExperimentRecord,
   PersonaTraversalExperimentStatus,
+  ExperimentTrackProgress,
+  ExperimentTrackPhase,
 } from '../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -75,6 +77,21 @@ export const stopPersonaTraversalExperiment = () => {
         runningTracks: 0,
         finishedAt: Date.now(),
       },
+      trackProgress: (record.trackProgress ?? []).map((track) =>
+        track.phase === 'completed' || track.phase === 'error'
+          ? track
+          : {
+              ...track,
+              phase: 'cancelled',
+              finishedAt: Date.now(),
+            },
+      ),
+    }));
+    useAppStore.getState().setRunStatus((status) => ({
+      ...status,
+      phase: 'idle',
+      awaitingLabel: undefined,
+      finishedAt: Date.now(),
     }));
   }
 };
@@ -114,6 +131,21 @@ export const startPersonaTraversalExperiment = async () => {
     runningTracks: 0,
     startedAt,
   };
+  const trackTotalMessagesTarget =
+    typeof config.maxMessages === 'number' && Number.isFinite(config.maxMessages)
+      ? Math.max(1, Math.floor(config.maxMessages))
+      : (config.maxRounds ?? 3) * agents.length;
+  const initialTrackProgress: ExperimentTrackProgress[] = tracksPlan.map((plan) => ({
+    index: plan.index,
+    selector: {
+      trait: plan.trait,
+      agentAValue: plan.agentAValue,
+      agentBValue: plan.agentBValue,
+    },
+    phase: 'queued',
+    completedMessages: 0,
+    totalMessagesTarget: trackTotalMessagesTarget,
+  }));
   const record: PersonaTraversalExperimentRecord = {
     id: experimentId,
     name: experimentName,
@@ -121,6 +153,7 @@ export const startPersonaTraversalExperiment = async () => {
     agentsSnapshot: agents.map((agent) => ({ ...agent })),
     runConfigSnapshot: { ...config, personaTraversalExperiment: resolved },
     status: initialStatus,
+    trackProgress: initialTrackProgress,
     result: {
       config: resolved,
       totalTracks,
@@ -130,6 +163,15 @@ export const startPersonaTraversalExperiment = async () => {
     },
   };
   store.addExperiment(record);
+  store.setRunStatus((status) => ({
+    ...status,
+    phase: 'running',
+    mode: config.mode,
+    startedAt,
+    finishedAt: undefined,
+    error: undefined,
+    awaitingLabel: undefined,
+  }));
 
   const results: ExperimentTrackResult[] = [];
   const baseRunConfig = { ...config, personaTraversalExperiment: resolved };
@@ -146,6 +188,46 @@ export const startPersonaTraversalExperiment = async () => {
         ...partial,
       },
     }));
+    const phaseMap =
+      partial.phase === 'running'
+        ? 'running'
+        : partial.phase === 'completed'
+          ? 'completed'
+          : partial.phase === 'cancelled'
+            ? 'cancelled'
+            : partial.phase === 'error'
+              ? 'error'
+              : undefined;
+    if (phaseMap) {
+      useAppStore.getState().setRunStatus((status) => ({
+        ...status,
+        phase: phaseMap,
+        currentRound: partial.completedTracks ?? status.currentRound,
+        currentTurn: partial.runningTracks ?? status.currentTurn,
+        totalMessages: partial.completedTracks ?? status.totalMessages,
+        startedAt: status.startedAt ?? startedAt,
+        finishedAt: partial.finishedAt ?? status.finishedAt,
+        error: partial.error ?? status.error,
+        awaitingLabel: undefined,
+      }));
+    } else {
+      // still update counts
+      useAppStore.getState().setRunStatus((status) => ({
+        ...status,
+        currentRound: partial.completedTracks ?? status.currentRound,
+        currentTurn: partial.runningTracks ?? status.currentTurn,
+        totalMessages: partial.completedTracks ?? status.totalMessages,
+      }));
+    }
+  };
+
+  const updateTrack = (index: number, patch: Partial<ExperimentTrackProgress>) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const list = current.trackProgress ?? [];
+      if (list.length === 0) return current;
+      const next = list.map((item) => (item.index === index ? { ...item, ...patch } : item));
+      return { ...current, trackProgress: next };
+    });
   };
 
   const appendTrack = (track: ExperimentTrackResult) => {
@@ -170,6 +252,7 @@ export const startPersonaTraversalExperiment = async () => {
     if (control.stopped) return;
     running += 1;
     updateStatus({ runningTracks: running });
+    updateTrack(plan.index, { phase: 'running', startedAt: Date.now() });
     try {
       const [agentAId, agentBId] = resolved.agentIds;
       const agentsForTrack = applyBig5OverrideForTrack(agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
@@ -178,10 +261,16 @@ export const startPersonaTraversalExperiment = async () => {
         config: baseRunConfig,
         vendorDefaults,
         control,
+        onMessageCount: (count) => updateTrack(plan.index, { completedMessages: count }),
       });
       if (control.stopped) {
         return;
       }
+      updateTrack(plan.index, {
+        phase: 'completed',
+        completedMessages: session.messages.length,
+        finishedAt: Date.now(),
+      });
       results.push({
         id: nanoid(),
         meta: {
@@ -241,6 +330,13 @@ export const startPersonaTraversalExperiment = async () => {
       finishedAt,
       error: error?.message ?? '人格遍历实验运行失败。',
     });
+    // mark all remaining tracks as error/cancelled if needed
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      trackProgress: (current.trackProgress ?? []).map((track) =>
+        track.phase === 'completed' ? track : { ...track, phase: 'error', error: error?.message ?? '实验失败' },
+      ),
+    }));
     throw error;
   } finally {
     if (activeExperiment === control) {
@@ -385,11 +481,13 @@ const runDetachedConversation = async ({
   config,
   vendorDefaults,
   control,
+  onMessageCount,
 }: {
   agents: AgentSpec[];
   config: RunConfig;
   vendorDefaults: VendorDefaults;
   control: ExperimentControl;
+  onMessageCount?: (count: number) => void;
 }): Promise<SessionResult> => {
   const maxRounds = config.maxRounds ?? 3;
   const maxMessages = typeof config.maxMessages === 'number' && Number.isFinite(config.maxMessages) ? Math.max(1, Math.floor(config.maxMessages)) : undefined;
@@ -442,6 +540,7 @@ const runDetachedConversation = async ({
       if (msg) {
         messages.push(msg);
         status.totalMessages = messages.length;
+        onMessageCount?.(messages.length);
       }
     }
   }

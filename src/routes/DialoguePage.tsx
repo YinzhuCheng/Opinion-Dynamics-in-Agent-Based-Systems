@@ -93,6 +93,7 @@ export function DialoguePage() {
     return experiments[0];
   }, [experiments, activeExperimentId]);
   const selectedExperimentResult = selectedExperiment?.result;
+  const trackProgress = selectedExperiment?.trackProgress ?? [];
   const traitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
   const levelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
   const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
@@ -127,36 +128,58 @@ export function DialoguePage() {
 
   return (
     <div className="page page--dialogue">
-      {experiments.length > 0 ? (
+      {selectedExperiment ? (
         <section className="card">
           <header className="card__header">
-            <h2>实验进度</h2>
+            <h2>实验轨道进度</h2>
           </header>
           <div className="card__body">
+            <div className="grid two-columns">
+              <label className="form-field">
+                <span>当前实验</span>
+                <select value={selectedExperiment.id} onChange={(event) => setActiveExperimentId(event.target.value)}>
+                  {experiments.map((exp) => (
+                    <option key={exp.id} value={exp.id}>
+                      {exp.id} ｜ {exp.name} ｜ {exp.status.phase} ({exp.status.completedTracks}/{exp.status.totalTracks})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-              {experiments.map((exp) => {
-                const total = Math.max(1, exp.status.totalTracks);
-                const done = Math.max(0, Math.min(total, exp.status.completedTracks));
+              {trackProgress.map((tp) => {
+                const total = Math.max(1, tp.totalMessagesTarget);
+                const done = Math.max(0, Math.min(total, tp.completedMessages));
                 const ratio = Math.max(0, Math.min(1, done / total));
-                const isActive = exp.id === (activeExperimentId ?? experiments[0]?.id);
+                const isActive =
+                  resolvedTrackSelector &&
+                  tp.selector.trait === resolvedTrackSelector.trait &&
+                  tp.selector.agentAValue === resolvedTrackSelector.agentAValue &&
+                  tp.selector.agentBValue === resolvedTrackSelector.agentBValue;
+                const aName = displayAgentNameMap[agentAId] ?? agentAId;
+                const bName = displayAgentNameMap[agentBId] ?? agentBId;
                 return (
                   <button
-                    key={exp.id}
+                    key={`${tp.selector.trait}-${tp.selector.agentAValue}-${tp.selector.agentBValue}`}
                     type="button"
                     className={`button ${isActive ? 'primary' : 'secondary'}`}
                     style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}
                     onClick={() => {
-                      setActiveExperimentId(exp.id);
                       setViewMode('experimentTrack');
+                      setActiveExperimentTrack({
+                        trait: tp.selector.trait,
+                        agentAValue: tp.selector.agentAValue,
+                        agentBValue: tp.selector.agentBValue,
+                      });
                     }}
-                    title="点击进入该实验"
+                    title="点击进入该轨道"
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                       <span>
-                        {exp.id} ｜ {exp.name}
+                        #{tp.index + 1} ｜ {tp.selector.trait}（{aName}={tp.selector.agentAValue}，{bName}={tp.selector.agentBValue}）
                       </span>
                       <span>
-                        {exp.status.phase} ({done}/{total})
+                        {tp.phase} ({done}/{total})
                       </span>
                     </div>
                     <div
@@ -180,7 +203,7 @@ export function DialoguePage() {
                 );
               })}
             </div>
-            <p className="form-hint">同屏最多显示约 5 条进度条，滚动可查看其它实验；点击任意进度条会进入该实验。</p>
+            <p className="form-hint">同屏最多显示约 5 条轨道进度条，滚动可查看其它轨道；点击任意进度条会进入该轨道。</p>
           </div>
         </section>
       ) : null}

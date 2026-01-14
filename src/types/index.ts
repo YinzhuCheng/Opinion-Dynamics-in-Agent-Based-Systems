@@ -159,6 +159,7 @@ export interface PersonaTraversalExperimentRecord {
   agentsSnapshot: AgentSpec[];
   runConfigSnapshot: RunConfig;
   status: PersonaTraversalExperimentStatus;
+  trackProgress?: ExperimentTrackProgress[];
   result?: PersonaTraversalExperimentResult;
 }
 
@@ -166,6 +167,19 @@ export interface ExperimentTrackSelector {
   trait: Big5TraitKey;
   agentAValue: number;
   agentBValue: number;
+}
+
+export type ExperimentTrackPhase = 'queued' | 'running' | 'completed' | 'cancelled' | 'error';
+
+export interface ExperimentTrackProgress {
+  index: number;
+  selector: ExperimentTrackSelector;
+  phase: ExperimentTrackPhase;
+  completedMessages: number;
+  totalMessagesTarget: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
 }
 
 export interface Message {
