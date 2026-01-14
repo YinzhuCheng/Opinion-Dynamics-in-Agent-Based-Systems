@@ -188,7 +188,9 @@ ${trustWeights
   const continuityGuidelines = `对话要求（精简）：
   - 优先回应上一位发言者；若开启新点，需解释衔接。
   - 避免复读；引用他人观点时用新角度/新证据推进。
-  - 允许在理由充分时调整甚至反转立场。`;
+  - 立场更新默认“小幅、连续”：相邻轮次 stance.score 的变化幅度建议不超过 1（除非出现决定性证据）。
+  - 严禁为了迎合/和稀泥/讨好而改变立场；改变立场必须指向具体触发点（证据、逻辑矛盾被指出且你承认、关键事实更新）。
+  - 禁止在单轮中跨越 0（例如从正值直接变负值，或反之）；如确需转向，必须先收敛到 0 附近再逐步跨越。`;
   const previousInnerStateSection =
     memoryEnabled
       ? previousInnerStates.length > 0
@@ -399,8 +401,12 @@ export const buildAgentUserPrompt = ({
           ? `该角色的初始立场已锁定：${formatStance(agent.initialStance)}（范围 ±${maxLevel}）。本轮无需输出 stance 字段；请补全 state/think/content 并让内容与该立场一致。\n极性映射提醒：正值=正向（正方），负值=负向（反方），0=中立（禁止把正负语义写反）。\n人格不决定立场方向：任何人格都可能持有任何立场；人格只影响表达与更新规则。`
           : `首轮尚未设定明确立场，请结合人格画像与初始观点推导出最合理的刻度（参考 ${scaleValues.join(' / ')}），并说明依据。`
         : selfLastStance
-          ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
-          : '上一轮你未给出立场刻度，可回顾当时的内在状态与思考摘要，自行决定是维持、收敛还是反转。';
+          ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。
+立场更新规则（更严格）：
+- 默认只做小幅更新：与上一轮相比，stance.score 变化建议不超过 1。
+- 禁止单轮跨越 0（从正到负或从负到正）；若确需转向，请先收敛到 0 再逐步跨越。
+- 不得为了迎合/缓和冲突而改分；如要改分，必须在 think 或 content 中明确写出触发点（证据/逻辑/事实更新）。`
+          : '上一轮你未给出立场刻度：请先给出稳定且可解释的刻度；后续每轮仅允许小幅更新，且禁止单轮跨越 0。';
   const dynamicContext: Array<string | undefined> = [
     modeHint,
     initialOpinionHint,
