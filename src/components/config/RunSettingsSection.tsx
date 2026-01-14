@@ -59,6 +59,17 @@ const promptToggleOptions: Array<{
     description: '为每次出场随机指定 1~3 句并偶尔要求插入个人/身边实例，模拟口语节奏。',
   },
   {
+    key: 'outputInnerState',
+    label: '输出内在状态（state）',
+    description:
+      '要求模型输出结构化内在状态（personal/others/long/short）。关闭后将改用“完整对话回灌”作为记忆来源，以节省 token 并支持消融实验。',
+  },
+  {
+    key: 'outputThink',
+    label: '输出思考摘要（think）',
+    description: '要求模型输出 2~3 句思考摘要。关闭后将只生成 content（以及可选 stance）。',
+  },
+  {
     key: 'memory',
     label: '记忆机制',
     description: '包含个人/他人发言记忆的摘要及私密回放提示，强化多轮连续性。',

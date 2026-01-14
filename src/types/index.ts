@@ -69,6 +69,10 @@ export interface PromptToggleConfig {
   persona: boolean;
   trustMatrix: boolean;
   randomLength: boolean;
+  /** When false, do not request / parse the structured inner state (state). */
+  outputInnerState: boolean;
+  /** When false, do not request / parse the structured thought summary (think). */
+  outputThink: boolean;
   memory: boolean;
 }
 
@@ -78,6 +82,8 @@ export const DEFAULT_PROMPT_TOGGLES: PromptToggleConfig = {
   persona: true,
   trustMatrix: true,
   randomLength: true,
+  outputInnerState: true,
+  outputThink: true,
   memory: true,
 };
 

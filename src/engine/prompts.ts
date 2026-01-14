@@ -29,10 +29,51 @@ export const AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE = `{
   "content": ["句子 1", "句子 2", "句子 3"]
 }`;
 
+export const AGENT_OUTPUT_JSON_SCHEMA_NO_THINK = `{
+  "state": {
+    "personal_memory": ["我依旧坚持循证的节奏", "这次的质疑让我更谨慎"],
+    "others_memory": ["A2 - 指出了数据漏洞", "A3 - 给了情绪安慰"],
+    "long_term": ["人格 / 价值观……", "沟通风格或底层信念……"],
+    "short_term": ["此刻情绪 / 生理状态……", "即时目标 / 风险判断……"]
+  },
+  "content": ["句子 1", "句子 2", "句子 3"],
+  "stance": { "score": 1, "label": "正向" }
+}`;
+
+export const AGENT_OUTPUT_JSON_SCHEMA_NO_THINK_NO_STANCE = `{
+  "state": {
+    "personal_memory": ["我依旧坚持循证的节奏", "这次的质疑让我更谨慎"],
+    "others_memory": ["A2 - 指出了数据漏洞", "A3 - 给了情绪安慰"],
+    "long_term": ["人格 / 价值观……", "沟通风格或底层信念……"],
+    "short_term": ["此刻情绪 / 生理状态……", "即时目标 / 风险判断……"]
+  },
+  "content": ["句子 1", "句子 2", "句子 3"]
+}`;
+
+export const AGENT_OUTPUT_JSON_SCHEMA_NO_STATE = `{
+  "think": ["句子 1", "句子 2", "句子 3"],
+  "content": ["句子 1", "句子 2", "句子 3"],
+  "stance": { "score": 1, "label": "正向" }
+}`;
+
+export const AGENT_OUTPUT_JSON_SCHEMA_NO_STATE_NO_STANCE = `{
+  "think": ["句子 1", "句子 2", "句子 3"],
+  "content": ["句子 1", "句子 2", "句子 3"]
+}`;
+
+export const AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY = `{
+  "content": ["句子 1", "句子 2", "句子 3"],
+  "stance": { "score": 1, "label": "正向" }
+}`;
+
+export const AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY_NO_STANCE = `{
+  "content": ["句子 1", "句子 2", "句子 3"]
+}`;
+
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
-const ENFORCEMENT_WARNING =
-  '注意：整段输出必须是合法 JSON，且仅包含 state、think、content、stance 四个顶级字段；若 JSON 无法解析、字段缺失或字段内容为空，系统会判定本轮输出无效并强制跳过。';
+const buildEnforcementWarning = (fields: string[]) =>
+  `注意：整段输出必须是合法 JSON，且仅包含 ${fields.join('、')} 顶级字段；若 JSON 无法解析、字段缺失或字段内容为空，系统会判定本轮输出无效并强制跳过。`;
 
 interface AgentPromptOptions {
   agent: AgentSpec;
@@ -46,6 +87,8 @@ interface AgentPromptOptions {
   negativeViewpoint: string;
   previousRoundMessages: Message[];
   lastSpeakerMessage?: Message;
+  /** Full history messages before current turn; used when outputInnerState=false (transcript memory). */
+  historyMessages?: Message[];
   previousThoughtSummaries: Array<{ agentName: string; thoughtSummary: string; round: number }>;
   previousInnerStates: Array<{ agentName: string; innerState: string; round: number }>;
   selfPreviousMessage?: Message;
@@ -56,6 +99,26 @@ interface AgentPromptOptions {
   /** When provided, the system will fill stance.score and the model must omit the stance field. */
   forcedStanceScore?: number;
 }
+
+const buildHistoryTranscript = (
+  history: Message[],
+  agent: AgentSpec,
+  agentNames: Record<string, string>,
+): string => {
+  if (!history || history.length === 0) return '（暂无历史对话）';
+  return history
+    .map((message) => {
+      const speakerName = agentNames[message.agentId] ?? message.agentId;
+      const roleLabel = message.agentId === agent.id ? `我（${agent.name}）` : `他人（${speakerName}）`;
+      const content = message.content === '__SKIP__' ? '(跳过)' : message.content;
+      const stanceNote =
+        typeof message.stance?.score === 'number'
+          ? `（立场：${formatStance(message.stance.score)}｜${message.stance.note ?? '未注明'}）`
+          : '';
+      return `${roleLabel}: ${content}${stanceNote}`;
+    })
+    .join('\n');
+};
 
 export const buildAgentSystemPrompt = ({
   agent,
@@ -78,7 +141,10 @@ export const buildAgentSystemPrompt = ({
   const personaEnabled = toggles.persona !== false;
   const trustMatrixEnabled = toggles.trustMatrix !== false;
   const randomLengthEnabled = toggles.randomLength !== false;
-  const memoryEnabled = toggles.memory !== false;
+  const outputInnerStateEnabled = toggles.outputInnerState !== false;
+  const outputThinkEnabled = toggles.outputThink !== false;
+  // Structured memory relies on structured inner state being present.
+  const memoryEnabled = toggles.memory !== false && outputInnerStateEnabled;
   const personaRaw = describePersona(agent.persona).trim();
   const personaBlock =
     personaEnabled && personaRaw.length > 0
@@ -132,7 +198,7 @@ ${trustWeights
         : '历史内在状态：暂无（首轮请优先遵守初始立场/初始观点）。'
       : undefined;
   const previousThoughtSection =
-    memoryEnabled
+    memoryEnabled && outputThinkEnabled
       ? previousThoughtSummaries.length > 0
         ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
             .map((item) => `- ${item.thoughtSummary}`)
@@ -140,13 +206,17 @@ ${trustWeights
         : '历史思考摘要：暂无（首轮请优先遵守初始立场/初始观点）。'
       : undefined;
 
-  const innerStateGuidelines = `state（内在状态，数组均 ≤3 条，超出则丢弃最旧）：
+  const innerStateGuidelines = outputInnerStateEnabled
+    ? `state（内在状态，数组均 ≤3 条，超出则丢弃最旧）：
   - personal_memory：1~3 句，第一人称，记录你此刻要记住的信念/情绪/承诺（必须可从已发生对话推得出）。
   - others_memory：0~3 句，格式“<Agent 名> - 触发点”，只写你确实听到/理解到的刺激（首轮首发可为空数组）。
   - long_term：2~3 句，概括“我是谁/我坚持什么”（人格画像+初始立场+累积记忆）。
-  - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。`;
+  - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。`
+    : undefined;
   const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;
-  const thoughtGuidelines = `think（思考摘要）：2~3 句，说明你如何被触发、你准备如何回应/反驳、为何做出该立场标注；不要与 content 逐字重复。`;
+  const thoughtGuidelines = outputThinkEnabled
+    ? `think（思考摘要）：2~3 句，说明你如何被触发、你准备如何回应/反驳、为何做出该立场标注；不要与 content 逐字重复。`
+    : undefined;
     const clampLengthTarget = (value: number) => Math.max(1, Math.min(3, Math.round(value)));
     const bodyLengthTarget =
       typeof contentLengthTarget === 'number'
@@ -165,22 +235,43 @@ ${referenceLine ?? ''}
 ${includePersonalExample ? '提示：可加入一个生活化例子（可假设），用来支撑论点。' : ''}`.trim();
   const stanceGuidelines = `stance（立场标签）：必须输出对象 {score, label?}；解释理由写进 think 或 content，不要扩展其它字段。`;
   const stanceLocked = typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore);
+  const outputTopFields: string[] = [];
+  if (outputInnerStateEnabled) outputTopFields.push('state');
+  if (outputThinkEnabled) outputTopFields.push('think');
+  outputTopFields.push('content');
+  if (!stanceLocked) outputTopFields.push('stance');
   const outputContract = stanceLocked
     ? `输出契约（最高优先级）：
   - 只输出一个 JSON 对象，不要代码块，不要额外解释。
-  - 顶级字段仅允许：state / think / content（本轮不要输出 stance）。
-  - state/think/content 必须非空。`
+  - 顶级字段仅允许：${outputTopFields.join(' / ')}（本轮不要输出 stance）。
+  - ${outputInnerStateEnabled ? 'state 必须非空；' : ''}${outputThinkEnabled ? 'think 必须非空；' : ''}content 必须非空。`
     : `输出契约（最高优先级）：
   - 只输出一个 JSON 对象，不要代码块，不要额外解释。
-  - 顶级字段仅允许：state / think / content / stance。
-  - state/think/content 必须非空；stance.score 必须为整数。`;
+  - 顶级字段仅允许：${outputTopFields.join(' / ')}。
+  - ${outputInnerStateEnabled ? 'state 必须非空；' : ''}${outputThinkEnabled ? 'think 必须非空；' : ''}content 必须非空；stance.score 必须为整数。`;
   const internalBan = `禁止项：
   - content 中禁止出现“系统提示/提示词/信任度矩阵/权重/立场评分/刻度/打分/评分/JSON/schema”等元叙述。`;
   const extraBlock =
     systemPromptExtra && systemPromptExtra.trim().length > 0
       ? `额外系统要求（在不违反“输出契约”的前提下优先遵守）：\n${systemPromptExtra.trim()}`
       : undefined;
-  const outputFormatSample = `JSON 示例：\n${stanceLocked ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE : AGENT_OUTPUT_JSON_SCHEMA}`;
+  const outputFormatSample = `JSON 示例：\n${
+    outputInnerStateEnabled
+      ? outputThinkEnabled
+        ? stanceLocked
+          ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE
+          : AGENT_OUTPUT_JSON_SCHEMA
+        : stanceLocked
+          ? AGENT_OUTPUT_JSON_SCHEMA_NO_THINK_NO_STANCE
+          : AGENT_OUTPUT_JSON_SCHEMA_NO_THINK
+      : outputThinkEnabled
+        ? stanceLocked
+          ? AGENT_OUTPUT_JSON_SCHEMA_NO_STATE_NO_STANCE
+          : AGENT_OUTPUT_JSON_SCHEMA_NO_STATE
+        : stanceLocked
+          ? AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY_NO_STANCE
+          : AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY
+  }`;
 
   const skipInstruction =
     mode === 'random'
@@ -203,11 +294,11 @@ ${includePersonalExample ? '提示：可加入一个生活化例子（可假设�
     thoughtGuidelines,
     contentGuidelines,
     stanceGuidelines,
-    SYNTHESIS_HINT,
+    outputThinkEnabled || outputInnerStateEnabled ? SYNTHESIS_HINT : undefined,
     previousInnerStateSection,
     previousThoughtSection,
     `本轮发言要求：${skipInstruction}`,
-    ENFORCEMENT_WARNING,
+    buildEnforcementWarning(outputTopFields),
     outputFormatSample,
   ].filter(Boolean).join('\n\n');
 };
@@ -220,6 +311,7 @@ export const buildAgentUserPrompt = ({
   stanceScaleSize,
   previousRoundMessages,
   lastSpeakerMessage,
+  historyMessages,
   previousThoughtSummaries,
   previousInnerStates,
   selfPreviousMessage,
@@ -228,7 +320,13 @@ export const buildAgentUserPrompt = ({
   const toggles = promptToggles
     ? { ...DEFAULT_PROMPT_TOGGLES, ...promptToggles }
     : { ...DEFAULT_PROMPT_TOGGLES };
-  const memoryEnabled = toggles.memory !== false;
+  const outputInnerStateEnabled = toggles.outputInnerState !== false;
+  const outputThinkEnabled = toggles.outputThink !== false;
+  const transcriptMemoryEnabled = !outputInnerStateEnabled;
+  const memoryEnabled = toggles.memory !== false && outputInnerStateEnabled;
+  const historyTranscript = transcriptMemoryEnabled
+    ? buildHistoryTranscript(historyMessages ?? [], agent, agentNames)
+    : undefined;
   const previousRoundTranscript = previousRoundMessages.length
     ? previousRoundMessages
         .map((message) => {
@@ -242,18 +340,21 @@ export const buildAgentUserPrompt = ({
         })
         .join('\n')
       : '上一轮暂无对话（是首轮，需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像）。';
-  const previousRoundStanceSummary = previousRoundMessages.length
-    ? `上一轮立场速记（不含你自己）：\n${previousRoundMessages
-        .map((message) => {
-          const speaker = agentNames[message.agentId] ?? message.agentId;
-          if (typeof message.stance?.score === 'number') {
-            const note = message.stance.note ? `｜${message.stance.note}` : '';
-            return `- ${speaker}: 立场 ${formatStance(message.stance.score)}${note}`;
-          }
-          return `- ${speaker}: 未提供立场刻度`;
-        })
-        .join('\n')}`
-    : '上一轮立场速记：暂无记录。';
+  const previousRoundStanceSummary =
+    transcriptMemoryEnabled
+      ? undefined
+      : previousRoundMessages.length
+        ? `上一轮立场速记（不含你自己）：\n${previousRoundMessages
+            .map((message) => {
+              const speaker = agentNames[message.agentId] ?? message.agentId;
+              if (typeof message.stance?.score === 'number') {
+                const note = message.stance.note ? `｜${message.stance.note}` : '';
+                return `- ${speaker}: 立场 ${formatStance(message.stance.score)}${note}`;
+              }
+              return `- ${speaker}: 未提供立场刻度`;
+            })
+            .join('\n')}`
+        : '上一轮立场速记：暂无记录。';
   const lastSpeakerLine = lastSpeakerMessage
     ? `${agentNames[lastSpeakerMessage.agentId] ?? lastSpeakerMessage.agentId}: ${
         lastSpeakerMessage.content === '__SKIP__' ? '(跳过)' : lastSpeakerMessage.content
@@ -266,14 +367,14 @@ export const buildAgentUserPrompt = ({
           .join('\n')}`
       : '暂未记录到你的历史内在状态，可结合角色设定自我推断。'
     : undefined;
-  const previousThoughtHint = memoryEnabled
+  const previousThoughtHint = memoryEnabled && outputThinkEnabled
     ? previousThoughtSummaries.length > 0
       ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
           .map((item) => `- ${item.thoughtSummary}`)
           .join('\n')}`
       : '暂未记录到思考摘要，可根据当前情境自行补全。'
     : undefined;
-  const personalMemoryHint = memoryEnabled
+  const personalMemoryHint = memoryEnabled && !transcriptMemoryEnabled
     ? selfPreviousMessage?.personalMemory && selfPreviousMessage.personalMemory.length > 0
       ? `你的记忆存档（你在上一轮 state.personal_memory 中留下的 1~3 句，将在下一轮继续回放）：\n${selfPreviousMessage.personalMemory
           .map((item, index) => `- 记忆 ${index + 1}: ${item}`)
@@ -304,12 +405,16 @@ export const buildAgentUserPrompt = ({
     modeHint,
     initialOpinionHint,
     stanceHint,
-    `上一轮对话（主要用于影响内在状态与思考，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
-    previousRoundStanceSummary,
-    `上一位发言者（影响内在状态/思考与发言内容，但也不必每次都引用上一位的内容，允许开启新话题）：\n${lastSpeakerLine}`,
-    previousInnerStateHint,
-    previousThoughtHint,
-    personalMemoryHint,
+    transcriptMemoryEnabled
+      ? `至今对话记录（你是“我（${agent.name}）”，其余为“他人(...)”）：\n${historyTranscript ?? '（暂无历史对话）'}`
+      : `上一轮对话（主要用于影响内在状态与思考，偶尔也可以引用作为发言的一部分）：\n${previousRoundTranscript}`,
+    transcriptMemoryEnabled ? undefined : previousRoundStanceSummary,
+    transcriptMemoryEnabled
+      ? `提醒：你是“我（${agent.name}）”，请用第一人称说话。`
+      : `上一位发言者（影响内在状态/思考与发言内容，但也不必每次都引用上一位的内容，允许开启新话题）：\n${lastSpeakerLine}`,
+    transcriptMemoryEnabled ? undefined : previousInnerStateHint,
+    transcriptMemoryEnabled ? undefined : previousThoughtHint,
+    transcriptMemoryEnabled ? undefined : personalMemoryHint,
   ];
   return dynamicContext.filter(Boolean).join('\n\n');
 };

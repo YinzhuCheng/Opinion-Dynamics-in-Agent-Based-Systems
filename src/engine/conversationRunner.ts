@@ -4,6 +4,12 @@ import {
   buildAgentUserPrompt,
   AGENT_OUTPUT_JSON_SCHEMA,
   AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE,
+  AGENT_OUTPUT_JSON_SCHEMA_NO_THINK,
+  AGENT_OUTPUT_JSON_SCHEMA_NO_THINK_NO_STANCE,
+  AGENT_OUTPUT_JSON_SCHEMA_NO_STATE,
+  AGENT_OUTPUT_JSON_SCHEMA_NO_STATE_NO_STANCE,
+  AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY,
+  AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY_NO_STANCE,
 } from './prompts';
 import type {
   AgentSpec,
@@ -448,7 +454,6 @@ class ConversationRunner {
           round,
           agent.id,
         );
-        const allowEmptyOthersMemory = round === 1 && !lastSpeakerMessage && previousRoundMessages.length === 0;
         const visibleWindow = [...previousRoundMessages];
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
@@ -458,6 +463,10 @@ class ConversationRunner {
         const configSnapshot = this.appStore.getState().runState.config;
         const discussion = configSnapshot.discussion;
         const promptToggles = this.getPromptToggles();
+        const outputInnerStateEnabled = promptToggles.outputInnerState !== false;
+        const outputThinkEnabled = promptToggles.outputThink !== false;
+        const allowEmptyOthersMemory =
+          outputInnerStateEnabled && round === 1 && !lastSpeakerMessage && previousRoundMessages.length === 0;
         const randomLengthEnabled = promptToggles.randomLength !== false;
         const contentLengthTarget = randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
         const forcePersonalExample = randomLengthEnabled ? Math.random() < 0.2 : false;
@@ -497,6 +506,7 @@ class ConversationRunner {
           negativeViewpoint,
           previousRoundMessages,
           lastSpeakerMessage,
+          historyMessages: this.appStore.getState().runState.messages,
             previousThoughtSummaries,
             previousInnerStates,
           selfPreviousMessage,
@@ -587,7 +597,14 @@ class ConversationRunner {
         rawResponse = undefined;
       } else {
         rawResponse = rawContent;
-        let parseResult = this.parseAgentJsonOutput(rawContent, discussion, forcedStanceScore, allowEmptyOthersMemory);
+        let parseResult = this.parseAgentJsonOutput(
+          rawContent,
+          discussion,
+          forcedStanceScore,
+          allowEmptyOthersMemory,
+          outputInnerStateEnabled,
+          outputThinkEnabled,
+        );
         let formatCorrectionAttempted = false;
         let formatCorrectionError: string | undefined;
         if (!parseResult.success) {
@@ -597,6 +614,8 @@ class ConversationRunner {
             discussion,
             forcedStanceScore,
             allowEmptyOthersMemory,
+            outputInnerStateEnabled,
+            outputThinkEnabled,
           );
           if (correctionResult) {
             formatCorrectionAttempted = true;
@@ -605,7 +624,14 @@ class ConversationRunner {
               if (corrected.length > 0) {
                 lastRawOutput = corrected;
                 rawResponse = corrected;
-                parseResult = this.parseAgentJsonOutput(corrected, discussion, forcedStanceScore, allowEmptyOthersMemory);
+                parseResult = this.parseAgentJsonOutput(
+                  corrected,
+                  discussion,
+                  forcedStanceScore,
+                  allowEmptyOthersMemory,
+                  outputInnerStateEnabled,
+                  outputThinkEnabled,
+                );
               }
             }
             if (correctionResult.error) {
@@ -860,6 +886,8 @@ class ConversationRunner {
     discussion: RunConfig['discussion'],
     forcedStanceScore?: number,
     allowEmptyOthersMemory?: boolean,
+    requireInnerState: boolean = true,
+    requireThink: boolean = true,
   ): ParseAgentJsonResult {
     const cleaned = this.stripCodeFences(rawContent).trim();
     if (!cleaned) {
@@ -878,11 +906,21 @@ class ConversationRunner {
     if (!parsed || typeof parsed !== 'object') {
       return { success: false, reason: '输出必须是 JSON 对象', category: 'extraction_missing' };
     }
-
-    const state = parsed.state;
-    if (!state || typeof state !== 'object') {
-      return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
+    if (!requireInnerState && (parsed as any).state !== undefined) {
+      return { success: false, reason: '不应输出 state 字段', category: 'extraction_missing' };
     }
+    if (!requireThink && (parsed as any).think !== undefined) {
+      return { success: false, reason: '不应输出 think 字段', category: 'extraction_missing' };
+    }
+
+    let innerState = '';
+    let personalMemory: string[] | undefined = undefined;
+    let othersMemory: string[] | undefined = undefined;
+    if (requireInnerState) {
+      const state = parsed.state;
+      if (!state || typeof state !== 'object') {
+        return { success: false, reason: '缺少 state 字段', category: 'extraction_missing' };
+      }
     const stateSections: Array<{
       key: 'personal_memory' | 'others_memory' | 'long_term' | 'short_term';
       label: string;
@@ -892,52 +930,57 @@ class ConversationRunner {
       { key: 'long_term', label: '长期状态' },
       { key: 'short_term', label: '短期波动' },
     ];
-    const stateSegments: string[] = [];
-    let personalMemory: string[] | undefined;
-    let othersMemory: string[] | undefined;
-    for (const section of stateSections) {
-      const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
-      if ((!values || values.length === 0) && section.key === 'others_memory' && allowEmptyOthersMemory) {
-        othersMemory = [];
-        stateSegments.push(this.formatStateSection(section.label, ['（首轮首发：暂无他人刺激）']));
-        continue;
+      const stateSegments: string[] = [];
+      for (const section of stateSections) {
+        const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
+        if ((!values || values.length === 0) && section.key === 'others_memory' && allowEmptyOthersMemory) {
+          othersMemory = [];
+          stateSegments.push(this.formatStateSection(section.label, ['（首轮首发：暂无他人刺激）']));
+          continue;
+        }
+        if (!values || values.length === 0) {
+          return {
+            success: false,
+            reason: `state.${section.key} 不能为空`,
+            category: 'extraction_missing',
+          };
+        }
+        const trimmed = values.slice(-3);
+        stateSegments.push(this.formatStateSection(section.label, trimmed));
+        if (section.key === 'personal_memory') {
+          personalMemory = trimmed;
+        } else if (section.key === 'others_memory') {
+          othersMemory = trimmed;
+        }
       }
-      if (!values || values.length === 0) {
+      innerState = stateSegments.join('\n').trim();
+      if (!innerState) {
+        return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
+      }
+      if (!personalMemory || !othersMemory) {
         return {
           success: false,
-          reason: `state.${section.key} 不能为空`,
+          reason: 'state.personal_memory / others_memory 解析失败',
           category: 'extraction_missing',
         };
       }
-      const trimmed = values.slice(-3);
-      stateSegments.push(this.formatStateSection(section.label, trimmed));
-      if (section.key === 'personal_memory') {
-        personalMemory = trimmed;
-      } else if (section.key === 'others_memory') {
-        othersMemory = trimmed;
-      }
-    }
-    const innerState = stateSegments.join('\n').trim();
-    if (!innerState) {
-      return { success: false, reason: 'state 字段内容为空', category: 'extraction_missing' };
-    }
-    if (!personalMemory || !othersMemory) {
-      return {
-        success: false,
-        reason: 'state.personal_memory / others_memory 解析失败',
-        category: 'extraction_missing',
-      };
+    } else {
+      personalMemory = [];
+      othersMemory = [];
     }
 
-    const thinkValues = this.normalizeStringArray(parsed.think);
-    if (!thinkValues || thinkValues.length < 2) {
-      return {
-        success: false,
-        reason: 'think 数组至少需要 2 句',
-        category: 'extraction_missing',
-      };
+    let thinkText = '';
+    if (requireThink) {
+      const thinkValues = this.normalizeStringArray(parsed.think);
+      if (!thinkValues || thinkValues.length < 2) {
+        return {
+          success: false,
+          reason: 'think 数组至少需要 2 句',
+          category: 'extraction_missing',
+        };
+      }
+      thinkText = thinkValues.join('\n').trim();
     }
-    const thinkText = thinkValues.join('\n').trim();
 
     const contentValues = this.normalizeStringArray(parsed.content);
     if (!contentValues || contentValues.length === 0) {
@@ -1010,8 +1053,8 @@ class ConversationRunner {
           note,
         },
         normalizedRaw: cleaned,
-          personalMemory,
-          othersMemory,
+        personalMemory: personalMemory ?? [],
+        othersMemory: othersMemory ?? [],
       },
     };
   }
@@ -1058,25 +1101,53 @@ class ConversationRunner {
     discussion: RunConfig['discussion'],
     forcedStanceScore?: number,
     allowEmptyOthersMemory?: boolean,
+    requireInnerState: boolean = true,
+    requireThink: boolean = true,
   ): Promise<{ output?: string; error?: string } | undefined> {
     const systemPrompt =
       '你是一名格式校正助手，只负责把用户给出的文本整理成合法 JSON，不得改写事实或杜撰内容。';
     const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(discussion.stanceScaleSize)) / 2);
     const stanceLocked = typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore);
+    const topFields: string[] = [];
+    if (requireInnerState) topFields.push('state');
+    if (requireThink) topFields.push('think');
+    topFields.push('content');
+    if (!stanceLocked) topFields.push('stance');
+    const schemaSample =
+      requireInnerState
+        ? requireThink
+          ? stanceLocked
+            ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE
+            : AGENT_OUTPUT_JSON_SCHEMA
+          : stanceLocked
+            ? AGENT_OUTPUT_JSON_SCHEMA_NO_THINK_NO_STANCE
+            : AGENT_OUTPUT_JSON_SCHEMA_NO_THINK
+        : requireThink
+          ? stanceLocked
+            ? AGENT_OUTPUT_JSON_SCHEMA_NO_STATE_NO_STANCE
+            : AGENT_OUTPUT_JSON_SCHEMA_NO_STATE
+          : stanceLocked
+            ? AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY_NO_STANCE
+            : AGENT_OUTPUT_JSON_SCHEMA_CONTENT_ONLY;
     const userPrompt = [
       stanceLocked
-        ? '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content 三个顶级字段（不要输出 stance；本轮 stance.score 将由系统写入）。'
-        : '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
-      `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
-      allowEmptyOthersMemory
-        ? '- 首轮首发时 state.others_memory 允许为空数组 [] 或用占位词“（首轮首发：暂无他人刺激）”。其余数组不得为空。'
-        : '- 四个 state 数组都不得为空。',
-      '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；think/content 不得为空数组。',
+        ? `请把以下模型输出重新整理为合法 JSON，仅包含 ${topFields.join('、')} 顶级字段（不要输出 stance；本轮 stance.score 将由系统写入）。`
+        : `请把以下模型输出重新整理为合法 JSON，仅包含 ${topFields.join('、')} 顶级字段。`,
+      ...(requireInnerState
+        ? [
+            `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
+            allowEmptyOthersMemory
+              ? '- 首轮首发时 state.others_memory 允许为空数组 [] 或用占位词“（首轮首发：暂无他人刺激）”。其余 state 数组不得为空。'
+              : '- 四个 state 数组都不得为空。',
+          ]
+        : ['- 不要输出 state 字段。']),
+      ...(requireThink ? ['- think 是字符串数组（至少 2 句），保持原有含义；不得为空数组。'] : ['- 不要输出 think 字段。']),
+      '- content 是字符串数组，保持原有含义；不得为空数组。',
       ...(stanceLocked ? [] : [`- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`]),
       '- 禁止添加除上述字段之外的键；若原文缺少某部分，可根据上下文提炼最接近的句子填入，不得凭空虚构事实。',
       '',
       'JSON 示例：',
-      stanceLocked ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE : AGENT_OUTPUT_JSON_SCHEMA,
+      schemaSample,
       '',
       '===== 原始输出 =====',
       rawContent,
