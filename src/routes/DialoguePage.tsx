@@ -119,7 +119,7 @@ export function DialoguePage() {
   }, [selectedExperimentResult, resolvedTrackSelector]);
 
   const displayMessages =
-    viewMode === 'experimentTrack' && selectedTrack ? selectedTrack.result.messages : messages;
+    viewMode === 'experimentTrack' ? (selectedTrack?.result.messages ?? []) : messages;
   const visibleDisplayMessages = displayMessages.filter((message) => message.content !== '__SKIP__');
   const displayAgentNameMap =
     viewMode === 'experimentTrack' && selectedExperiment?.agentsSnapshot
@@ -235,7 +235,7 @@ export function DialoguePage() {
                   onClick={handleStartExperiment}
                   title="启动人格遍历实验（多轨并行）"
                 >
-                  开始实验
+                  开始人格遍历实验
                 </button>
               ) : null}
               {experiments.length > 0 ? (
@@ -243,9 +243,9 @@ export function DialoguePage() {
                   type="button"
                   className="button secondary"
                   onClick={handleStopExperiment}
-                  title="停止当前实验（中止所有在途轨道）"
+                  title="停止人格遍历实验（中止所有在途轨道）"
                 >
-                  停止实验
+                  停止人格遍历实验
                 </button>
               ) : null}
             <Link to="/" className="button secondary">
@@ -372,7 +372,11 @@ export function DialoguePage() {
                 </label>
               ))}
             </div>
-          {visibleDisplayMessages.length === 0 ? (
+          {viewMode === 'experimentTrack' && !selectedTrack ? (
+            <div className="empty-state">
+              <p>当前轨道尚未生成可展示的对话内容（可能仍在排队或运行中）。请稍后再试，或切换到已完成的轨道。</p>
+            </div>
+          ) : visibleDisplayMessages.length === 0 ? (
             <div className="empty-state">
               <p>当前尚未有对话记录。配置完成后点击“开始对话”即可查看进展。</p>
             </div>
