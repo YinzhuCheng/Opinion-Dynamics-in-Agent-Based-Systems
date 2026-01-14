@@ -27,6 +27,7 @@ import {
   buildAgentSystemPrompt,
   buildAgentUserPrompt,
   AGENT_OUTPUT_JSON_SCHEMA,
+  AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE,
 } from './prompts';
 import type { VendorDefaults } from '../store/useAppStore';
 
@@ -523,6 +524,7 @@ const formatStateSection = (label: string, values: string[]): string => {
 const parseAgentJsonOutput = (
   rawContent: string,
   discussion: RunConfig['discussion'],
+  forcedStanceScore?: number,
 ): ParseAgentJsonResult => {
   const cleaned = stripCodeFences(rawContent).trim();
   if (!cleaned) {
@@ -615,28 +617,41 @@ const parseAgentJsonOutput = (
     };
   }
 
-  const stanceNode = node.stance;
-  if (!stanceNode || typeof stanceNode !== 'object') {
-    return { success: false, reason: '缺少 stance 字段', category: 'extraction_missing' };
-  }
-  let score = Number((stanceNode as any).score);
-  if (!Number.isFinite(score)) {
-    return {
-      success: false,
-      reason: 'stance.score 需要为整数',
-      category: 'extraction_missing',
-    };
-  }
   const size = normalizeScaleSize(discussion?.stanceScaleSize);
   const maxLevel = Math.floor(Math.max(3, size) / 2);
-  score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(score)));
-  const userLabel =
-    typeof (stanceNode as any).label === 'string' && (stanceNode as any).label.trim().length > 0
-      ? (stanceNode as any).label.trim()
-      : undefined;
+  const stanceNode = node.stance;
+  const stanceLocked = typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore);
+  let score: number | undefined;
+  let userLabel: string | undefined;
+  if (!stanceLocked) {
+    if (!stanceNode || typeof stanceNode !== 'object') {
+      return { success: false, reason: '缺少 stance 字段', category: 'extraction_missing' };
+    }
+    score = Number((stanceNode as any).score);
+    if (!Number.isFinite(score)) {
+      return {
+        success: false,
+        reason: 'stance.score 需要为整数',
+        category: 'extraction_missing',
+      };
+    }
+    score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(score)));
+    userLabel =
+      typeof (stanceNode as any).label === 'string' && (stanceNode as any).label.trim().length > 0
+        ? (stanceNode as any).label.trim()
+        : undefined;
+  } else {
+    score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(forcedStanceScore)));
+    if (stanceNode && typeof stanceNode === 'object') {
+      userLabel =
+        typeof (stanceNode as any).label === 'string' && (stanceNode as any).label.trim().length > 0
+          ? (stanceNode as any).label.trim()
+          : undefined;
+    }
+  }
   const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
   const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
-  const fallbackLabel = score > 0 ? positiveDesc : score < 0 ? negativeDesc : '中立';
+  const fallbackLabel = (score ?? 0) > 0 ? positiveDesc : (score ?? 0) < 0 ? negativeDesc : '中立';
   const note = userLabel ?? fallbackLabel;
 
   return {
@@ -646,7 +661,7 @@ const parseAgentJsonOutput = (
       thoughtSummary: thinkText,
       innerState,
       stance: {
-        score,
+        score: score ?? 0,
         note,
       },
       normalizedRaw: cleaned,
@@ -679,19 +694,23 @@ const applyFormatCorrection = async (
   modelConfig: ModelConfig,
   discussion: RunConfig['discussion'],
   control: ExperimentControl,
+  forcedStanceScore?: number,
 ): Promise<{ output?: string; error?: string } | undefined> => {
   const systemPrompt =
     '你是一名格式校正助手，只负责把用户给出的文本整理成合法 JSON，不得改写事实或杜撰内容。';
   const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(discussion.stanceScaleSize)) / 2);
+  const stanceLocked = typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore);
   const userPrompt = [
-    '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
+    stanceLocked
+      ? '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content 三个顶级字段（不要输出 stance；本轮 stance.score 将由系统写入）。'
+      : '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
     `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
     '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；不要输出空数组。',
-    `- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`,
+    ...(stanceLocked ? [] : [`- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`]),
     '- 禁止添加除上述字段之外的键；若原文缺少某部分，可根据上下文提炼最接近的句子填入，不得凭空虚构事实。',
     '',
     'JSON 示例：',
-    AGENT_OUTPUT_JSON_SCHEMA,
+    stanceLocked ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE : AGENT_OUTPUT_JSON_SCHEMA,
     '',
     '===== 原始输出 =====',
     rawContent,
@@ -785,6 +804,10 @@ const executeAgentTurnLocal = async ({
   const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
   const previousThoughtSummaries = collectPreviousThoughtSummaries(round - 1, agent.id, agentNames, messages);
   const previousInnerStates = collectPreviousInnerStates(round - 1, agent.id, agentNames, messages);
+  const forcedStanceScore =
+    round === 1 && typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
+      ? agent.initialStance
+      : undefined;
 
   const systemPrompt = buildAgentSystemPrompt({
     agent,
@@ -803,6 +826,7 @@ const executeAgentTurnLocal = async ({
     contentLengthTarget,
     forcePersonalExample,
     systemPromptExtra: baseModelConfig.systemPromptExtra,
+    forcedStanceScore,
   });
   const userPrompt = buildAgentUserPrompt({
     agent,
@@ -886,11 +910,11 @@ const executeAgentTurnLocal = async ({
         reasons: ['模型输出为空'],
       };
     } else if (!attemptFailureDetails) {
-      let parseResult = parseAgentJsonOutput(rawContent, discussion);
+      let parseResult = parseAgentJsonOutput(rawContent, discussion, forcedStanceScore);
       let formatCorrectionAttempted = false;
       let formatCorrectionError: string | undefined;
       if (!parseResult.success) {
-        const correctionResult = await applyFormatCorrection(rawContent, modelConfig, discussion, control);
+        const correctionResult = await applyFormatCorrection(rawContent, modelConfig, discussion, control, forcedStanceScore);
         if (control.stopped) return undefined;
         if (correctionResult) {
           formatCorrectionAttempted = true;
@@ -899,7 +923,7 @@ const executeAgentTurnLocal = async ({
             if (corrected.length > 0) {
               lastRawOutput = corrected;
               rawResponse = corrected;
-              parseResult = parseAgentJsonOutput(corrected, discussion);
+              parseResult = parseAgentJsonOutput(corrected, discussion, forcedStanceScore);
             }
           }
           if (correctionResult.error) {

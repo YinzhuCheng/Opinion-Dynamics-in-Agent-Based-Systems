@@ -18,6 +18,17 @@ export const AGENT_OUTPUT_JSON_SCHEMA = `{
   "stance": { "score": 1, "label": "正向" }
 }`;
 
+export const AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE = `{
+  "state": {
+    "personal_memory": ["我依旧坚持循证的节奏", "这次的质疑让我更谨慎"],
+    "others_memory": ["A2 - 指出了数据漏洞", "A3 - 给了情绪安慰"],
+    "long_term": ["人格 / 价值观……", "沟通风格或底层信念……"],
+    "short_term": ["此刻情绪 / 生理状态……", "即时目标 / 风险判断……"]
+  },
+  "think": ["句子 1", "句子 2", "句子 3"],
+  "content": ["句子 1", "句子 2", "句子 3"]
+}`;
+
 const SYNTHESIS_HINT =
   '思考时需同步感知：你当前的内在状态、上一轮保留下来的思考摘要、上一位发言者的最新刺激，以及上一轮所有 Agent 的整体氛围；不要机械复述，而要把这些线索熔炼成新的表达。';
 const ENFORCEMENT_WARNING =
@@ -42,6 +53,8 @@ interface AgentPromptOptions {
   contentLengthTarget?: number;
   forcePersonalExample?: boolean;
   systemPromptExtra?: string;
+  /** When provided, the system will fill stance.score and the model must omit the stance field. */
+  forcedStanceScore?: number;
 }
 
 export const buildAgentSystemPrompt = ({
@@ -57,6 +70,7 @@ export const buildAgentSystemPrompt = ({
   contentLengthTarget,
   forcePersonalExample,
   systemPromptExtra,
+  forcedStanceScore,
 }: AgentPromptOptions): string => {
   const toggles = promptToggles
     ? { ...DEFAULT_PROMPT_TOGGLES, ...promptToggles }
@@ -94,7 +108,10 @@ ${trustWeights
   const stanceLine = `讨论议题（立场极性）：
   - 正向：${positiveDesc}
   - 负向：${negativeDesc}`;
-  const ratingLine = `立场标注：stance.score 必须为 [-${maxLevel}, +${maxLevel}] 的整数；负值偏向“${negativeDesc}”，正值偏向“${positiveDesc}”，0 为中立。`;
+  const ratingLine =
+    typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore)
+      ? `首轮立场已锁定：本轮 stance.score 固定为 ${Math.round(forcedStanceScore)}（系统写入）。你无需输出 stance 字段，但 state/think/content 必须与该立场方向一致。`
+      : `立场标注：stance.score 必须为 [-${maxLevel}, +${maxLevel}] 的整数；负值偏向“${negativeDesc}”，正值偏向“${positiveDesc}”，0 为中立。`;
   const continuityGuidelines = `对话要求（精简）：
   - 优先回应上一位发言者；若开启新点，需解释衔接。
   - 避免复读；引用他人观点时用新角度/新证据推进。
@@ -140,7 +157,13 @@ ${trustWeights
 ${referenceLine ?? ''}
 ${includePersonalExample ? '提示：可加入一个生活化例子（可假设），用来支撑论点。' : ''}`.trim();
   const stanceGuidelines = `stance（立场标签）：必须输出对象 {score, label?}；解释理由写进 think 或 content，不要扩展其它字段。`;
-  const outputContract = `输出契约（最高优先级）：
+  const stanceLocked = typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore);
+  const outputContract = stanceLocked
+    ? `输出契约（最高优先级）：
+  - 只输出一个 JSON 对象，不要代码块，不要额外解释。
+  - 顶级字段仅允许：state / think / content（本轮不要输出 stance）。
+  - state/think/content 必须非空。`
+    : `输出契约（最高优先级）：
   - 只输出一个 JSON 对象，不要代码块，不要额外解释。
   - 顶级字段仅允许：state / think / content / stance。
   - state/think/content 必须非空；stance.score 必须为整数。`;
@@ -150,7 +173,7 @@ ${includePersonalExample ? '提示：可加入一个生活化例子（可假设�
     systemPromptExtra && systemPromptExtra.trim().length > 0
       ? `额外系统要求（在不违反“输出契约”的前提下优先遵守）：\n${systemPromptExtra.trim()}`
       : undefined;
-  const outputFormatSample = `JSON 示例：\n${AGENT_OUTPUT_JSON_SCHEMA}`;
+  const outputFormatSample = `JSON 示例：\n${stanceLocked ? AGENT_OUTPUT_JSON_SCHEMA_NO_STANCE : AGENT_OUTPUT_JSON_SCHEMA}`;
 
   const skipInstruction =
     mode === 'random'
@@ -264,7 +287,7 @@ export const buildAgentUserPrompt = ({
   const stanceHint =
     round === 1
         ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
-          ? `该角色的初始立场：${formatStance(agent.initialStance)}（范围 ±${maxLevel}），首轮必须以此为起点，除非后续理由充分。`
+          ? `该角色的初始立场已锁定：${formatStance(agent.initialStance)}（范围 ±${maxLevel}）。本轮无需输出 stance 字段；请补全 state/think/content 并让内容与该立场一致。`
           : `首轮尚未设定明确立场，请结合人格画像与初始观点推导出最合理的刻度（参考 ${scaleValues.join(' / ')}），并说明依据。`
         : selfLastStance
           ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`
