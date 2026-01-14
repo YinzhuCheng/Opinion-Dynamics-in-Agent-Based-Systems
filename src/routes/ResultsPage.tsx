@@ -656,7 +656,9 @@ export function ResultsPage() {
                   <span>当前轨道</span>
                   <p className="form-hint">
                     {resolvedTrackSelector
-                      ? `${resolvedTrackSelector.trait}（${agentNameMap[agentAId] ?? agentAId}=${resolvedTrackSelector.agentAValue}，${agentNameMap[agentBId] ?? agentBId}=${resolvedTrackSelector.agentBValue}）`
+                      ? resolvedTrackSelector.kind === 'symmetric_initial_stance'
+                        ? `对称初始立场（${agentNameMap[agentAId] ?? agentAId}=${resolvedTrackSelector.agentAInitialStance}，${agentNameMap[agentBId] ?? agentBId}=${resolvedTrackSelector.agentBInitialStance}）`
+                        : `${resolvedTrackSelector.trait}（${agentNameMap[agentAId] ?? agentAId}=${resolvedTrackSelector.agentAValue}，${agentNameMap[agentBId] ?? agentBId}=${resolvedTrackSelector.agentBValue}）`
                       : '（未选择）'}
                     {selectedTrack ? '' : ' —— 暂无结果（可能还在跑）'}
                   </p>
