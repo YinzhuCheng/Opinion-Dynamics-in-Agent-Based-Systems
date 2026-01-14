@@ -87,7 +87,7 @@ export const buildAgentSystemPrompt = ({
         ? '人格画像：【（未提供画像，请保持中性口吻）】'
         : undefined;
   const personaAlignmentHint = personaEnabled
-    ? '一致性要求：state / think / content 必须与你的人格画像与初始立场一致；如需改变立场，必须在 think 或 content 中给出明确触发点与理由。'
+    ? '一致性要求：state / think / content 必须与你的人格画像一致；立场方向以（系统锁定的 stance.score / 初始立场 / 对话证据）为准。如需改变立场，必须在 think 或 content 中给出明确触发点与理由。'
     : undefined;
   const trustSection =
     trustMatrixEnabled && trustWeights.length > 0
@@ -108,10 +108,17 @@ ${trustWeights
   const stanceLine = `讨论议题（立场极性）：
   - 正向：${positiveDesc}
   - 负向：${negativeDesc}`;
+  const polarityMapping = `极性映射（非常重要，禁止搞反）：
+  - stance.score > 0 代表正向（支持“${positiveDesc}”）
+  - stance.score < 0 代表负向（支持“${negativeDesc}”）
+  - stance.score = 0 为中立/摇摆`;
   const ratingLine =
     typeof forcedStanceScore === 'number' && Number.isFinite(forcedStanceScore)
-      ? `首轮立场已锁定：本轮 stance.score 固定为 ${Math.round(forcedStanceScore)}（系统写入）。你无需输出 stance 字段，但 state/think/content 必须与该立场方向一致。`
-      : `立场标注：stance.score 必须为 [-${maxLevel}, +${maxLevel}] 的整数；负值偏向“${negativeDesc}”，正值偏向“${positiveDesc}”，0 为中立。`;
+      ? `首轮立场已锁定：本轮 stance.score 固定为 ${Math.round(forcedStanceScore)}（系统写入）。你无需输出 stance 字段，但 state/think/content 必须与该立场方向一致。\n${polarityMapping}`
+      : `立场标注：stance.score 必须为 [-${maxLevel}, +${maxLevel}] 的整数；负值偏向“${negativeDesc}”，正值偏向“${positiveDesc}”，0 为中立。\n${polarityMapping}\n一致性要求：stance.label（或 note）必须与 score 的极性一致，不得写成相反一方。`;
+  const personaStanceIndependence = `人格与立场的关系（实验与严谨性要求）：
+  - 人格只影响表达风格、让步幅度、信息采样偏好与“更新规则”，不决定你站哪一边。
+  - 立场方向由（系统锁定的 stance.score / 初始立场 / 对话证据）决定；禁止因为人格“看起来更像某一方”就擅自改写正负方向。`;
   const continuityGuidelines = `对话要求（精简）：
   - 优先回应上一位发言者；若开启新点，需解释衔接。
   - 避免复读；引用他人观点时用新角度/新证据推进。
@@ -186,6 +193,7 @@ ${includePersonalExample ? '提示：可加入一个生活化例子（可假设�
     ratingLine,
     personaBlock,
     personaAlignmentHint,
+    personaStanceIndependence,
     trustSection,
     extraBlock,
     stanceLine,
@@ -287,7 +295,7 @@ export const buildAgentUserPrompt = ({
   const stanceHint =
     round === 1
         ? typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)
-          ? `该角色的初始立场已锁定：${formatStance(agent.initialStance)}（范围 ±${maxLevel}）。本轮无需输出 stance 字段；请补全 state/think/content 并让内容与该立场一致。`
+          ? `该角色的初始立场已锁定：${formatStance(agent.initialStance)}（范围 ±${maxLevel}）。本轮无需输出 stance 字段；请补全 state/think/content 并让内容与该立场一致。\n极性映射提醒：正值=正向（正方），负值=负向（反方），0=中立（禁止把正负语义写反）。\n人格不决定立场方向：任何人格都可能持有任何立场；人格只影响表达与更新规则。`
           : `首轮尚未设定明确立场，请结合人格画像与初始观点推导出最合理的刻度（参考 ${scaleValues.join(' / ')}），并说明依据。`
         : selfLastStance
           ? `上一轮你的立场：${formatStance(selfLastStance.score)}（${selfLastStance.note ?? '未注明'}）。若当时的内在状态或思考摘要已开始动摇，可在本轮调整甚至反转立场，但必须说明触发点。`

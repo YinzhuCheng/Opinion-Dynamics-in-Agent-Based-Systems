@@ -824,17 +824,23 @@ const parseAgentJsonOutput = (
         : undefined;
   } else {
     score = Math.max(-maxLevel, Math.min(maxLevel, Math.round(forcedStanceScore)));
-    if (stanceNode && typeof stanceNode === 'object') {
-      userLabel =
-        typeof (stanceNode as any).label === 'string' && (stanceNode as any).label.trim().length > 0
-          ? (stanceNode as any).label.trim()
-          : undefined;
-    }
+    // Stance is system-locked for this turn. Do not trust any model-provided label.
+    userLabel = undefined;
   }
   const positiveDesc = ensurePositiveViewpoint(discussion.positiveViewpoint);
   const negativeDesc = ensureNegativeViewpoint(discussion.negativeViewpoint);
   const fallbackLabel = (score ?? 0) > 0 ? positiveDesc : (score ?? 0) < 0 ? negativeDesc : '中立';
-  const note = userLabel ?? fallbackLabel;
+  const normalizedLabel = userLabel?.trim();
+  const normalizedPositive = positiveDesc.trim();
+  const normalizedNegative = negativeDesc.trim();
+  const labelConflictsDirection =
+    typeof normalizedLabel === 'string' &&
+    normalizedLabel.length > 0 &&
+    (((normalizedLabel === normalizedPositive || normalizedLabel.includes(normalizedPositive)) &&
+      (score ?? 0) < 0) ||
+      ((normalizedLabel === normalizedNegative || normalizedLabel.includes(normalizedNegative)) &&
+        (score ?? 0) > 0));
+  const note = labelConflictsDirection ? fallbackLabel : normalizedLabel ?? fallbackLabel;
 
   return {
     success: true,
