@@ -12,6 +12,8 @@ import type {
   PersonaTraversalExperimentResult,
   ExperimentTrackResult,
   Big5TraitKey,
+  ExperimentTrackSelector,
+  ExperimentTrackMeta,
 } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import { exportResultsZip } from '../utils/exportZip';
@@ -67,33 +69,54 @@ export function ResultsPage() {
   );
 
   const selectedExperimentResult = selectedExperiment?.result;
-  const trackTraitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
-  const trackLevelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
+  const experimentKind = selectedExperimentResult?.config.kind ?? 'big5_grid';
+  const trackTraitOptions: Big5TraitKey[] =
+    experimentKind === 'big5_grid' && 'dimensions' in (selectedExperimentResult?.config ?? {})
+      ? (selectedExperimentResult?.config.dimensions ?? [])
+      : [];
+  const trackLevelOptions: number[] =
+    experimentKind === 'big5_grid' && 'levels' in (selectedExperimentResult?.config ?? {})
+      ? (selectedExperimentResult?.config.levels ?? [])
+      : [];
   const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+  const stanceScaleSize =
+    selectedExperiment?.runConfigSnapshot.discussion.stanceScaleSize ?? runState.config.discussion.stanceScaleSize;
+  const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
+  const symmetricOptions = Array.from({ length: maxLevel + 1 }, (_, idx) => {
+    const k = maxLevel - idx;
+    return { a: -k, b: k };
+  });
   const defaultTrait = trackTraitOptions[0];
   const defaultAValue = trackLevelOptions[0];
   const defaultBValue = trackLevelOptions[0];
-  const resolvedTrackSelector =
-    selectedExperimentResult && defaultTrait != null && defaultAValue != null && defaultBValue != null
-      ? (activeExperimentTrack ?? {
-          trait: defaultTrait,
-          agentAValue: defaultAValue,
-          agentBValue: defaultBValue,
-        })
-      : undefined;
+  const resolvedTrackSelector: ExperimentTrackSelector | undefined = useMemo(() => {
+    if (!selectedExperimentResult) return undefined;
+    if (experimentKind === 'symmetric_initial_stance') {
+      const defaultPair = symmetricOptions[0] ?? { a: 0, b: 0 };
+      const fallback: ExperimentTrackSelector = {
+        kind: 'symmetric_initial_stance',
+        agentAInitialStance: defaultPair.a,
+        agentBInitialStance: defaultPair.b,
+      };
+      return activeExperimentTrack ?? fallback;
+    }
+    if (defaultTrait == null || defaultAValue == null || defaultBValue == null) return undefined;
+    const fallback: ExperimentTrackSelector = {
+      kind: 'big5_grid',
+      trait: defaultTrait,
+      agentAValue: defaultAValue,
+      agentBValue: defaultBValue,
+    };
+    return activeExperimentTrack ?? fallback;
+  }, [activeExperimentTrack, defaultAValue, defaultBValue, defaultTrait, experimentKind, selectedExperimentResult, symmetricOptions]);
   const selectedTrack = useMemo(() => {
     if (!selectedExperimentResult || !resolvedTrackSelector) return undefined;
-    return selectedExperimentResult.tracks.find(
-      (track) =>
-        track.meta.trait === resolvedTrackSelector.trait &&
-        track.meta.agentAValue === resolvedTrackSelector.agentAValue &&
-        track.meta.agentBValue === resolvedTrackSelector.agentBValue,
-    );
+    return selectedExperimentResult.tracks.find((track) => matchTrack(track.meta, resolvedTrackSelector));
   }, [selectedExperimentResult, resolvedTrackSelector]);
 
   const selectedTrackLiveMessages = useMemo(() => {
     if (!selectedExperiment || !resolvedTrackSelector) return undefined;
-    const key = `${resolvedTrackSelector.trait}-${resolvedTrackSelector.agentAValue}-${resolvedTrackSelector.agentBValue}`;
+    const key = trackKeyFromSelector(resolvedTrackSelector);
     return selectedExperiment.trackLiveMessages?.[key];
   }, [selectedExperiment, resolvedTrackSelector]);
 
@@ -507,63 +530,121 @@ export function ResultsPage() {
             </label>
             {selectedExperiment.result ? (
               <div className="grid two-columns">
-                <label className="form-field">
-                  <span>轨道检索：维度</span>
-                  <select
-                    value={resolvedTrackSelector?.trait ?? ''}
-                    onChange={(event) =>
-                      setActiveExperimentTrack({
-                        trait: event.target.value as Big5TraitKey,
-                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
-                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
-                      })
-                    }
-                  >
-                    {trackTraitOptions.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  <span>轨道检索：{agentNameMap[agentAId] ?? agentAId} 值</span>
-                  <select
-                    value={resolvedTrackSelector?.agentAValue ?? ''}
-                    onChange={(event) =>
-                      setActiveExperimentTrack({
-                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
-                        agentAValue: Number(event.target.value),
-                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
-                      })
-                    }
-                  >
-                    {trackLevelOptions.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  <span>轨道检索：{agentNameMap[agentBId] ?? agentBId} 值</span>
-                  <select
-                    value={resolvedTrackSelector?.agentBValue ?? ''}
-                    onChange={(event) =>
-                      setActiveExperimentTrack({
-                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
-                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
-                        agentBValue: Number(event.target.value),
-                      })
-                    }
-                  >
-                    {trackLevelOptions.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {experimentKind === 'symmetric_initial_stance' ? (
+                  <label className="form-field">
+                    <span>
+                      轨道检索：对称初始立场（{agentNameMap[agentAId] ?? agentAId} / {agentNameMap[agentBId] ?? agentBId}）
+                    </span>
+                    <select
+                      value={
+                        resolvedTrackSelector && resolvedTrackSelector.kind === 'symmetric_initial_stance'
+                          ? `${resolvedTrackSelector.agentAInitialStance},${resolvedTrackSelector.agentBInitialStance}`
+                          : ''
+                      }
+                      onChange={(event) => {
+                        const [aRaw, bRaw] = event.target.value.split(',');
+                        setActiveExperimentTrack({
+                          kind: 'symmetric_initial_stance',
+                          agentAInitialStance: Number(aRaw),
+                          agentBInitialStance: Number(bRaw),
+                        });
+                      }}
+                    >
+                      {symmetricOptions.map((pair) => (
+                        <option key={`${pair.a},${pair.b}`} value={`${pair.a},${pair.b}`}>
+                          {agentNameMap[agentAId] ?? agentAId}={pair.a}，{agentNameMap[agentBId] ?? agentBId}={pair.b}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <>
+                    <label className="form-field">
+                      <span>轨道检索：维度</span>
+                      <select
+                        value={
+                          resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                            ? resolvedTrackSelector.trait
+                            : ''
+                        }
+                        onChange={(event) => {
+                          const current =
+                            resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                              ? resolvedTrackSelector
+                              : undefined;
+                          setActiveExperimentTrack({
+                            kind: 'big5_grid',
+                            trait: event.target.value as Big5TraitKey,
+                            agentAValue: current?.agentAValue ?? defaultAValue ?? 50,
+                            agentBValue: current?.agentBValue ?? defaultBValue ?? 50,
+                          });
+                        }}
+                      >
+                        {trackTraitOptions.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      <span>轨道检索：{agentNameMap[agentAId] ?? agentAId} 值</span>
+                      <select
+                        value={
+                          resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                            ? resolvedTrackSelector.agentAValue
+                            : ''
+                        }
+                        onChange={(event) => {
+                          const current =
+                            resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                              ? resolvedTrackSelector
+                              : undefined;
+                          setActiveExperimentTrack({
+                            kind: 'big5_grid',
+                            trait: current?.trait ?? defaultTrait!,
+                            agentAValue: Number(event.target.value),
+                            agentBValue: current?.agentBValue ?? defaultBValue ?? 50,
+                          });
+                        }}
+                      >
+                        {trackLevelOptions.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      <span>轨道检索：{agentNameMap[agentBId] ?? agentBId} 值</span>
+                      <select
+                        value={
+                          resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                            ? resolvedTrackSelector.agentBValue
+                            : ''
+                        }
+                        onChange={(event) => {
+                          const current =
+                            resolvedTrackSelector && resolvedTrackSelector.kind !== 'symmetric_initial_stance'
+                              ? resolvedTrackSelector
+                              : undefined;
+                          setActiveExperimentTrack({
+                            kind: 'big5_grid',
+                            trait: current?.trait ?? defaultTrait!,
+                            agentAValue: current?.agentAValue ?? defaultAValue ?? 50,
+                            agentBValue: Number(event.target.value),
+                          });
+                        }}
+                      >
+                        {trackLevelOptions.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
                 <div className="form-field">
                   <span>当前轨道</span>
                   <p className="form-hint">
@@ -625,9 +706,11 @@ export function ResultsPage() {
                       return (
                         <tr key={track.id}>
                           <td>#{track.meta.index + 1}</td>
-                          <td>{track.meta.trait}</td>
+                          <td>{track.meta.kind === 'big5_grid' ? track.meta.trait : 'stance'}</td>
                           <td>
-                            {aName}={track.meta.agentAValue} × {bName}={track.meta.agentBValue}
+                            {track.meta.kind === 'big5_grid'
+                              ? `${aName}=${track.meta.agentAValue} × ${bName}=${track.meta.agentBValue}`
+                              : `${aName}=${track.meta.agentAInitialStance} × ${bName}=${track.meta.agentBInitialStance}`}
                           </td>
                           <td>{new Date(finishedAt).toLocaleString()}</td>
                           <td>{visibleCount}</td>
@@ -1032,4 +1115,27 @@ const htmlEscapes: Record<string, string> = {
   '>': '&gt;',
   '"': '&quot;',
   "'": '&#39;',
+};
+
+const trackKeyFromSelector = (selector: ExperimentTrackSelector): string => {
+  if (selector.kind === 'symmetric_initial_stance') {
+    return `stance-${selector.agentAInitialStance}-${selector.agentBInitialStance}`;
+  }
+  return `big5-${selector.trait}-${selector.agentAValue}-${selector.agentBValue}`;
+};
+
+const matchTrack = (meta: ExperimentTrackMeta, selector: ExperimentTrackSelector): boolean => {
+  if (selector.kind === 'symmetric_initial_stance') {
+    return (
+      meta.kind === 'symmetric_initial_stance' &&
+      meta.agentAInitialStance === selector.agentAInitialStance &&
+      meta.agentBInitialStance === selector.agentBInitialStance
+    );
+  }
+  return (
+    meta.kind === 'big5_grid' &&
+    meta.trait === selector.trait &&
+    meta.agentAValue === selector.agentAValue &&
+    meta.agentBValue === selector.agentBValue
+  );
 };

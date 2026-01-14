@@ -12,6 +12,7 @@ import type {
   PersonaTraversalExperimentConfig,
   PersonaTraversalExperimentResult,
   ExperimentTrackResult,
+  ExperimentTrackSelector,
   PersonaBig5,
   PersonaTraversalExperimentRecord,
   PersonaTraversalExperimentStatus,
@@ -42,8 +43,13 @@ import type { VendorDefaults } from '../store/useAppStore';
 const PRIVATE_MEMORY_WINDOW = 3;
 const MAX_AGENT_OUTPUT_ATTEMPTS = 3;
 
-const trackKeyFromSelector = (trait: Big5TraitKey, agentAValue: number, agentBValue: number) =>
-  `${trait}-${agentAValue}-${agentBValue}`;
+const trackKeyFromSelector = (selector: ExperimentTrackSelector) => {
+  if (selector.kind === 'symmetric_initial_stance') {
+    return `stance-${selector.agentAInitialStance}-${selector.agentBInitialStance}`;
+  }
+  // default: big5 grid
+  return `big5-${selector.trait}-${selector.agentAValue}-${selector.agentBValue}`;
+};
 
 const compactLiveMessage = (message: Message): Message => {
   // Keep only fields needed for live viewing; drop large prompt/raw fields.
@@ -125,8 +131,11 @@ export const startPersonaTraversalExperiment = async () => {
   if (agents.length !== 2) {
     throw new Error('人格遍历实验目前仅支持 2 个 Agent。');
   }
-  if (!exp.dimensions || exp.dimensions.length === 0) {
-    throw new Error('请至少选择 1 个遍历维度（O/C/E/A/N）。');
+  const expKind = exp.kind ?? 'big5_grid';
+  if (expKind === 'big5_grid') {
+    if (!('dimensions' in exp) || !exp.dimensions || exp.dimensions.length === 0) {
+      throw new Error('请至少选择 1 个遍历维度（O/C/E/A/N）。');
+    }
   }
 
   stopPersonaTraversalExperiment();
@@ -135,13 +144,13 @@ export const startPersonaTraversalExperiment = async () => {
 
   const startedAt = Date.now();
 
-  const resolved = normalizeExperimentConfig(exp, agents);
-  const tracksPlan = buildExperimentTracks(resolved);
+  const resolved = normalizeExperimentConfig(exp, agents, config.discussion.stanceScaleSize);
+  const tracksPlan = buildExperimentTracks(resolved, config.discussion.stanceScaleSize);
   const totalTracks = tracksPlan.length;
   const concurrency = Math.max(1, Math.min(totalTracks, resolved.concurrency));
 
   const experimentId = buildExperimentId(startedAt);
-  const experimentName = buildExperimentName(resolved);
+  const experimentName = buildExperimentName(resolved, config.discussion.stanceScaleSize);
   control.experimentId = experimentId;
   const initialStatus: PersonaTraversalExperimentStatus = {
     phase: 'running',
@@ -154,17 +163,28 @@ export const startPersonaTraversalExperiment = async () => {
     typeof config.maxMessages === 'number' && Number.isFinite(config.maxMessages)
       ? Math.max(1, Math.floor(config.maxMessages))
       : (config.maxRounds ?? 3) * agents.length;
-  const initialTrackProgress: ExperimentTrackProgress[] = tracksPlan.map((plan) => ({
-    index: plan.index,
-    selector: {
-      trait: plan.trait,
-      agentAValue: plan.agentAValue,
-      agentBValue: plan.agentBValue,
-    },
-    phase: 'queued',
-    completedMessages: 0,
-    totalMessagesTarget: trackTotalMessagesTarget,
-  }));
+  const initialTrackProgress: ExperimentTrackProgress[] = tracksPlan.map((plan) => {
+    const selector: ExperimentTrackSelector =
+      plan.kind === 'symmetric_initial_stance'
+        ? {
+            kind: 'symmetric_initial_stance',
+            agentAInitialStance: plan.agentAInitialStance,
+            agentBInitialStance: plan.agentBInitialStance,
+          }
+        : {
+            kind: 'big5_grid',
+            trait: plan.trait,
+            agentAValue: plan.agentAValue,
+            agentBValue: plan.agentBValue,
+          };
+    return {
+      index: plan.index,
+      selector,
+      phase: 'queued',
+      completedMessages: 0,
+      totalMessagesTarget: trackTotalMessagesTarget,
+    };
+  });
   const record: PersonaTraversalExperimentRecord = {
     id: experimentId,
     name: experimentName,
@@ -249,8 +269,21 @@ export const startPersonaTraversalExperiment = async () => {
     });
   };
 
-  const appendLiveMessage = (plan: { trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }, msg: Message) => {
-    const key = trackKeyFromSelector(plan.trait, plan.agentAValue, plan.agentBValue);
+  const appendLiveMessage = (plan: TrackPlan, msg: Message) => {
+    const selector: ExperimentTrackSelector =
+      plan.kind === 'symmetric_initial_stance'
+        ? {
+            kind: 'symmetric_initial_stance',
+            agentAInitialStance: plan.agentAInitialStance,
+            agentBInitialStance: plan.agentBInitialStance,
+          }
+        : {
+            kind: 'big5_grid',
+            trait: plan.trait,
+            agentAValue: plan.agentAValue,
+            agentBValue: plan.agentBValue,
+          };
+    const key = trackKeyFromSelector(selector);
     useAppStore.getState().updateExperiment(experimentId, (current) => {
       const existingMap = current.trackLiveMessages ?? {};
       const existingList = existingMap[key] ?? [];
@@ -283,14 +316,23 @@ export const startPersonaTraversalExperiment = async () => {
     });
   };
 
-  const runOne = async (plan: { trait: Big5TraitKey; index: number; agentAValue: number; agentBValue: number }) => {
+  const runOne = async (plan: TrackPlan) => {
     if (control.stopped) return;
     running += 1;
     updateStatus({ runningTracks: running });
     updateTrack(plan.index, { phase: 'running', startedAt: Date.now() });
     try {
       const [agentAId, agentBId] = resolved.agentIds;
-      const agentsForTrack = applyBig5OverrideForTrack(agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
+      const agentsForTrack =
+        plan.kind === 'symmetric_initial_stance'
+          ? applyInitialStanceOverrideForTrack(
+              agents,
+              agentAId,
+              agentBId,
+              plan.agentAInitialStance,
+              plan.agentBInitialStance,
+            )
+          : applyBig5OverrideForTrack(agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
       const session = await runDetachedConversation({
         agents: agentsForTrack,
         config: baseRunConfig,
@@ -309,14 +351,25 @@ export const startPersonaTraversalExperiment = async () => {
       });
       results.push({
         id: nanoid(),
-        meta: {
-          index: plan.index,
-          trait: plan.trait,
-          agentAId,
-          agentBId,
-          agentAValue: plan.agentAValue,
-          agentBValue: plan.agentBValue,
-        },
+        meta:
+          plan.kind === 'symmetric_initial_stance'
+            ? {
+                index: plan.index,
+                kind: 'symmetric_initial_stance',
+                agentAId,
+                agentBId,
+                agentAInitialStance: plan.agentAInitialStance,
+                agentBInitialStance: plan.agentBInitialStance,
+              }
+            : {
+                index: plan.index,
+                kind: 'big5_grid',
+                trait: plan.trait,
+                agentAId,
+                agentBId,
+                agentAValue: plan.agentAValue,
+                agentBValue: plan.agentBValue,
+              },
         result: session,
       });
       appendTrack(results[results.length - 1]);
@@ -386,27 +439,47 @@ const buildExperimentId = (startedAt: number): string => {
   return `exp-${stamp}`;
 };
 
-const buildExperimentName = (exp: PersonaTraversalExperimentConfig): string => {
-  const dims = exp.dimensions?.length ? exp.dimensions.join('') : 'none';
-  const grid = `${exp.levels.length}x${exp.levels.length}`;
+const buildExperimentName = (exp: PersonaTraversalExperimentConfig, stanceScaleSize: number): string => {
+  const kind = exp.kind ?? 'big5_grid';
+  if (kind === 'symmetric_initial_stance') {
+    const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(stanceScaleSize)) / 2);
+    const m = maxLevel + 1;
+    return `SymmetricStance(±${maxLevel}) M=${m} k=${exp.concurrency}`;
+  }
+  const dims = 'dimensions' in exp && exp.dimensions?.length ? exp.dimensions.join('') : 'none';
+  const grid = 'levels' in exp ? `${exp.levels.length}x${exp.levels.length}` : '0x0';
   return `Grid(${dims}) ${grid} k=${exp.concurrency}`;
 };
 
 const normalizeExperimentConfig = (
   exp: PersonaTraversalExperimentConfig,
   agents: AgentSpec[],
+  stanceScaleSize: number,
 ): PersonaTraversalExperimentConfig => {
-  const levels = exp.levels?.length ? exp.levels : [10, 30, 50, 70, 90];
-  const uniqueLevels = Array.from(new Set(levels.map((v) => Math.round(v)))).filter((v) => v >= 0 && v <= 100);
-  const dims = exp.dimensions?.length ? exp.dimensions : ([] as Big5TraitKey[]);
-  const uniqueDims = Array.from(new Set(dims));
   const agentIds: [string, string] =
     exp.agentIds?.length === 2
       ? exp.agentIds
       : ([agents[0]?.id ?? '', agents[1]?.id ?? ''] as [string, string]);
+  const kind = exp.kind ?? 'big5_grid';
+  if (kind === 'symmetric_initial_stance') {
+    const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(stanceScaleSize)) / 2);
+    const M = maxLevel + 1;
+    return {
+      ...exp,
+      kind: 'symmetric_initial_stance',
+      agentIds,
+      concurrency: Math.max(1, Math.min(M || 1, Math.floor(exp.concurrency || 1))),
+    };
+  }
+
+  const levels = 'levels' in exp && exp.levels?.length ? exp.levels : [10, 30, 50, 70, 90];
+  const uniqueLevels = Array.from(new Set(levels.map((v) => Math.round(v)))).filter((v) => v >= 0 && v <= 100);
+  const dims = 'dimensions' in exp && exp.dimensions?.length ? exp.dimensions : ([] as Big5TraitKey[]);
+  const uniqueDims = Array.from(new Set(dims));
   const M = uniqueDims.length > 0 ? uniqueDims.length * uniqueLevels.length * uniqueLevels.length : 0;
   return {
     ...exp,
+    kind: 'big5_grid',
     agentIds,
     dimensions: uniqueDims,
     levels: uniqueLevels,
@@ -414,15 +487,39 @@ const normalizeExperimentConfig = (
   };
 };
 
+type TrackPlan =
+  | { kind: 'big5_grid'; trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }
+  | { kind: 'symmetric_initial_stance'; agentAInitialStance: number; agentBInitialStance: number; index: number };
+
 const buildExperimentTracks = (
   exp: PersonaTraversalExperimentConfig,
-): Array<{ trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }> => {
-  const plan: Array<{ trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }> = [];
+  stanceScaleSize: number,
+): TrackPlan[] => {
+  const kind = exp.kind ?? 'big5_grid';
+  if (kind === 'symmetric_initial_stance') {
+    const maxLevel = Math.floor(Math.max(3, normalizeScaleSize(stanceScaleSize)) / 2);
+    const plan: TrackPlan[] = [];
+    let idx = 0;
+    for (let k = maxLevel; k >= 0; k -= 1) {
+      plan.push({
+        kind: 'symmetric_initial_stance',
+        agentAInitialStance: -k,
+        agentBInitialStance: k,
+        index: idx,
+      });
+      idx += 1;
+    }
+    return plan;
+  }
+
+  const dims = 'dimensions' in exp ? exp.dimensions : [];
+  const levels = 'levels' in exp ? exp.levels : [];
+  const plan: TrackPlan[] = [];
   let idx = 0;
-  exp.dimensions.forEach((trait) => {
-    exp.levels.forEach((agentAValue) => {
-      exp.levels.forEach((agentBValue) => {
-        plan.push({ trait, agentAValue, agentBValue, index: idx });
+  dims.forEach((trait) => {
+    levels.forEach((agentAValue) => {
+      levels.forEach((agentBValue) => {
+        plan.push({ kind: 'big5_grid', trait, agentAValue, agentBValue, index: idx });
         idx += 1;
       });
     });
@@ -463,6 +560,24 @@ const applyBig5OverrideForTrack = (
       ...agent,
       persona,
     };
+  });
+};
+
+const applyInitialStanceOverrideForTrack = (
+  agents: AgentSpec[],
+  agentAId: string,
+  agentBId: string,
+  agentAInitialStance: number,
+  agentBInitialStance: number,
+): AgentSpec[] => {
+  return agents.map((agent) => {
+    if (agent.id === agentAId) {
+      return { ...agent, initialStance: agentAInitialStance };
+    }
+    if (agent.id === agentBId) {
+      return { ...agent, initialStance: agentBInitialStance };
+    }
+    return agent;
   });
 };
 
