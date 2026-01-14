@@ -60,6 +60,10 @@ export function ResultsPage() {
     }
     return experiments[0];
   }, [experiments, activeExperimentId]);
+  const experimentAgentNameMap = useMemo(
+    () => resolveAgentNameMap(selectedExperiment?.agentsSnapshot ?? runState.agents),
+    [selectedExperiment, runState.agents],
+  );
 
   const selectedExperimentResult = selectedExperiment?.result;
   const trackTraitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
@@ -86,14 +90,52 @@ export function ResultsPage() {
     );
   }, [selectedExperimentResult, resolvedTrackSelector]);
 
-  const discussionSnapshot = displayResult?.configSnapshot.discussion;
-  const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
-  const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
+  const selectedTrackLiveMessages = useMemo(() => {
+    if (!selectedExperiment || !resolvedTrackSelector) return undefined;
+    const key = `${resolvedTrackSelector.trait}-${resolvedTrackSelector.agentAValue}-${resolvedTrackSelector.agentBValue}`;
+    return selectedExperiment.trackLiveMessages?.[key];
+  }, [selectedExperiment, resolvedTrackSelector]);
+
+  const chartResult = useMemo<SessionResult | undefined>(() => {
+    // Prefer the active experiment track (completed or live) when available.
+    if (selectedExperiment && resolvedTrackSelector) {
+      if (selectedTrack?.result) return selectedTrack.result;
+      if (selectedTrackLiveMessages && selectedTrackLiveMessages.length > 0) {
+        return {
+          messages: selectedTrackLiveMessages,
+          finishedAt: Date.now(),
+          summary: '',
+          configSnapshot: selectedExperiment.runConfigSnapshot,
+          status: {
+            phase: 'running',
+            mode: selectedExperiment.runConfigSnapshot.mode,
+            startedAt: selectedExperiment.status.startedAt,
+            finishedAt: undefined,
+            currentRound: 0,
+            currentTurn: 0,
+            totalMessages: selectedTrackLiveMessages.length,
+            summarizedCount: 0,
+            lastAgentId: selectedTrackLiveMessages[selectedTrackLiveMessages.length - 1]?.agentId,
+            error: undefined,
+            awaitingLabel: undefined,
+            sessionId: 0,
+          },
+          failures: [],
+        };
+      }
+    }
+    return displayResult ?? undefined;
+  }, [displayResult, resolvedTrackSelector, selectedExperiment, selectedTrack, selectedTrackLiveMessages]);
+
+  const conversationDiscussionSnapshot = displayResult?.configSnapshot.discussion;
+  const positiveViewpointLabel = ensurePositiveViewpoint(conversationDiscussionSnapshot?.positiveViewpoint);
+  const negativeViewpointLabel = ensureNegativeViewpoint(conversationDiscussionSnapshot?.negativeViewpoint);
 
   const stanceDataset = useMemo(() => {
-    if (!displayResult) return null;
-    return prepareStanceDataset(displayResult, agentNameMap);
-  }, [displayResult, agentNameMap]);
+    if (!chartResult) return null;
+    const nameMap = selectedExperiment && resolvedTrackSelector ? experimentAgentNameMap : agentNameMap;
+    return prepareStanceDataset(chartResult, nameMap);
+  }, [agentNameMap, chartResult, experimentAgentNameMap, resolvedTrackSelector, selectedExperiment]);
 
   const individualChartOption = useMemo<EChartsOption | null>(() => {
     if (!stanceDataset) return null;
@@ -263,7 +305,7 @@ export function ResultsPage() {
 
       const link = document.createElement('a');
       link.href = dataUrl;
-      const finishedAt = displayResult?.finishedAt ?? Date.now();
+      const finishedAt = chartResult?.finishedAt ?? displayResult?.finishedAt ?? Date.now();
       const suffix =
         chartType === 'individual' ? 'individual' : 'group';
       link.download = `stance-chart-${suffix}-${new Date(finishedAt)
