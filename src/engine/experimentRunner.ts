@@ -775,8 +775,12 @@ const executeAgentTurnLocal = async ({
     ? { ...DEFAULT_PROMPT_TOGGLES, ...config.promptToggles }
     : { ...DEFAULT_PROMPT_TOGGLES };
   const randomLengthEnabled = promptToggles.randomLength !== false;
-  const contentLengthTarget = randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
-  const forcePersonalExample = randomLengthEnabled ? Math.random() < 0.2 : false;
+  const experimentMode = Boolean(config.personaTraversalExperiment?.enabled);
+  // In experiment mode, avoid injecting additional randomness/noise.
+  const contentLengthTarget =
+    experimentMode ? 2 : randomLengthEnabled ? Math.floor(Math.random() * 3) + 1 : 2;
+  const forcePersonalExample =
+    experimentMode ? false : randomLengthEnabled ? Math.random() < 0.2 : false;
   const positiveViewpoint = ensurePositiveViewpoint(discussion?.positiveViewpoint);
   const negativeViewpoint = ensureNegativeViewpoint(discussion?.negativeViewpoint);
   const previousThoughtSummaries = collectPreviousThoughtSummaries(round - 1, agent.id, agentNames, messages);
@@ -798,6 +802,7 @@ const executeAgentTurnLocal = async ({
     promptToggles,
     contentLengthTarget,
     forcePersonalExample,
+    systemPromptExtra: baseModelConfig.systemPromptExtra,
   });
   const userPrompt = buildAgentUserPrompt({
     agent,

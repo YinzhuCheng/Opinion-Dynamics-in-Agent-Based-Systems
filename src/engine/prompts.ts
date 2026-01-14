@@ -41,6 +41,7 @@ interface AgentPromptOptions {
   promptToggles?: PromptToggleConfig;
   contentLengthTarget?: number;
   forcePersonalExample?: boolean;
+  systemPromptExtra?: string;
 }
 
 export const buildAgentSystemPrompt = ({
@@ -55,6 +56,7 @@ export const buildAgentSystemPrompt = ({
   promptToggles,
   contentLengthTarget,
   forcePersonalExample,
+  systemPromptExtra,
 }: AgentPromptOptions): string => {
   const toggles = promptToggles
     ? { ...DEFAULT_PROMPT_TOGGLES, ...promptToggles }
@@ -71,65 +73,56 @@ export const buildAgentSystemPrompt = ({
         ? '人格画像：【（未提供画像，请保持中性口吻）】'
         : undefined;
   const personaAlignmentHint = personaEnabled
-    ? '请让“内在状态 + 思考摘要 + 外显措辞”始终贴合人格画像 / MBTI / 大五人格与初始立场设定，不可自相矛盾。'
+    ? '一致性要求：state / think / content 必须与你的人格画像与初始立场一致；如需改变立场，必须在 think 或 content 中给出明确触发点与理由。'
     : undefined;
   const trustSection =
     trustMatrixEnabled && trustWeights.length > 0
-      ? `信任度矩阵（上一批次发言的参考权重，符合 DeGroot 聚合思路）：
+      ? `参考权重（权重越大越优先吸收/引用；请避免在 content 中提到“矩阵/权重”等内部词）：
 ${trustWeights
   .map((item) => {
     const selfMark = item.agentName === agent.name ? ' ← 这是“我”' : '';
     return `- ${item.agentName}: ${item.weight.toFixed(2)}${selfMark}`;
   })
   .join('\n')}
-权重越大代表越信任；对你自己（标记为“我”）的权重代表自我参考的稳定程度，其余权重代表你对他人观点的吸收强度。`
+提示：权重高不等于盲从，仍需保持论证自洽。`
       : trustMatrixEnabled
-        ? '信任度矩阵：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。'
+        ? '参考权重：未提供特定偏好，可均匀参考所有 Agent 的上一批次发言。'
         : undefined;
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
-  const scaleValues = buildScaleValues(stanceScaleSize);
   const positiveDesc = ensurePositiveViewpoint(positiveViewpoint);
   const negativeDesc = ensureNegativeViewpoint(negativeViewpoint);
-    const stanceLine = `当前仅讨论一组对立立场：
+  const stanceLine = `讨论议题（立场极性）：
   - 正向：${positiveDesc}
   - 负向：${negativeDesc}`;
-    const ratingLine = `"stance.score" 必须写成 [-${maxLevel}, +${maxLevel}] 范围内的整数；绝对值越大代表越极端地支持正向或负向立场，0 表示完全中立。若需要解释评分，只能写进 content 数组的句子里，不能出现在 stance 对象中。`;
-  const coverageHint = `刻度示例：${scaleValues.join(' / ')}。负值对应“${negativeDesc}”，正值对应“${positiveDesc}”。多轮对话中请主动探索不同强度，而不是永远停在单一取值。`;
-    const continuityGuidelines = `对话策略：
-    - 参考上一批次的整体氛围构建“潜台词”，但在发言内容里以口语化方式继续讨论，不要频繁提“上一轮/上一批次”。
-  - 大部分情况下请顺着上一位发言者的视角继续推进；仅在确有必要时（小概率）开启新的细节或话题，且要解释衔接。
-  - 遇到观点冲突可直接反驳或追问，不必刻意礼貌，带争执语气以保持真实感。
-  - 若上一轮的内在状态已出现明显动摇，请允许极性反转：可以从支持转为反对或相反方向，只要给出充分理由。`;
-    const previousInnerStateSection =
-      memoryEnabled
-        ? previousInnerStates.length > 0
-          ? `历史内在状态（仅你本人可见，按时间从旧到新）：\n${previousInnerStates
-              .map((item) => `- ${item.innerState}`)
-              .join('\n')}`
-          : '历史内在状态：暂无记录（首轮），需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像。'
-        : undefined;
-    const previousThoughtSection =
-      memoryEnabled
-        ? previousThoughtSummaries.length > 0
-          ? `历史思考摘要（仅供自检，不要原文引用）：\n${previousThoughtSummaries
-              .map((item) => `- ${item.thoughtSummary}`)
-              .join('\n')}`
-          : '历史思考摘要：暂无记录，需要与个人的初始立场和初始观点一致，首轮中初始立场和初始观点优先于人格画像。'
-        : undefined;
-const innerStateGuidelines = `内在状态机制（JSON 字段 state）：
-  1. state.personal_memory（个人发言记忆）：数组，1~3 句，用第一人称记录你此刻最想保留的发言要点（信念、情绪、承诺等）；不要写“第几轮”或编号，这些句子将在下一次出场时原样回放给你，可源自你过往所有公开发言（content）或这些发言隐含的潜台词，也可以对你已接收到的关键信息做内化总结。
-  2. state.others_memory（他人发言记忆）：数组，1~3 句，以“<Agent 名> - 触发点”的格式记录他人对你的刺激；可回顾所有你听到过的发言，提炼最具影响力的线索；该部分仅供系统建模，下一轮不会回放给任何人，因此内容要高度凝练。
-  3. state.long_term：数组，使用 2~3 句描述人格画像、MBTI、大五人格、价值观、沟通风格、初始立场和累积记忆，明确“我本来是谁、始终坚持什么”。
-  4. state.short_term：数组，使用 2~3 句描述此刻的情绪、生理状态、安全感、即时目标、对他人可靠性的判断，并指出最新刺激如何造成微调。
-  - 四个数组都采用滑动窗口：多于 3 句时立刻移除最旧句子，只保留最新条目。
-  - 发言记忆必须与对话中已经出现的信息相互印证：personal_memory 只记录你曾经公开说过或立即可推导的潜台词；others_memory 只记录你真实听到的触发点。若素材不足可少于 3 条，禁止凭空补齐。
-  - 引用时结合上一轮保存的 state / think 以及上一轮各 Agent 的公开发言与信任度偏好，明确哪些因素维持稳定、哪些发生更新。
-  - state 的句子不可在 content 中逐字复述，可换角度延伸。
-  - 整个记忆机制本质上是“对发言的摘要”，仅用于帮助你在下一次发言前快速回看，而非额外编造情节。`;
-const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;
-const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
-  - think 是字符串数组，至少 2~3 句，描述你在本轮的即时推理：上一轮残留的问题、上一位发言者如何触发你、你准备如何组织发言内容或反驳。
-  - 每句都要点名某个内在状态因素（例如信任度、情绪、记忆条目）如何影响推理；保持第一人称，不要与 content 重复。`;
+  const ratingLine = `立场标注：stance.score 必须为 [-${maxLevel}, +${maxLevel}] 的整数；负值偏向“${negativeDesc}”，正值偏向“${positiveDesc}”，0 为中立。`;
+  const continuityGuidelines = `对话要求（精简）：
+  - 优先回应上一位发言者；若开启新点，需解释衔接。
+  - 避免复读；引用他人观点时用新角度/新证据推进。
+  - 允许在理由充分时调整甚至反转立场。`;
+  const previousInnerStateSection =
+    memoryEnabled
+      ? previousInnerStates.length > 0
+        ? `历史内在状态（仅你本人可见）：\n${previousInnerStates
+            .map((item) => `- ${item.innerState}`)
+            .join('\n')}`
+        : '历史内在状态：暂无（首轮请优先遵守初始立场/初始观点）。'
+      : undefined;
+  const previousThoughtSection =
+    memoryEnabled
+      ? previousThoughtSummaries.length > 0
+        ? `历史思考摘要（仅供自检，不要逐字引用）：\n${previousThoughtSummaries
+            .map((item) => `- ${item.thoughtSummary}`)
+            .join('\n')}`
+        : '历史思考摘要：暂无（首轮请优先遵守初始立场/初始观点）。'
+      : undefined;
+
+  const innerStateGuidelines = `state（内在状态，数组均 ≤3 条，超出则丢弃最旧）：
+  - personal_memory：1~3 句，第一人称，记录你此刻要记住的信念/情绪/承诺（必须可从已发生对话推得出）。
+  - others_memory：1~3 句，格式“<Agent 名> - 触发点”，只写你确实听到/理解到的刺激。
+  - long_term：2~3 句，概括“我是谁/我坚持什么”（人格画像+初始立场+累积记忆）。
+  - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。`;
+  const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;
+  const thoughtGuidelines = `think（思考摘要）：2~3 句，说明你如何被触发、你准备如何回应/反驳、为何做出该立场标注；不要与 content 逐字重复。`;
     const clampLengthTarget = (value: number) => Math.max(1, Math.min(3, Math.round(value)));
     const bodyLengthTarget =
       typeof contentLengthTarget === 'number'
@@ -140,29 +133,24 @@ const thoughtGuidelines = `思考摘要机制（JSON 字段 think）：
     const includePersonalExample =
       randomLengthEnabled &&
       (typeof forcePersonalExample === 'boolean' ? forcePersonalExample : Math.random() < 0.2);
-    const referenceLine = trustMatrixEnabled
-      ? '- 优先引用上一位发言者、信任度矩阵偏好或长期记忆中的张力，解释你为何做出该轮发言。'
-      : '- 优先引用上一位发言者或长期记忆中的张力，解释你为何做出该轮发言。';
-    const contentGuidelines = `发言内容机制（JSON 字段 content）：
-      - content 是唯一对外公开的语言输出，请结合 state 与 think 的线索，按照下方“日常表达提示”给出的句数自然表达，回应当前局面或提出新观点。
-      - 数组内只能放自然语言句子，不得嵌入额外 JSON、标签或系统提示；句子之间可通过语气词、顿号等保持口语感。
-      ${referenceLine}
-      - 发言内容长度为 ${bodyLengthTarget} 句${includePersonalExample ? '\n      - 本轮请额外加入一则你自己或身边人的真实体验，为论点提供生活化细节。' : ''}
-      - 发言内容不要逐字复述 state 或 think 的句子，可换角度延伸那些信息。
-      - 不要在输出里提到“信任度矩阵”“立场评分”等内部术语。`;
-    const stanceGuidelines = `情感标签机制（JSON 字段 stance）：
-    - stance 必须是对象，包含 score（整数）与可选 label（你可以用自己的措辞描述此刻的情感或立场备注）。
-    - score 的合法范围、含义与极性要求见下方输出要求；若需要解释理由，请写回 content，而不是在 stance 对象里扩展字段。
-      - 如果配置中未给出初始立场，你需要结合人格画像、价值观与初始观点自行推导出最符合角色的起始刻度；一旦配置提供了初始立场或初始观点，必须优先遵守该设定，仅在后续 state / think 表明出现动摇时再调整并说明原因。
-    - 若上一轮的 state / think 已显露动摇，本轮的 stance.score 应给出相应调整，以便系统追踪波动。`;
-    const naturalGuidelines = `日常表达提示（适用于 content 数组）：
-    - 像即时聊天一样说话，可包含停顿、语气词或自我修正。
-    - 使用“我/我们/你”来指代角色，不要说“根据 A1 的观点”“在本轮”等元叙述。
-      - 避免模板化句式或编号，拆成两三句短句更自然。
-        - 不要机械复述你或他人已经说过的观点；若需要引用，请换一个全新角度或补充新的证据。
-        - content 内严禁出现“刻度”“打分”“评分”等措辞；若需要自评或解释分数，只能写进 think 或 state。`;
-    const outputFormatSample = `输出格式（合法 JSON）：
-${AGENT_OUTPUT_JSON_SCHEMA}`;
+  const referenceLine = trustMatrixEnabled
+    ? '- 可以参考权重更高者的观点/措辞，但必须保持自己的推理一致。'
+    : undefined;
+  const contentGuidelines = `content（发言内容）：${bodyLengthTarget} 句，自然口语表达；不得出现额外 JSON/标签/系统提示；不要在 content 中提“信任/权重/打分/刻度/评分”等内部词。
+${referenceLine ?? ''}
+${includePersonalExample ? '提示：可加入一个生活化例子（可假设），用来支撑论点。' : ''}`.trim();
+  const stanceGuidelines = `stance（立场标签）：必须输出对象 {score, label?}；解释理由写进 think 或 content，不要扩展其它字段。`;
+  const outputContract = `输出契约（最高优先级）：
+  - 只输出一个 JSON 对象，不要代码块，不要额外解释。
+  - 顶级字段仅允许：state / think / content / stance。
+  - state/think/content 必须非空；stance.score 必须为整数。`;
+  const internalBan = `禁止项：
+  - content 中禁止出现“系统提示/提示词/信任度矩阵/权重/立场评分/刻度/打分/评分/JSON/schema”等元叙述。`;
+  const extraBlock =
+    systemPromptExtra && systemPromptExtra.trim().length > 0
+      ? `额外系统要求（在不违反“输出契约”的前提下优先遵守）：\n${systemPromptExtra.trim()}`
+      : undefined;
+  const outputFormatSample = `JSON 示例：\n${AGENT_OUTPUT_JSON_SCHEMA}`;
 
   const skipInstruction =
     mode === 'random'
@@ -170,35 +158,26 @@ ${AGENT_OUTPUT_JSON_SCHEMA}`;
       : '本轮按固定顺序发言，请确保提供有效观点或补充，而不是跳过。';
 
   return [
-    `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性，并遵循下列规则：`,
+    `你是一名多 Agent 观点演化系统中的参与者，请始终保持角色画像与沟通风格的一致性。`,
+    outputContract,
+    ratingLine,
     personaBlock,
     personaAlignmentHint,
     trustSection,
+    extraBlock,
     stanceLine,
-  `核心职责：
-- 在轮到你发言时，根据角色视角提出观点、论据或对他人观点的回应。
-- 与其他 Agent 协作或辩论，推动讨论朝目标收敛。
-- 如需引用数据或假设，请明确说明来源或不确定性。`,
     continuityGuidelines,
-      innerStateGuidelinesBlock,
-      thoughtGuidelines,
-      contentGuidelines,
-      stanceGuidelines,
+    internalBan,
+    innerStateGuidelinesBlock,
+    thoughtGuidelines,
+    contentGuidelines,
+    stanceGuidelines,
     SYNTHESIS_HINT,
     previousInnerStateSection,
     previousThoughtSection,
-      `输出要求：
-- 使用简洁段落阐述论点，可包含条列说明。
-- ${skipInstruction}
-- 如需提出后续行动建议或结论，请在末尾表达。
-  - JSON 中的 content 数组必须包含完整的发言内容，stance.score 需与 content 保持一致的立场方向，并紧随其后。
-  - ${ratingLine}
-  - ${coverageHint}
-  - ${ENFORCEMENT_WARNING}
-
-  ${naturalGuidelines}
-
-  ${outputFormatSample}`,
+    `本轮发言要求：${skipInstruction}`,
+    ENFORCEMENT_WARNING,
+    outputFormatSample,
   ].filter(Boolean).join('\n\n');
 };
 
@@ -208,8 +187,6 @@ export const buildAgentUserPrompt = ({
   round,
   agentNames,
   stanceScaleSize,
-  positiveViewpoint: _positiveViewpoint,
-  negativeViewpoint: _negativeViewpoint,
   previousRoundMessages,
   lastSpeakerMessage,
   previousThoughtSummaries,

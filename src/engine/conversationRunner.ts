@@ -473,6 +473,7 @@ class ConversationRunner {
           promptToggles,
           contentLengthTarget,
           forcePersonalExample,
+          systemPromptExtra: modelConfig.systemPromptExtra,
       });
           const userPrompt = buildAgentUserPrompt({
           agent,
