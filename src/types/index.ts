@@ -134,6 +134,18 @@ export interface PersonaTraversalExperimentResult {
   tracks: ExperimentTrackResult[];
 }
 
+export type ExperimentPhase = 'idle' | 'running' | 'completed' | 'cancelled' | 'error';
+
+export interface PersonaTraversalExperimentStatus {
+  phase: ExperimentPhase;
+  totalTracks: number;
+  completedTracks: number;
+  runningTracks: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+}
+
 export interface Message {
   id: string;
   agentId: string;

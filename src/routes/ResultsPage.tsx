@@ -4,7 +4,14 @@ import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts';
 import { useAppStore } from '../store/useAppStore';
-import type { Message, SessionResult, RunConfig, FailureRecord } from '../types';
+import type {
+  Message,
+  SessionResult,
+  RunConfig,
+  FailureRecord,
+  PersonaTraversalExperimentResult,
+  ExperimentTrackResult,
+} from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import {
   ensureNegativeViewpoint,
@@ -15,6 +22,8 @@ type ReactEChartsInstance = InstanceType<typeof ReactECharts>;
 
 export function ResultsPage() {
   const result = useAppStore((state) => state.currentResult);
+  const experimentResult = useAppStore((state) => state.experimentResult);
+  const experimentStatus = useAppStore((state) => state.experimentStatus);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
@@ -72,6 +81,68 @@ export function ResultsPage() {
     link.href = url;
     const suffix = mode === 'full' ? '-full' : '-standard';
     link.download = `conversation${suffix}-${new Date(displayResult.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportExperimentJson = (data: PersonaTraversalExperimentResult) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `persona-traversal-experiment-${new Date(data.finishedAt).toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const buildExperimentTranscriptText = (
+    data: PersonaTraversalExperimentResult,
+    mode: 'standard' | 'full',
+  ): string => {
+    const lines: string[] = [];
+    lines.push(`实验结束时间：${new Date(data.finishedAt).toLocaleString()}`);
+    lines.push(`总轨道数 M：${data.totalTracks}`);
+    lines.push(`维度：${data.config.dimensions.join(', ')}`);
+    lines.push(`档位：${data.config.levels.join(' / ')}`);
+    lines.push(`并发 k：${data.config.concurrency}`);
+    lines.push('');
+    data.tracks.forEach((track) => {
+      lines.push('============================================================');
+      lines.push(`轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait} = ${track.meta.value}`);
+      lines.push(`结束时间：${new Date(track.result.finishedAt).toLocaleString()}`);
+      lines.push('');
+      lines.push(buildTranscriptText(track.result, agentNameMap, mode));
+      lines.push('');
+    });
+    return lines.join('\n');
+  };
+
+  const handleExportExperimentTranscript = (
+    data: PersonaTraversalExperimentResult,
+    mode: 'standard' | 'full',
+  ) => {
+    const text = buildExperimentTranscriptText(data, mode);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const suffix = mode === 'full' ? '-full' : '-standard';
+    link.download = `persona-traversal-experiment${suffix}-${new Date(data.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadTrackTranscript = (
+    track: ExperimentTrackResult,
+    mode: 'standard' | 'full',
+  ) => {
+    const text = buildTranscriptText(track.result, agentNameMap, mode);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const suffix = mode === 'full' ? '-full' : '-standard';
+    link.download = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.value}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -237,6 +308,97 @@ export function ResultsPage() {
           )}
         </div>
       </section>
+
+      {experimentResult ? (
+        <section className="card">
+          <header className="card__header">
+            <h2>人格遍历实验结果</h2>
+            <div className="card__actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => handleExportExperimentJson(experimentResult)}
+              >
+                导出全部轨道（JSON）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => handleExportExperimentTranscript(experimentResult, 'standard')}
+              >
+                导出全部轨道文本（精简）
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => handleExportExperimentTranscript(experimentResult, 'full')}
+              >
+                导出全部轨道文本（完整版）
+              </button>
+            </div>
+          </header>
+          <div className="card__body">
+            <p className="form-hint">
+              规模 M = {experimentResult.totalTracks}（维度 {experimentResult.config.dimensions.join(', ')} × 档位{' '}
+              {experimentResult.config.levels.length}），并发 k = {experimentResult.config.concurrency}。
+              {experimentStatus?.phase
+                ? ` 当前状态：${experimentStatus.phase}（已完成 ${experimentStatus.completedTracks}/${experimentStatus.totalTracks}）`
+                : null}
+            </p>
+            {experimentResult.tracks.length === 0 ? (
+              <div className="empty-state">
+                <p>暂无实验轨道结果。</p>
+              </div>
+            ) : (
+              <div className="results-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>轨道</th>
+                      <th>维度</th>
+                      <th>取值</th>
+                      <th>结束时间</th>
+                      <th>有效消息数</th>
+                      <th>导出</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {experimentResult.tracks.map((track) => {
+                      const finishedAt = track.result.finishedAt;
+                      const visibleCount = countVisibleMessages(track.result.messages);
+                      return (
+                        <tr key={track.id}>
+                          <td>#{track.meta.index + 1}</td>
+                          <td>{track.meta.trait}</td>
+                          <td>{track.meta.value}</td>
+                          <td>{new Date(finishedAt).toLocaleString()}</td>
+                          <td>{visibleCount}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button tertiary"
+                              onClick={() => handleDownloadTrackTranscript(track, 'standard')}
+                            >
+                              精简 .txt
+                            </button>
+                            <button
+                              type="button"
+                              className="button tertiary"
+                              onClick={() => handleDownloadTrackTranscript(track, 'full')}
+                            >
+                              完整 .txt
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       <section className="card">
         <header className="card__header">

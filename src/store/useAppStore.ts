@@ -9,6 +9,8 @@ import type {
   RunConfig,
   RunState,
     SessionResult,
+  PersonaTraversalExperimentResult,
+  PersonaTraversalExperimentStatus,
   Vendor,
   DialogueMode,
   RunStatus,
@@ -182,6 +184,8 @@ const createVendorDefaults = (): VendorDefaults => ({
 export interface AppStore {
   runState: RunState;
   currentResult?: SessionResult;
+  experimentResult?: PersonaTraversalExperimentResult;
+  experimentStatus?: PersonaTraversalExperimentStatus;
   currentPage: 'configuration' | 'dialogue' | 'results';
   vendorDefaults: VendorDefaults;
   setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
@@ -198,6 +202,9 @@ export interface AppStore {
   setSummary: (summary: string) => void;
   setVisibleWindow: (messages: Message[]) => void;
   setResult: (result?: SessionResult) => void;
+  setExperimentResult: (result?: PersonaTraversalExperimentResult) => void;
+  setExperimentStatus: (status?: PersonaTraversalExperimentStatus) => void;
+  resetExperiment: () => void;
   setVendorBaseUrl: (vendor: Vendor, baseUrl: string) => void;
   setVendorModel: (vendor: Vendor, model: string) => void;
   setVendorApiKey: (vendor: Vendor, apiKey: string) => void;
@@ -225,6 +232,8 @@ export interface AppStore {
 export const useAppStore = create<AppStore>((set) => ({
   runState: createEmptyRunState(),
   currentResult: undefined,
+  experimentResult: undefined,
+  experimentStatus: undefined,
   currentPage: 'configuration',
   vendorDefaults: createVendorDefaults(),
   setCurrentPage: (page) => set({ currentPage: page }),
@@ -289,6 +298,8 @@ export const useAppStore = create<AppStore>((set) => ({
       produce((state: AppStore) => {
         state.runState = createEmptyRunState();
         state.currentResult = undefined;
+        state.experimentResult = undefined;
+        state.experimentStatus = undefined;
         state.currentPage = 'configuration';
       }),
     ),
@@ -342,6 +353,9 @@ export const useAppStore = create<AppStore>((set) => ({
       }),
     ),
     setResult: (result) => set({ currentResult: result }),
+    setExperimentResult: (result) => set({ experimentResult: result }),
+    setExperimentStatus: (status) => set({ experimentStatus: status }),
+    resetExperiment: () => set({ experimentResult: undefined, experimentStatus: undefined }),
     setVendorBaseUrl: (vendor, baseUrl) =>
       set(
         produce((state: AppStore) => {
