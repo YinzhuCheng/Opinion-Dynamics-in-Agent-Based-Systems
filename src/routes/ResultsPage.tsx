@@ -172,8 +172,8 @@ export function ResultsPage() {
         conversation: displayResult ?? undefined,
         experiments,
       });
-    } catch (error: any) {
-      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    } catch (error: unknown) {
+      window.alert(`导出 ZIP 失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -186,8 +186,8 @@ export function ResultsPage() {
       await exportResultsZip({
         experiments: [selectedExperiment],
       });
-    } catch (error: any) {
-      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    } catch (error: unknown) {
+      window.alert(`导出 ZIP 失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -200,8 +200,8 @@ export function ResultsPage() {
       await exportResultsZip({
         experiments,
       });
-    } catch (error: any) {
-      window.alert(`导出 ZIP 失败：${error?.message ?? String(error)}`);
+    } catch (error: unknown) {
+      window.alert(`导出 ZIP 失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -714,6 +714,12 @@ const countVisibleMessages = (messages: Message[]) =>
 type IndividualStancePoint = { round: number; value: number; message: Message };
 type IndividualStanceSeries = { agentId: string; agentName: string; points: IndividualStancePoint[] };
 type GroupStancePoint = { round: number; mean: number; variance: number };
+type AxisTooltipParam = {
+  marker?: string;
+  seriesName?: string;
+  data?: { value: [number, number]; message?: Message };
+  value?: [number, number];
+};
 
 interface StanceDataset {
   perAgentSeries: IndividualStanceSeries[];
@@ -792,15 +798,17 @@ const buildIndividualStanceChartOption = (dataset: StanceDataset): EChartsOption
   return {
       tooltip: {
         trigger: 'axis',
-        formatter: (params: any) => {
-          if (!Array.isArray(params) || params.length === 0) return '';
-          return params
+        formatter: (params: unknown) => {
+          const items = Array.isArray(params) ? (params as AxisTooltipParam[]) : [];
+          if (items.length === 0) return '';
+          return items
             .map((item) => {
-              const data = item.data as { value: [number, number]; message?: Message };
+              const data = item.data;
+              if (!data || !Array.isArray(data.value)) return '';
               const note = data.message?.stance?.note;
               return [
-                `<div>${item.marker}<strong>${item.seriesName}</strong></div>`,
-                `<div>轮次：第 ${data.value[0]} 轮 ｜ 立场：${data.value[1].toFixed(2)}</div>`,
+                `<div>${item.marker ?? ''}<strong>${item.seriesName ?? ''}</strong></div>`,
+                `<div>轮次：第 ${data.value[0]} 轮 ｜ 立场：${Number(data.value[1]).toFixed(2)}</div>`,
                 note ? `<div>备注：${escapeHtml(note)}</div>` : '',
               ]
                 .filter(Boolean)
@@ -842,13 +850,18 @@ const buildGroupStanceChartOption = (dataset: StanceDataset): EChartsOption | nu
   return {
     tooltip: {
       trigger: 'axis',
-      formatter: (params: any) => {
-        if (!Array.isArray(params) || params.length === 0) return '';
-        return params
+      formatter: (params: unknown) => {
+        const items = Array.isArray(params) ? (params as AxisTooltipParam[]) : [];
+        if (items.length === 0) return '';
+        return items
           .map((item) => {
-            const [round, value] = item.value as [number, number];
-            const label = item.seriesName === '平均立场' ? value.toFixed(2) : value.toFixed(3);
-            return `<div>${item.marker}<strong>${item.seriesName}</strong> ｜ 轮次：第 ${round} 轮 ｜ 值：${label}</div>`;
+            const tuple = item.value;
+            if (!Array.isArray(tuple) || tuple.length < 2) return '';
+            const round = Number(tuple[0]);
+            const value = Number(tuple[1]);
+            const seriesName = item.seriesName ?? '';
+            const label = seriesName === '平均立场' ? value.toFixed(2) : value.toFixed(3);
+            return `<div>${item.marker ?? ''}<strong>${seriesName}</strong> ｜ 轮次：第 ${round} 轮 ｜ 值：${label}</div>`;
           })
           .join('<br/>');
       },
