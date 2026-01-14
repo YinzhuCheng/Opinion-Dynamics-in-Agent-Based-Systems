@@ -11,6 +11,7 @@ import type {
   FailureRecord,
   PersonaTraversalExperimentResult,
   ExperimentTrackResult,
+  Big5TraitKey,
 } from '../types';
 import { resolveAgentNameMap } from '../utils/names';
 import {
@@ -25,6 +26,8 @@ export function ResultsPage() {
   const experiments = useAppStore((state) => state.experiments);
   const activeExperimentId = useAppStore((state) => state.activeExperimentId);
   const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
+  const activeExperimentTrack = useAppStore((state) => state.activeExperimentTrack);
+  const setActiveExperimentTrack = useAppStore((state) => state.setActiveExperimentTrack);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
@@ -57,6 +60,31 @@ export function ResultsPage() {
     }
     return experiments[0];
   }, [experiments, activeExperimentId]);
+
+  const selectedExperimentResult = selectedExperiment?.result;
+  const trackTraitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
+  const trackLevelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
+  const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+  const defaultTrait = trackTraitOptions[0];
+  const defaultAValue = trackLevelOptions[0];
+  const defaultBValue = trackLevelOptions[0];
+  const resolvedTrackSelector =
+    selectedExperimentResult && defaultTrait != null && defaultAValue != null && defaultBValue != null
+      ? (activeExperimentTrack ?? {
+          trait: defaultTrait,
+          agentAValue: defaultAValue,
+          agentBValue: defaultBValue,
+        })
+      : undefined;
+  const selectedTrack = useMemo(() => {
+    if (!selectedExperimentResult || !resolvedTrackSelector) return undefined;
+    return selectedExperimentResult.tracks.find(
+      (track) =>
+        track.meta.trait === resolvedTrackSelector.trait &&
+        track.meta.agentAValue === resolvedTrackSelector.agentAValue &&
+        track.meta.agentBValue === resolvedTrackSelector.agentBValue,
+    );
+  }, [selectedExperimentResult, resolvedTrackSelector]);
 
   const discussionSnapshot = displayResult?.configSnapshot.discussion;
   const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
@@ -368,6 +396,94 @@ export function ResultsPage() {
                 ))}
               </select>
             </label>
+            {selectedExperiment.result ? (
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>轨道检索：维度</span>
+                  <select
+                    value={resolvedTrackSelector?.trait ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: event.target.value as Big5TraitKey,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {trackTraitOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{agentNameMap[agentAId] ?? agentAId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentAValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: Number(event.target.value),
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {trackLevelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{agentNameMap[agentBId] ?? agentBId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentBValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: Number(event.target.value),
+                      })
+                    }
+                  >
+                    {trackLevelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="form-field">
+                  <span>当前轨道</span>
+                  <p className="form-hint">
+                    {resolvedTrackSelector
+                      ? `${resolvedTrackSelector.trait}（${agentNameMap[agentAId] ?? agentAId}=${resolvedTrackSelector.agentAValue}，${agentNameMap[agentBId] ?? agentBId}=${resolvedTrackSelector.agentBValue}）`
+                      : '（未选择）'}
+                    {selectedTrack ? '' : ' —— 暂无结果（可能还在跑）'}
+                  </p>
+                  {selectedTrack ? (
+                    <div className="results-actions">
+                      <button
+                        type="button"
+                        className="button tertiary"
+                        onClick={() => handleDownloadTrackTranscript(selectedTrack, 'standard')}
+                      >
+                        导出该轨道（精简）
+                      </button>
+                      <button
+                        type="button"
+                        className="button tertiary"
+                        onClick={() => handleDownloadTrackTranscript(selectedTrack, 'full')}
+                      >
+                        导出该轨道（完整版）
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <p className="form-hint">
               {selectedExperiment.result
                 ? `规模 M = ${selectedExperiment.result.totalTracks}（维度 ${selectedExperiment.result.config.dimensions.join(', ')} × 5×5 网格），并发 k = ${selectedExperiment.result.config.concurrency}。`

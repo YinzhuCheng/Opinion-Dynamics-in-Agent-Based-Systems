@@ -10,6 +10,7 @@ import type {
   RunState,
     SessionResult,
   PersonaTraversalExperimentRecord,
+  ExperimentTrackSelector,
   Vendor,
   DialogueMode,
   RunStatus,
@@ -185,6 +186,7 @@ export interface AppStore {
   currentResult?: SessionResult;
   experiments: PersonaTraversalExperimentRecord[];
   activeExperimentId?: string;
+  activeExperimentTrack?: ExperimentTrackSelector;
   currentPage: 'configuration' | 'dialogue' | 'results';
   vendorDefaults: VendorDefaults;
   setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
@@ -204,6 +206,7 @@ export interface AppStore {
   addExperiment: (record: PersonaTraversalExperimentRecord) => void;
   updateExperiment: (id: string, updater: (record: PersonaTraversalExperimentRecord) => PersonaTraversalExperimentRecord) => void;
   setActiveExperimentId: (id?: string) => void;
+  setActiveExperimentTrack: (selector?: ExperimentTrackSelector) => void;
   resetExperiments: () => void;
   setVendorBaseUrl: (vendor: Vendor, baseUrl: string) => void;
   setVendorModel: (vendor: Vendor, model: string) => void;
@@ -234,6 +237,7 @@ export const useAppStore = create<AppStore>((set) => ({
   currentResult: undefined,
   experiments: [],
   activeExperimentId: undefined,
+  activeExperimentTrack: undefined,
   currentPage: 'configuration',
   vendorDefaults: createVendorDefaults(),
   setCurrentPage: (page) => set({ currentPage: page }),
@@ -358,6 +362,7 @@ export const useAppStore = create<AppStore>((set) => ({
         produce((state: AppStore) => {
           state.experiments.unshift(record);
           state.activeExperimentId = record.id;
+          state.activeExperimentTrack = undefined;
         }),
       ),
     updateExperiment: (id, updater) =>
@@ -369,8 +374,9 @@ export const useAppStore = create<AppStore>((set) => ({
           }
         }),
       ),
-    setActiveExperimentId: (id) => set({ activeExperimentId: id }),
-    resetExperiments: () => set({ experiments: [], activeExperimentId: undefined }),
+    setActiveExperimentId: (id) => set({ activeExperimentId: id, activeExperimentTrack: undefined }),
+    setActiveExperimentTrack: (selector) => set({ activeExperimentTrack: selector }),
+    resetExperiments: () => set({ experiments: [], activeExperimentId: undefined, activeExperimentTrack: undefined }),
     setVendorBaseUrl: (vendor, baseUrl) =>
       set(
         produce((state: AppStore) => {

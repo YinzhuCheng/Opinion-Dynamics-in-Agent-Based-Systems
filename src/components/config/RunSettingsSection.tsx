@@ -95,7 +95,8 @@ export function RunSettingsSection() {
   const updateAgent = useAppStore((state) => state.updateAgent);
   const promptToggles = runConfig.promptToggles ?? DEFAULT_PROMPT_TOGGLES;
   const experiment = runConfig.personaTraversalExperiment;
-  const [unifiedInitialStance, setUnifiedInitialStance] = useState<string>('');
+  const [initialStanceA, setInitialStanceA] = useState<string>('');
+  const [initialStanceB, setInitialStanceB] = useState<string>('');
 
   const experimentLevels = [10, 30, 50, 70, 90];
   const defaultDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
@@ -159,22 +160,26 @@ export function RunSettingsSection() {
   };
 
   const maxLevel = Math.floor(Math.max(3, discussion.stanceScaleSize) / 2);
-  const applyUnifiedInitialStance = () => {
+  const applyInitialStances = () => {
     if (!isExperimentSupported) return;
-    const numeric = Number(unifiedInitialStance);
-    if (!Number.isFinite(numeric)) return;
-    const clamped = Math.max(-maxLevel, Math.min(maxLevel, Math.round(numeric)));
-    agents.slice(0, 2).forEach((agent) => {
-      updateAgent(agent.id, { initialStance: clamped });
-    });
+    const a = Number(initialStanceA);
+    const b = Number(initialStanceB);
+    if (Number.isFinite(a)) {
+      const clampedA = Math.max(-maxLevel, Math.min(maxLevel, Math.round(a)));
+      if (agents[0]) updateAgent(agents[0].id, { initialStance: clampedA });
+    }
+    if (Number.isFinite(b)) {
+      const clampedB = Math.max(-maxLevel, Math.min(maxLevel, Math.round(b)));
+      if (agents[1]) updateAgent(agents[1].id, { initialStance: clampedB });
+    }
   };
 
-  const clearUnifiedInitialStance = () => {
+  const clearInitialStances = () => {
     if (!isExperimentSupported) return;
-    setUnifiedInitialStance('');
-    agents.slice(0, 2).forEach((agent) => {
-      updateAgent(agent.id, { initialStance: undefined });
-    });
+    setInitialStanceA('');
+    setInitialStanceB('');
+    if (agents[0]) updateAgent(agents[0].id, { initialStance: undefined });
+    if (agents[1]) updateAgent(agents[1].id, { initialStance: undefined });
   };
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -498,33 +503,47 @@ export function RunSettingsSection() {
                       </label>
 
                       <div className="form-field">
-                        <span>统一设置初始立场（可选）</span>
-                        <div className="form-field__input-with-action">
-                          <input
-                            type="number"
-                            value={unifiedInitialStance}
-                            placeholder={`范围：-${maxLevel}…+${maxLevel}`}
-                            onChange={(event) => setUnifiedInitialStance(event.target.value)}
-                          />
+                        <span>初始立场（A1/A2，可选，独立）</span>
+                        <div className="grid two-columns">
+                          <label className="form-field">
+                            <span>{agents[0]?.name ?? 'A1'} 初始立场</span>
+                            <input
+                              type="number"
+                              value={initialStanceA}
+                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                              onChange={(event) => setInitialStanceA(event.target.value)}
+                            />
+                          </label>
+                          <label className="form-field">
+                            <span>{agents[1]?.name ?? 'A2'} 初始立场</span>
+                            <input
+                              type="number"
+                              value={initialStanceB}
+                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                              onChange={(event) => setInitialStanceB(event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="vendor-card__actions">
                           <button
                             type="button"
                             className="button tertiary"
-                            onClick={applyUnifiedInitialStance}
-                            title="将两位 Agent 的 initialStance 同步为该值（首轮锁死）"
+                            onClick={applyInitialStances}
+                            title="分别写入两位 Agent 的 initialStance（首轮锁死）"
                           >
                             应用
                           </button>
                           <button
                             type="button"
                             className="button ghost"
-                            onClick={clearUnifiedInitialStance}
+                            onClick={clearInitialStances}
                             title="清空两位 Agent 的 initialStance（不再锁死首轮立场）"
                           >
                             清空
                           </button>
                         </div>
                         <p className="form-hint">
-                          该设置与人格遍历独立：实验轨道只覆盖 Big5，不会自动改变 initialStance。首轮立场锁死仅在 initialStance 有值时生效。
+                          人格遍历只覆盖 Big5；initialStance 与人格独立。首轮立场锁死仅在对应 Agent 的 initialStance 有值时生效。
                         </p>
                       </div>
 

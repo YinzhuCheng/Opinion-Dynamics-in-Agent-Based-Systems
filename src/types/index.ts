@@ -162,6 +162,12 @@ export interface PersonaTraversalExperimentRecord {
   result?: PersonaTraversalExperimentResult;
 }
 
+export interface ExperimentTrackSelector {
+  trait: Big5TraitKey;
+  agentAValue: number;
+  agentBValue: number;
+}
+
 export interface Message {
   id: string;
   agentId: string;

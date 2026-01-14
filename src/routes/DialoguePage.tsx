@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
 import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment } from '../engine/experimentRunner';
 import { resolveAgentNameMap } from '../utils/names';
+import type { Big5TraitKey } from '../types';
 
 type TimelineSection = 'innerState' | 'thought' | 'speech' | 'stance';
 
@@ -13,6 +14,8 @@ export function DialoguePage() {
   const experiments = useAppStore((state) => state.experiments);
   const activeExperimentId = useAppStore((state) => state.activeExperimentId);
   const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
+  const activeExperimentTrack = useAppStore((state) => state.activeExperimentTrack);
+  const setActiveExperimentTrack = useAppStore((state) => state.setActiveExperimentTrack);
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
@@ -103,6 +106,47 @@ export function DialoguePage() {
   const waitingText = status.awaitingLabel === 'thinking' ? '等待LLM思考' : '等待LLM响应';
   const experimentEnabled = Boolean(runConfig.personaTraversalExperiment?.enabled);
   const canStartExperiment = experimentEnabled && agents.length === 2;
+  const [viewMode, setViewMode] = useState<'conversation' | 'experimentTrack'>('conversation');
+  const selectedExperiment = useMemo(() => {
+    if (experiments.length === 0) return undefined;
+    if (activeExperimentId) {
+      const found = experiments.find((exp) => exp.id === activeExperimentId);
+      if (found) return found;
+    }
+    return experiments[0];
+  }, [experiments, activeExperimentId]);
+  const selectedExperimentResult = selectedExperiment?.result;
+  const traitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
+  const levelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
+  const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+  const defaultTrait = traitOptions[0];
+  const defaultAValue = levelOptions[0];
+  const defaultBValue = levelOptions[0];
+  const resolvedTrackSelector =
+    selectedExperimentResult && defaultTrait != null && defaultAValue != null && defaultBValue != null
+      ? (activeExperimentTrack ?? {
+          trait: defaultTrait,
+          agentAValue: defaultAValue,
+          agentBValue: defaultBValue,
+        })
+      : undefined;
+  const selectedTrack = useMemo(() => {
+    if (!selectedExperimentResult || !resolvedTrackSelector) return undefined;
+    return selectedExperimentResult.tracks.find(
+      (track) =>
+        track.meta.trait === resolvedTrackSelector.trait &&
+        track.meta.agentAValue === resolvedTrackSelector.agentAValue &&
+        track.meta.agentBValue === resolvedTrackSelector.agentBValue,
+    );
+  }, [selectedExperimentResult, resolvedTrackSelector]);
+
+  const displayMessages =
+    viewMode === 'experimentTrack' && selectedTrack ? selectedTrack.result.messages : messages;
+  const visibleDisplayMessages = displayMessages.filter((message) => message.content !== '__SKIP__');
+  const displayAgentNameMap =
+    viewMode === 'experimentTrack' && selectedExperiment?.agentsSnapshot
+      ? resolveAgentNameMap(selectedExperiment.agentsSnapshot)
+      : agentNameMap;
 
   return (
     <div className="page page--dialogue">
@@ -178,6 +222,74 @@ export function DialoguePage() {
                 </select>
               </label>
             </div>
+            {selectedExperiment?.result ? (
+              <div className="grid two-columns">
+                <label className="form-field">
+                  <span>显示模式</span>
+                  <select value={viewMode} onChange={(event) => setViewMode(event.target.value as any)}>
+                    <option value="conversation">单次对话</option>
+                    <option value="experimentTrack">实验轨道</option>
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：维度</span>
+                  <select
+                    value={resolvedTrackSelector?.trait ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: event.target.value as Big5TraitKey,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {traitOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{displayAgentNameMap[agentAId] ?? agentAId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentAValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: Number(event.target.value),
+                        agentBValue: resolvedTrackSelector?.agentBValue ?? defaultBValue ?? 50,
+                      })
+                    }
+                  >
+                    {levelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>轨道检索：{displayAgentNameMap[agentBId] ?? agentBId} 值</span>
+                  <select
+                    value={resolvedTrackSelector?.agentBValue ?? ''}
+                    onChange={(event) =>
+                      setActiveExperimentTrack({
+                        trait: resolvedTrackSelector?.trait ?? defaultTrait!,
+                        agentAValue: resolvedTrackSelector?.agentAValue ?? defaultAValue ?? 50,
+                        agentBValue: Number(event.target.value),
+                      })
+                    }
+                  >
+                    {levelOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="run-status-panel">
@@ -209,14 +321,14 @@ export function DialoguePage() {
                 </label>
               ))}
             </div>
-          {visibleMessages.length === 0 ? (
+          {visibleDisplayMessages.length === 0 ? (
             <div className="empty-state">
               <p>当前尚未有对话记录。配置完成后点击“开始对话”即可查看进展。</p>
             </div>
             ) : (
               <ul className="message-timeline">
-                {visibleMessages.map((message) => {
-                  const agentName = message.agentName ?? agentNameMap[message.agentId] ?? message.agentId;
+                {visibleDisplayMessages.map((message) => {
+                  const agentName = message.agentName ?? displayAgentNameMap[message.agentId] ?? message.agentId;
                   const stanceValue =
                     typeof message.stance?.score === 'number'
                       ? message.stance.score > 0
