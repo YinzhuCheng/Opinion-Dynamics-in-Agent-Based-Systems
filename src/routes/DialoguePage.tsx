@@ -16,7 +16,6 @@ export function DialoguePage() {
   const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
   const activeExperimentTrack = useAppStore((state) => state.activeExperimentTrack);
   const setActiveExperimentTrack = useAppStore((state) => state.setActiveExperimentTrack);
-  const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
   const [isRefreshing, setIsRefreshing] = useState(false);
