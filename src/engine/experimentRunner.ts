@@ -55,15 +55,28 @@ type ParseAgentJsonResult = {
 type ExperimentControl = {
   stopped: boolean;
   inflightControllers: Set<AbortController>;
+  experimentId?: string;
 };
 
 let activeExperiment: ExperimentControl | undefined;
 
 export const stopPersonaTraversalExperiment = () => {
   if (!activeExperiment) return;
+  const expId = activeExperiment.experimentId;
   activeExperiment.stopped = true;
   activeExperiment.inflightControllers.forEach((controller) => controller.abort());
   activeExperiment.inflightControllers.clear();
+  if (expId) {
+    useAppStore.getState().updateExperiment(expId, (record) => ({
+      ...record,
+      status: {
+        ...record.status,
+        phase: record.status.phase === 'completed' ? record.status.phase : 'cancelled',
+        runningTracks: 0,
+        finishedAt: Date.now(),
+      },
+    }));
+  }
 };
 
 export const startPersonaTraversalExperiment = async () => {
@@ -93,6 +106,7 @@ export const startPersonaTraversalExperiment = async () => {
 
   const experimentId = buildExperimentId(startedAt);
   const experimentName = buildExperimentName(resolved);
+  control.experimentId = experimentId;
   const initialStatus: PersonaTraversalExperimentStatus = {
     phase: 'running',
     totalTracks,
@@ -165,6 +179,9 @@ export const startPersonaTraversalExperiment = async () => {
         vendorDefaults,
         control,
       });
+      if (control.stopped) {
+        return;
+      }
       results.push({
         id: nanoid(),
         meta: {

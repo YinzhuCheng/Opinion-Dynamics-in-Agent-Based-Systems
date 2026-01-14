@@ -77,21 +77,34 @@ export const startConversation = async () => {
   await runConversation('fresh');
 };
 
-export const refreshConversation = async () => {
-  const state = useAppStore.getState();
-  if (state.runState.messages.length === 0) {
-    throw new Error('暂无可刷新内容，请先开始一次对话。');
-  }
-  await runConversation('resume');
-};
-
 export const stopConversation = () => {
-  activeRunner?.requestPause();
+  // Hard stop: invalidate current run, abort inflight requests, and clear state.
+  const nextRevision = ++currentRunRevision;
+  if (activeRunner) {
+    activeRunner.forceStop();
+    activeRunner = undefined;
+  }
+  const store = useAppStore.getState();
+  store.resetMessages();
+  store.setResult(undefined);
+  store.setStopRequested(false);
+  store.setRunStatus((status) => ({
+    ...status,
+    phase: 'idle',
+    currentRound: 0,
+    currentTurn: 0,
+    totalMessages: 0,
+    summarizedCount: 0,
+    startedAt: undefined,
+    finishedAt: undefined,
+    error: undefined,
+    lastAgentId: undefined,
+    awaitingLabel: undefined,
+    sessionId: nextRevision,
+  }));
 };
 
-export const resumeConversation = () => {
-  activeRunner?.resume();
-};
+// Pause/resume/refresh have been removed to simplify the runtime model.
 
 class ConversationRunner {
   private stopped = false;

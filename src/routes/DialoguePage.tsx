@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
+import { startConversation, stopConversation } from '../engine/conversationRunner';
 import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment } from '../engine/experimentRunner';
 import { resolveAgentNameMap } from '../utils/names';
 import type { Big5TraitKey } from '../types';
@@ -18,7 +18,6 @@ export function DialoguePage() {
   const setActiveExperimentTrack = useAppStore((state) => state.setActiveExperimentTrack);
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [visibleSections, setVisibleSections] = useState<Record<TimelineSection, boolean>>({
     innerState: true,
     thought: true,
@@ -65,29 +64,8 @@ export function DialoguePage() {
     stopConversation();
   };
 
-  const handleResume = () => {
-    resumeConversation();
-  };
   const isRunning = status.phase === 'running';
-  const isPaused = status.phase === 'paused';
-  const hasHistory = messages.length > 0 || status.phase !== 'idle';
-  const startLabel = hasHistory ? '重启对话' : '开始对话';
-  const stopButtonDisabled = !isRunning && !isPaused;
-  const stopButtonLabel = isPaused ? '继续对话' : '停止';
-  const canRefresh = hasHistory && status.phase === 'error';
-  const refreshButtonText = isRefreshing ? '刷新中…' : '刷新';
-
-  const handleRefresh = async () => {
-    if (!canRefresh || isRefreshing) return;
-    setIsRefreshing(true);
-    try {
-      await refreshConversation();
-    } catch (error) {
-      console.error('Failed to refresh conversation', error);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
+  const stopConversationDisabled = !isRunning;
 
   useEffect(() => {
     if (!status.awaitingLabel) {
@@ -149,16 +127,83 @@ export function DialoguePage() {
 
   return (
     <div className="page page--dialogue">
+      {experiments.length > 0 ? (
+        <section className="card">
+          <header className="card__header">
+            <h2>实验进度</h2>
+          </header>
+          <div className="card__body">
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {experiments.map((exp) => {
+                const total = Math.max(1, exp.status.totalTracks);
+                const done = Math.max(0, Math.min(total, exp.status.completedTracks));
+                const ratio = Math.max(0, Math.min(1, done / total));
+                const isActive = exp.id === (activeExperimentId ?? experiments[0]?.id);
+                return (
+                  <button
+                    key={exp.id}
+                    type="button"
+                    className={`button ${isActive ? 'primary' : 'secondary'}`}
+                    style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}
+                    onClick={() => {
+                      setActiveExperimentId(exp.id);
+                      setViewMode('experimentTrack');
+                    }}
+                    title="点击进入该实验"
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                      <span>
+                        {exp.id} ｜ {exp.name}
+                      </span>
+                      <span>
+                        {exp.status.phase} ({done}/{total})
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        height: 8,
+                        background: '#e6e6e6',
+                        borderRadius: 6,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${Math.round(ratio * 100)}%`,
+                          height: '100%',
+                          background: isActive ? '#2563eb' : '#64748b',
+                        }}
+                      />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="form-hint">同屏最多显示约 5 条进度条，滚动可查看其它实验；点击任意进度条会进入该实验。</p>
+          </div>
+        </section>
+      ) : null}
+
       <section className="card">
         <header className="card__header">
-          <h2>实时对话流</h2>
+          <h2>运行控制台</h2>
             <div className="card__actions">
               <button
                 type="button"
                 className="button primary"
                 onClick={handleStart}
               >
-                {startLabel}
+                开始对话
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleStop}
+                disabled={stopConversationDisabled}
+                title="停止对话后再次开始将重新开局"
+              >
+                停止对话
               </button>
               {canStartExperiment ? (
                 <button
@@ -180,27 +225,11 @@ export function DialoguePage() {
                   停止实验
                 </button>
               ) : null}
-              <button
-                type="button"
-                className="button secondary"
-                onClick={isPaused ? handleResume : handleStop}
-                disabled={stopButtonDisabled}
-              >
-                {stopButtonLabel}
-              </button>
-              <button
-                type="button"
-                className="button secondary"
-                onClick={handleRefresh}
-                disabled={!canRefresh || isRefreshing}
-              >
-                {refreshButtonText}
-              </button>
             <Link to="/" className="button secondary">
-              返回配置
+              配置
             </Link>
             <Link to="/results" className="button primary">
-              查看结果
+              结果
             </Link>
           </div>
         </header>

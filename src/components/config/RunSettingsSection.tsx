@@ -473,7 +473,7 @@ export function RunSettingsSection() {
                       />
                       <div>
                         <strong>启用人格遍历实验</strong>
-                        <p className="form-hint">启用后，“开始对话”将启动批量实验轨道，而不是单次对话。</p>
+                        <p className="form-hint">启用后，可在对话页点击“开始实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
                       </div>
                     </div>
                   </label>
