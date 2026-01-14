@@ -2,12 +2,17 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { refreshConversation, resumeConversation, startConversation, stopConversation } from '../engine/conversationRunner';
+import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment } from '../engine/experimentRunner';
 import { resolveAgentNameMap } from '../utils/names';
 
 type TimelineSection = 'innerState' | 'thought' | 'speech' | 'stance';
 
 export function DialoguePage() {
   const { messages, agents, status } = useAppStore((state) => state.runState);
+  const runConfig = useAppStore((state) => state.runState.config);
+  const experiments = useAppStore((state) => state.experiments);
+  const activeExperimentId = useAppStore((state) => state.activeExperimentId);
+  const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
   const visibleMessages = messages.filter((message) => message.content !== '__SKIP__');
   const [dotStep, setDotStep] = useState(0);
   const dotSequence = ['.', '..', '...'];
@@ -40,6 +45,18 @@ export function DialoguePage() {
       } catch (error) {
         console.error('Failed to start conversation', error);
       }
+  };
+
+  const handleStartExperiment = async () => {
+    try {
+      await startPersonaTraversalExperiment();
+    } catch (error) {
+      console.error('Failed to start experiment', error);
+    }
+  };
+
+  const handleStopExperiment = () => {
+    stopPersonaTraversalExperiment();
   };
 
   const handleStop = () => {
@@ -84,6 +101,8 @@ export function DialoguePage() {
   }, [status.awaitingLabel]);
 
   const waitingText = status.awaitingLabel === 'thinking' ? '等待LLM思考' : '等待LLM响应';
+  const experimentEnabled = Boolean(runConfig.personaTraversalExperiment?.enabled);
+  const canStartExperiment = experimentEnabled && agents.length === 2;
 
   return (
     <div className="page page--dialogue">
@@ -98,6 +117,26 @@ export function DialoguePage() {
               >
                 {startLabel}
               </button>
+              {canStartExperiment ? (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={handleStartExperiment}
+                  title="启动人格遍历实验（多轨并行）"
+                >
+                  开始实验
+                </button>
+              ) : null}
+              {experiments.length > 0 ? (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={handleStopExperiment}
+                  title="停止当前实验（中止所有在途轨道）"
+                >
+                  停止实验
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="button secondary"
@@ -122,6 +161,25 @@ export function DialoguePage() {
             </Link>
           </div>
         </header>
+        {experiments.length > 0 ? (
+          <div className="run-status-panel">
+            <div className="grid two-columns">
+              <label className="form-field">
+                <span>选择实验 ID</span>
+                <select
+                  value={activeExperimentId ?? experiments[0]?.id ?? ''}
+                  onChange={(event) => setActiveExperimentId(event.target.value)}
+                >
+                  {experiments.map((exp) => (
+                    <option key={exp.id} value={exp.id}>
+                      {exp.id} ｜ {exp.name} ｜ {exp.status.phase} ({exp.status.completedTracks}/{exp.status.totalTracks})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        ) : null}
         <div className="run-status-panel">
           <div>
             <span className="status-pill">{translatePhase(status.phase)}</span>

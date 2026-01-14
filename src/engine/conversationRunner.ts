@@ -22,7 +22,7 @@ import {
   ensureNegativeViewpoint,
   ensurePositiveViewpoint,
 } from '../constants/discussion';
-import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment } from './experimentRunner';
+// Experiment runs are started explicitly (see experimentRunner).
 
 type RunnerMode = 'fresh' | 'resume';
 type ConversationProgress = {
@@ -74,20 +74,11 @@ const runConversation = async (mode: RunnerMode) => {
 };
 
 export const startConversation = async () => {
-  const state = useAppStore.getState().runState;
-  const exp = state.config.personaTraversalExperiment;
-  if (exp?.enabled && state.agents.length === 2) {
-    await startPersonaTraversalExperiment();
-    return;
-  }
   await runConversation('fresh');
 };
 
 export const refreshConversation = async () => {
   const state = useAppStore.getState();
-  if (state.runState.config.personaTraversalExperiment?.enabled) {
-    throw new Error('人格遍历实验不支持刷新；请直接重新开始实验。');
-  }
   if (state.runState.messages.length === 0) {
     throw new Error('暂无可刷新内容，请先开始一次对话。');
   }
@@ -95,7 +86,6 @@ export const refreshConversation = async () => {
 };
 
 export const stopConversation = () => {
-  stopPersonaTraversalExperiment();
   activeRunner?.requestPause();
 };
 

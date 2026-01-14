@@ -22,8 +22,9 @@ type ReactEChartsInstance = InstanceType<typeof ReactECharts>;
 
 export function ResultsPage() {
   const result = useAppStore((state) => state.currentResult);
-  const experimentResult = useAppStore((state) => state.experimentResult);
-  const experimentStatus = useAppStore((state) => state.experimentStatus);
+  const experiments = useAppStore((state) => state.experiments);
+  const activeExperimentId = useAppStore((state) => state.activeExperimentId);
+  const setActiveExperimentId = useAppStore((state) => state.setActiveExperimentId);
   const runState = useAppStore((state) => state.runState);
   const agentNameMap = resolveAgentNameMap(runState.agents);
   const chartRef = useRef<ReactEChartsInstance | null>(null);
@@ -48,6 +49,15 @@ export function ResultsPage() {
     };
   }, [result, runState]);
   const displayResult = result ?? liveResult;
+  const selectedExperiment = useMemo(() => {
+    if (experiments.length === 0) return undefined;
+    if (activeExperimentId) {
+      const found = experiments.find((exp) => exp.id === activeExperimentId);
+      if (found) return found;
+    }
+    return experiments[0];
+  }, [experiments, activeExperimentId]);
+
   const discussionSnapshot = displayResult?.configSnapshot.discussion;
   const positiveViewpointLabel = ensurePositiveViewpoint(discussionSnapshot?.positiveViewpoint);
   const negativeViewpointLabel = ensureNegativeViewpoint(discussionSnapshot?.negativeViewpoint);
@@ -313,7 +323,7 @@ export function ResultsPage() {
         </div>
       </section>
 
-      {experimentResult ? (
+      {selectedExperiment ? (
         <section className="card">
           <header className="card__header">
             <h2>人格遍历实验结果</h2>
@@ -321,35 +331,50 @@ export function ResultsPage() {
               <button
                 type="button"
                 className="button secondary"
-                onClick={() => handleExportExperimentJson(experimentResult)}
+                onClick={() => selectedExperiment.result && handleExportExperimentJson(selectedExperiment.result)}
+                disabled={!selectedExperiment.result}
               >
                 导出全部轨道（JSON）
               </button>
               <button
                 type="button"
                 className="button secondary"
-                onClick={() => handleExportExperimentTranscript(experimentResult, 'standard')}
+                onClick={() => selectedExperiment.result && handleExportExperimentTranscript(selectedExperiment.result, 'standard')}
+                disabled={!selectedExperiment.result}
               >
                 导出全部轨道文本（精简）
               </button>
               <button
                 type="button"
                 className="button secondary"
-                onClick={() => handleExportExperimentTranscript(experimentResult, 'full')}
+                onClick={() => selectedExperiment.result && handleExportExperimentTranscript(selectedExperiment.result, 'full')}
+                disabled={!selectedExperiment.result}
               >
                 导出全部轨道文本（完整版）
               </button>
             </div>
           </header>
           <div className="card__body">
+            <label className="form-field">
+              <span>选择实验</span>
+              <select
+                value={selectedExperiment.id}
+                onChange={(event) => setActiveExperimentId(event.target.value)}
+              >
+                {experiments.map((exp) => (
+                  <option key={exp.id} value={exp.id}>
+                    {exp.id} ｜ {exp.name} ｜ {exp.status.phase} ({exp.status.completedTracks}/{exp.status.totalTracks})
+                  </option>
+                ))}
+              </select>
+            </label>
             <p className="form-hint">
-              规模 M = {experimentResult.totalTracks}（维度 {experimentResult.config.dimensions.join(', ')} × 档位{' '}
-              {experimentResult.config.levels.length}），并发 k = {experimentResult.config.concurrency}。
-              {experimentStatus?.phase
-                ? ` 当前状态：${experimentStatus.phase}（已完成 ${experimentStatus.completedTracks}/${experimentStatus.totalTracks}）`
+              {selectedExperiment.result
+                ? `规模 M = ${selectedExperiment.result.totalTracks}（维度 ${selectedExperiment.result.config.dimensions.join(', ')} × 5×5 网格），并发 k = ${selectedExperiment.result.config.concurrency}。`
                 : null}
+              {` 当前状态：${selectedExperiment.status.phase}（已完成 ${selectedExperiment.status.completedTracks}/${selectedExperiment.status.totalTracks}）`}
             </p>
-            {experimentResult.tracks.length === 0 ? (
+            {!selectedExperiment.result || selectedExperiment.result.tracks.length === 0 ? (
               <div className="empty-state">
                 <p>暂无实验轨道结果。</p>
               </div>
@@ -367,7 +392,7 @@ export function ResultsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {experimentResult.tracks.map((track) => {
+                    {selectedExperiment.result.tracks.map((track) => {
                       const finishedAt = track.result.finishedAt;
                       const visibleCount = countVisibleMessages(track.result.messages);
                       const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;

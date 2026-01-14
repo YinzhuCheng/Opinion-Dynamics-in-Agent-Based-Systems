@@ -152,6 +152,16 @@ export interface PersonaTraversalExperimentStatus {
   error?: string;
 }
 
+export interface PersonaTraversalExperimentRecord {
+  id: string;
+  name: string;
+  createdAt: number;
+  agentsSnapshot: AgentSpec[];
+  runConfigSnapshot: RunConfig;
+  status: PersonaTraversalExperimentStatus;
+  result?: PersonaTraversalExperimentResult;
+}
+
 export interface Message {
   id: string;
   agentId: string;

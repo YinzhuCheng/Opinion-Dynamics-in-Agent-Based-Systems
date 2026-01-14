@@ -11,9 +11,10 @@ import type {
   Big5TraitKey,
   PersonaTraversalExperimentConfig,
   PersonaTraversalExperimentResult,
-  PersonaTraversalExperimentStatus,
   ExperimentTrackResult,
   PersonaBig5,
+  PersonaTraversalExperimentRecord,
+  PersonaTraversalExperimentStatus,
 } from '../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -75,16 +76,13 @@ export const startPersonaTraversalExperiment = async () => {
   if (agents.length !== 2) {
     throw new Error('人格遍历实验目前仅支持 2 个 Agent。');
   }
+  if (!exp.dimensions || exp.dimensions.length === 0) {
+    throw new Error('请至少选择 1 个遍历维度（O/C/E/A/N）。');
+  }
 
   stopPersonaTraversalExperiment();
   const control: ExperimentControl = { stopped: false, inflightControllers: new Set() };
   activeExperiment = control;
-
-  // Clear single-run artifacts to avoid confusion.
-  store.resetMessages();
-  store.setResult(undefined);
-  store.resetExperiment();
-  store.setStopRequested(false);
 
   const startedAt = Date.now();
 
@@ -93,27 +91,31 @@ export const startPersonaTraversalExperiment = async () => {
   const totalTracks = tracksPlan.length;
   const concurrency = Math.max(1, Math.min(totalTracks, resolved.concurrency));
 
-  store.setExperimentStatus({
+  const experimentId = buildExperimentId(startedAt);
+  const experimentName = buildExperimentName(resolved);
+  const initialStatus: PersonaTraversalExperimentStatus = {
     phase: 'running',
     totalTracks,
     completedTracks: 0,
     runningTracks: 0,
     startedAt,
-  });
-  store.setRunStatus((status) => ({
-    ...status,
-    phase: 'running',
-    mode: config.mode,
-    currentRound: 0,
-    currentTurn: 0,
-    totalMessages: 0,
-    summarizedCount: 0,
-    startedAt,
-    finishedAt: undefined,
-    error: undefined,
-    lastAgentId: undefined,
-    awaitingLabel: undefined,
-  }));
+  };
+  const record: PersonaTraversalExperimentRecord = {
+    id: experimentId,
+    name: experimentName,
+    createdAt: startedAt,
+    agentsSnapshot: agents.map((agent) => ({ ...agent })),
+    runConfigSnapshot: { ...config, personaTraversalExperiment: resolved },
+    status: initialStatus,
+    result: {
+      config: resolved,
+      totalTracks,
+      startedAt,
+      finishedAt: startedAt,
+      tracks: [],
+    },
+  };
+  store.addExperiment(record);
 
   const results: ExperimentTrackResult[] = [];
   const baseRunConfig = { ...config, personaTraversalExperiment: resolved };
@@ -123,30 +125,31 @@ export const startPersonaTraversalExperiment = async () => {
   let running = 0;
 
   const updateStatus = (partial: Partial<PersonaTraversalExperimentStatus>) => {
-    const current = useAppStore.getState().experimentStatus;
-    const next = {
-      ...(current ?? {
-        phase: 'running',
-        totalTracks,
-        completedTracks: 0,
-        runningTracks: 0,
-        startedAt,
-      }),
-      ...partial,
-    };
-    useAppStore.getState().setExperimentStatus(next);
-    const phaseMap = next.phase === 'running' ? 'running' : next.phase === 'completed' ? 'completed' : next.phase === 'cancelled' ? 'cancelled' : next.phase === 'error' ? 'error' : 'idle';
-    useAppStore.getState().setRunStatus((status) => ({
-      ...status,
-      phase: phaseMap,
-      currentRound: next.completedTracks,
-      currentTurn: next.runningTracks,
-      totalMessages: next.completedTracks,
-      startedAt: next.startedAt ?? status.startedAt,
-      finishedAt: next.finishedAt ?? status.finishedAt,
-      error: next.error ?? status.error,
-      awaitingLabel: undefined,
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      status: {
+        ...current.status,
+        ...partial,
+      },
     }));
+  };
+
+  const appendTrack = (track: ExperimentTrackResult) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const existing = current.result?.tracks ?? [];
+      const nextTracks = [...existing, track].sort((a, b) => a.meta.index - b.meta.index);
+      const nextResult: PersonaTraversalExperimentResult = {
+        config: resolved,
+        totalTracks,
+        startedAt,
+        finishedAt: Date.now(),
+        tracks: nextTracks,
+      };
+      return {
+        ...current,
+        result: nextResult,
+      };
+    });
   };
 
   const runOne = async (plan: { trait: Big5TraitKey; index: number; agentAValue: number; agentBValue: number }) => {
@@ -174,6 +177,7 @@ export const startPersonaTraversalExperiment = async () => {
         },
         result: session,
       });
+      appendTrack(results[results.length - 1]);
     } finally {
       running -= 1;
       completed += 1;
@@ -200,14 +204,17 @@ export const startPersonaTraversalExperiment = async () => {
       });
     }
 
-    const experimentResult: PersonaTraversalExperimentResult = {
+    const finalResult: PersonaTraversalExperimentResult = {
       config: resolved,
       totalTracks,
       startedAt,
       finishedAt,
       tracks: results.sort((a, b) => a.meta.index - b.meta.index),
     };
-    store.setExperimentResult(experimentResult);
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      result: finalResult,
+    }));
   } catch (error: any) {
     const finishedAt = Date.now();
     updateStatus({
@@ -223,6 +230,17 @@ export const startPersonaTraversalExperiment = async () => {
       activeExperiment = undefined;
     }
   }
+};
+
+const buildExperimentId = (startedAt: number): string => {
+  const stamp = new Date(startedAt).toISOString().replace(/[:.]/g, '-');
+  return `exp-${stamp}`;
+};
+
+const buildExperimentName = (exp: PersonaTraversalExperimentConfig): string => {
+  const dims = exp.dimensions?.length ? exp.dimensions.join('') : 'none';
+  const grid = `${exp.levels.length}x${exp.levels.length}`;
+  return `Grid(${dims}) ${grid} k=${exp.concurrency}`;
 };
 
 const normalizeExperimentConfig = (
