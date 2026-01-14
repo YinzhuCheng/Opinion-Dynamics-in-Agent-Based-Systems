@@ -108,7 +108,11 @@ export function ResultsPage() {
     lines.push('');
     data.tracks.forEach((track) => {
       lines.push('============================================================');
-      lines.push(`轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait} = ${track.meta.value}`);
+      const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;
+      const bName = agentNameMap[track.meta.agentBId] ?? track.meta.agentBId;
+      lines.push(
+        `轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait}（${aName}=${track.meta.agentAValue}, ${bName}=${track.meta.agentBValue}）`,
+      );
       lines.push(`结束时间：${new Date(track.result.finishedAt).toLocaleString()}`);
       lines.push('');
       lines.push(buildTranscriptText(track.result, agentNameMap, mode));
@@ -142,7 +146,7 @@ export function ResultsPage() {
     const link = document.createElement('a');
     link.href = url;
     const suffix = mode === 'full' ? '-full' : '-standard';
-    link.download = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.value}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    link.download = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -356,7 +360,7 @@ export function ResultsPage() {
                     <tr>
                       <th>轨道</th>
                       <th>维度</th>
-                      <th>取值</th>
+                      <th>取值（A1 × A2）</th>
                       <th>结束时间</th>
                       <th>有效消息数</th>
                       <th>导出</th>
@@ -366,11 +370,15 @@ export function ResultsPage() {
                     {experimentResult.tracks.map((track) => {
                       const finishedAt = track.result.finishedAt;
                       const visibleCount = countVisibleMessages(track.result.messages);
+                      const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;
+                      const bName = agentNameMap[track.meta.agentBId] ?? track.meta.agentBId;
                       return (
                         <tr key={track.id}>
                           <td>#{track.meta.index + 1}</td>
                           <td>{track.meta.trait}</td>
-                          <td>{track.meta.value}</td>
+                          <td>
+                            {aName}={track.meta.agentAValue} × {bName}={track.meta.agentBValue}
+                          </td>
                           <td>{new Date(finishedAt).toLocaleString()}</td>
                           <td>{visibleCount}</td>
                           <td>

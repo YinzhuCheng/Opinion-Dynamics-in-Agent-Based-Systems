@@ -96,26 +96,32 @@ export function RunSettingsSection() {
   const experiment = runConfig.personaTraversalExperiment;
 
   const experimentLevels = [10, 30, 50, 70, 90];
-  const baseDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
+  const defaultDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
   const isExperimentSupported = agents.length === 2;
-  const resolvedExperimentDimensions = experiment?.dimensions?.length
-    ? experiment.dimensions
-    : baseDimensions;
-  const experimentM = resolvedExperimentDimensions.length * experimentLevels.length;
+  const resolvedExperimentDimensions = experiment?.dimensions ?? [];
+  const resolvedExperimentLevels = experiment?.levels?.length ? experiment.levels : experimentLevels;
+  const experimentM =
+    resolvedExperimentDimensions.length > 0
+      ? resolvedExperimentDimensions.length * resolvedExperimentLevels.length * resolvedExperimentLevels.length
+      : 0;
   const clampedExperimentConcurrency = Math.max(1, Math.min(experimentM || 1, experiment?.concurrency ?? 1));
 
   const setExperimentConfig = (partial: Partial<PersonaTraversalExperimentConfig>) => {
     if (!isExperimentSupported) return;
-    const targetAgentId = (partial.targetAgentId ?? experiment?.targetAgentId ?? agents[0]?.id) || agents[0]?.id;
+    const agentIds: [string, string] =
+      partial.agentIds ??
+      experiment?.agentIds ??
+      ([agents[0]?.id ?? '', agents[1]?.id ?? ''] as [string, string]);
     const nextDimensions = partial.dimensions ?? resolvedExperimentDimensions;
-    const nextLevels = partial.levels ?? (experiment?.levels?.length ? experiment.levels : experimentLevels);
-    const M = Math.max(1, nextDimensions.length * nextLevels.length);
-    const nextConcurrency = Math.max(1, Math.min(M, partial.concurrency ?? clampedExperimentConcurrency));
+    const nextLevels = partial.levels ?? resolvedExperimentLevels;
+    const M =
+      nextDimensions.length > 0 ? nextDimensions.length * nextLevels.length * nextLevels.length : 0;
+    const nextConcurrency = Math.max(1, Math.min(M || 1, partial.concurrency ?? clampedExperimentConcurrency));
     updateRunConfig((config) => ({
       ...config,
       personaTraversalExperiment: {
         enabled: partial.enabled ?? experiment?.enabled ?? false,
-        targetAgentId,
+        agentIds,
         dimensions: nextDimensions,
         levels: nextLevels,
         concurrency: nextConcurrency,
@@ -134,8 +140,8 @@ export function RunSettingsSection() {
       ...config,
       personaTraversalExperiment: {
         enabled: true,
-        targetAgentId: agents[0]?.id ?? '',
-        dimensions: baseDimensions,
+        agentIds: [agents[0]?.id ?? '', agents[1]?.id ?? ''],
+        dimensions: defaultDimensions,
         levels: experimentLevels,
         concurrency: 1,
       },
@@ -143,14 +149,11 @@ export function RunSettingsSection() {
   };
 
   const includeDimension = (key: Big5TraitKey) => resolvedExperimentDimensions.includes(key);
-  const toggleOptionalDimension = (key: Big5TraitKey, checked: boolean) => {
-    const required = new Set<Big5TraitKey>(baseDimensions);
+  const toggleDimension = (key: Big5TraitKey, checked: boolean) => {
     const current = new Set<Big5TraitKey>(resolvedExperimentDimensions);
-    if (required.has(key)) return;
     if (checked) current.add(key);
     else current.delete(key);
-    const next = Array.from(current);
-    setExperimentConfig({ dimensions: next });
+    setExperimentConfig({ dimensions: Array.from(current) });
   };
 
   const handleModeChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -432,7 +435,8 @@ export function RunSettingsSection() {
                 <div className="card-section">
                   <h3 className="card-section-title">人格遍历实验（2 Agent）</h3>
                   <p className="form-hint">
-                    固定其他参数，仅遍历指定人格维度（取值 10/30/50/70/90）。遍历某个维度时，其余维度一律设为 50。总实验规模记为 M，并支持并发 k（k ≤ M）。
+                    固定其他参数，对两位 Agent 的同一人格维度做 5×5 网格遍历（取值 10/30/50/70/90）。
+                    遍历某个维度时，其余人格维度一律设为 50。总实验规模记为 M，并支持并发 k（k ≤ M）。
                   </p>
                   <label className="checkbox-field">
                     <div className="checkbox-description">
@@ -450,20 +454,13 @@ export function RunSettingsSection() {
 
                   {experiment?.enabled ? (
                     <div className="grid two-columns">
-                      <label className="form-field">
-                        <span>被遍历的 Agent</span>
-                        <select
-                          value={experiment.targetAgentId}
-                          onChange={(event) => setExperimentConfig({ targetAgentId: event.target.value })}
-                        >
-                          {agents.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                              {agent.name}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="form-hint">该 Agent 的人格将被覆盖为 Big5 基线（50）并按维度单独遍历。</p>
-                      </label>
+                      <div className="form-field">
+                        <span>参与遍历的 Agent</span>
+                        <p className="form-hint">
+                          本实验固定为 2 Agent：<strong>{agents[0]?.name}</strong> 与 <strong>{agents[1]?.name}</strong>。
+                          每条轨道会同时覆盖两者的 Big5 为基线（50），再在所选维度上做 5×5 组合遍历。
+                        </p>
+                      </div>
 
                       <label className="form-field">
                         <span>并发轨道数 k（≤ M）</span>
@@ -475,67 +472,32 @@ export function RunSettingsSection() {
                           onChange={(event) => setExperimentConfig({ concurrency: Number(event.target.value) || 1 })}
                         />
                         <p className="form-hint">
-                          当前实验规模 M = {experimentM}（维度 {resolvedExperimentDimensions.join(', ')} × 5 档位）。
+                          当前实验规模 M = {experimentM || 0}（维度 {resolvedExperimentDimensions.join(', ') || '（未选择）'} × 5×5 档位组合）。
                         </p>
                       </label>
 
                       <div className="form-field">
                         <span>遍历维度</span>
                         <div className="grid two-columns">
-                          <label className="checkbox-field">
-                            <div className="checkbox-description">
-                              <input type="checkbox" checked disabled />
-                              <div>
-                                <strong>O（开放性）</strong>
-                                <p className="form-hint">必选</p>
+                          {(['O', 'C', 'E', 'A', 'N'] as Big5TraitKey[]).map((key) => (
+                            <label key={key} className="checkbox-field">
+                              <div className="checkbox-description">
+                                <input
+                                  type="checkbox"
+                                  checked={includeDimension(key)}
+                                  onChange={(event) => toggleDimension(key, event.target.checked)}
+                                />
+                                <div>
+                                  <strong>{key}</strong>
+                                  <p className="form-hint">未勾选则该维度始终为 50</p>
+                                </div>
                               </div>
-                            </div>
-                          </label>
-                          <label className="checkbox-field">
-                            <div className="checkbox-description">
-                              <input type="checkbox" checked disabled />
-                              <div>
-                                <strong>A（宜人性）</strong>
-                                <p className="form-hint">必选</p>
-                              </div>
-                            </div>
-                          </label>
-                          <label className="checkbox-field">
-                            <div className="checkbox-description">
-                              <input type="checkbox" checked disabled />
-                              <div>
-                                <strong>N（神经质）</strong>
-                                <p className="form-hint">必选</p>
-                              </div>
-                            </div>
-                          </label>
-                          <label className="checkbox-field">
-                            <div className="checkbox-description">
-                              <input
-                                type="checkbox"
-                                checked={includeDimension('C')}
-                                onChange={(event) => toggleOptionalDimension('C', event.target.checked)}
-                              />
-                              <div>
-                                <strong>C（尽责性）</strong>
-                                <p className="form-hint">可选（不选则始终为 50）</p>
-                              </div>
-                            </div>
-                          </label>
-                          <label className="checkbox-field">
-                            <div className="checkbox-description">
-                              <input
-                                type="checkbox"
-                                checked={includeDimension('E')}
-                                onChange={(event) => toggleOptionalDimension('E', event.target.checked)}
-                              />
-                              <div>
-                                <strong>E（外向性）</strong>
-                                <p className="form-hint">可选（不选则始终为 50）</p>
-                              </div>
-                            </div>
-                          </label>
+                            </label>
+                          ))}
                         </div>
+                        <p className="form-hint">
+                          至少选择 1 个维度才会生成轨道；不选则 M=0，实验无法启动。
+                        </p>
                       </div>
                     </div>
                   ) : null}

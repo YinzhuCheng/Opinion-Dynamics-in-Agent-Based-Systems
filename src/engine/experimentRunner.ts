@@ -88,7 +88,7 @@ export const startPersonaTraversalExperiment = async () => {
 
   const startedAt = Date.now();
 
-  const resolved = normalizeExperimentConfig(exp);
+  const resolved = normalizeExperimentConfig(exp, agents);
   const tracksPlan = buildExperimentTracks(resolved);
   const totalTracks = tracksPlan.length;
   const concurrency = Math.max(1, Math.min(totalTracks, resolved.concurrency));
@@ -149,12 +149,13 @@ export const startPersonaTraversalExperiment = async () => {
     }));
   };
 
-  const runOne = async (plan: { trait: Big5TraitKey; value: number; index: number }) => {
+  const runOne = async (plan: { trait: Big5TraitKey; index: number; agentAValue: number; agentBValue: number }) => {
     if (control.stopped) return;
     running += 1;
     updateStatus({ runningTracks: running });
     try {
-      const agentsForTrack = applyBig5OverrideForTrack(agents, resolved.targetAgentId, plan.trait, plan.value);
+      const [agentAId, agentBId] = resolved.agentIds;
+      const agentsForTrack = applyBig5OverrideForTrack(agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
       const session = await runDetachedConversation({
         agents: agentsForTrack,
         config: baseRunConfig,
@@ -166,7 +167,10 @@ export const startPersonaTraversalExperiment = async () => {
         meta: {
           index: plan.index,
           trait: plan.trait,
-          value: plan.value,
+          agentAId,
+          agentBId,
+          agentAValue: plan.agentAValue,
+          agentBValue: plan.agentBValue,
         },
         result: session,
       });
@@ -221,27 +225,39 @@ export const startPersonaTraversalExperiment = async () => {
   }
 };
 
-const normalizeExperimentConfig = (exp: PersonaTraversalExperimentConfig): PersonaTraversalExperimentConfig => {
+const normalizeExperimentConfig = (
+  exp: PersonaTraversalExperimentConfig,
+  agents: AgentSpec[],
+): PersonaTraversalExperimentConfig => {
   const levels = exp.levels?.length ? exp.levels : [10, 30, 50, 70, 90];
   const uniqueLevels = Array.from(new Set(levels.map((v) => Math.round(v)))).filter((v) => v >= 0 && v <= 100);
-  const dims = exp.dimensions?.length ? exp.dimensions : (['O', 'A', 'N'] as Big5TraitKey[]);
+  const dims = exp.dimensions?.length ? exp.dimensions : ([] as Big5TraitKey[]);
   const uniqueDims = Array.from(new Set(dims));
-  const M = Math.max(1, uniqueDims.length * uniqueLevels.length);
+  const agentIds: [string, string] =
+    exp.agentIds?.length === 2
+      ? exp.agentIds
+      : ([agents[0]?.id ?? '', agents[1]?.id ?? ''] as [string, string]);
+  const M = uniqueDims.length > 0 ? uniqueDims.length * uniqueLevels.length * uniqueLevels.length : 0;
   return {
     ...exp,
+    agentIds,
     dimensions: uniqueDims,
     levels: uniqueLevels,
-    concurrency: Math.max(1, Math.min(M, Math.floor(exp.concurrency || 1))),
+    concurrency: Math.max(1, Math.min(M || 1, Math.floor(exp.concurrency || 1))),
   };
 };
 
-const buildExperimentTracks = (exp: PersonaTraversalExperimentConfig): Array<{ trait: Big5TraitKey; value: number; index: number }> => {
-  const plan: Array<{ trait: Big5TraitKey; value: number; index: number }> = [];
+const buildExperimentTracks = (
+  exp: PersonaTraversalExperimentConfig,
+): Array<{ trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }> => {
+  const plan: Array<{ trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }> = [];
   let idx = 0;
   exp.dimensions.forEach((trait) => {
-    exp.levels.forEach((value) => {
-      plan.push({ trait, value, index: idx });
-      idx += 1;
+    exp.levels.forEach((agentAValue) => {
+      exp.levels.forEach((agentBValue) => {
+        plan.push({ trait, agentAValue, agentBValue, index: idx });
+        idx += 1;
+      });
     });
   });
   return plan;
@@ -249,13 +265,16 @@ const buildExperimentTracks = (exp: PersonaTraversalExperimentConfig): Array<{ t
 
 const applyBig5OverrideForTrack = (
   agents: AgentSpec[],
-  targetAgentId: string,
+  agentAId: string,
+  agentBId: string,
   trait: Big5TraitKey,
-  value: number,
+  agentAValue: number,
+  agentBValue: number,
 ): AgentSpec[] => {
-  const clamped = Math.max(0, Math.min(100, Math.round(value)));
+  const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
+  const clampedA = clamp(agentAValue);
+  const clampedB = clamp(agentBValue);
   return agents.map((agent) => {
-    if (agent.id !== targetAgentId) return agent;
     const persona: PersonaBig5 = {
       type: 'big5',
       O: 50,
@@ -264,25 +283,15 @@ const applyBig5OverrideForTrack = (
       A: 50,
       N: 50,
     };
-    switch (trait) {
-      case 'O':
-        persona.O = clamped;
-        break;
-      case 'C':
-        persona.C = clamped;
-        break;
-      case 'E':
-        persona.E = clamped;
-        break;
-      case 'A':
-        persona.A = clamped;
-        break;
-      case 'N':
-        persona.N = clamped;
-        break;
-      default:
-        break;
+    const applyValue = agent.id === agentAId ? clampedA : agent.id === agentBId ? clampedB : undefined;
+    if (typeof applyValue !== 'number') {
+      return agent;
     }
+    if (trait === 'O') persona.O = applyValue;
+    if (trait === 'C') persona.C = applyValue;
+    if (trait === 'E') persona.E = applyValue;
+    if (trait === 'A') persona.A = applyValue;
+    if (trait === 'N') persona.N = applyValue;
     return {
       ...agent,
       persona,

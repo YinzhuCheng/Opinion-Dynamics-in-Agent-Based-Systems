@@ -104,9 +104,12 @@ export type TrustMatrix = Record<string, Record<string, number>>;
 
 export interface PersonaTraversalExperimentConfig {
   enabled: boolean;
-  /** Only supported when exactly 2 agents. */
-  targetAgentId: string;
-  /** Default: ['O','A','N'], optionally include C/E. */
+  /**
+   * Only supported when exactly 2 agents.
+   * The experiment always traverses BOTH agents' Big5 values.
+   */
+  agentIds: [string, string];
+  /** Selected dimensions to traverse. M = dimensions.length * (levels.length ^ 2). */
   dimensions: Big5TraitKey[];
   /** Default: [10,30,50,70,90] */
   levels: number[];
@@ -117,7 +120,10 @@ export interface PersonaTraversalExperimentConfig {
 export interface ExperimentTrackMeta {
   index: number;
   trait: Big5TraitKey;
-  value: number;
+  agentAId: string;
+  agentBId: string;
+  agentAValue: number;
+  agentBValue: number;
 }
 
 export interface ExperimentTrackResult {
