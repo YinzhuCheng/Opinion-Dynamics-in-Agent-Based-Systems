@@ -135,7 +135,7 @@ ${trustWeights
 
   const innerStateGuidelines = `state（内在状态，数组均 ≤3 条，超出则丢弃最旧）：
   - personal_memory：1~3 句，第一人称，记录你此刻要记住的信念/情绪/承诺（必须可从已发生对话推得出）。
-  - others_memory：1~3 句，格式“<Agent 名> - 触发点”，只写你确实听到/理解到的刺激。
+  - others_memory：0~3 句，格式“<Agent 名> - 触发点”，只写你确实听到/理解到的刺激（首轮首发可为空数组）。
   - long_term：2~3 句，概括“我是谁/我坚持什么”（人格画像+初始立场+累积记忆）。
   - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。`;
   const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;

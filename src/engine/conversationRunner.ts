@@ -448,6 +448,7 @@ class ConversationRunner {
           round,
           agent.id,
         );
+        const allowEmptyOthersMemory = round === 1 && !lastSpeakerMessage && previousRoundMessages.length === 0;
         const visibleWindow = [...previousRoundMessages];
         if (lastSpeakerMessage) {
           visibleWindow.push(lastSpeakerMessage);
@@ -586,7 +587,7 @@ class ConversationRunner {
         rawResponse = undefined;
       } else {
         rawResponse = rawContent;
-        let parseResult = this.parseAgentJsonOutput(rawContent, discussion, forcedStanceScore);
+        let parseResult = this.parseAgentJsonOutput(rawContent, discussion, forcedStanceScore, allowEmptyOthersMemory);
         let formatCorrectionAttempted = false;
         let formatCorrectionError: string | undefined;
         if (!parseResult.success) {
@@ -595,6 +596,7 @@ class ConversationRunner {
             modelConfig,
             discussion,
             forcedStanceScore,
+            allowEmptyOthersMemory,
           );
           if (correctionResult) {
             formatCorrectionAttempted = true;
@@ -603,7 +605,7 @@ class ConversationRunner {
               if (corrected.length > 0) {
                 lastRawOutput = corrected;
                 rawResponse = corrected;
-                parseResult = this.parseAgentJsonOutput(corrected, discussion, forcedStanceScore);
+                parseResult = this.parseAgentJsonOutput(corrected, discussion, forcedStanceScore, allowEmptyOthersMemory);
               }
             }
             if (correctionResult.error) {
@@ -857,6 +859,7 @@ class ConversationRunner {
     rawContent: string,
     discussion: RunConfig['discussion'],
     forcedStanceScore?: number,
+    allowEmptyOthersMemory?: boolean,
   ): ParseAgentJsonResult {
     const cleaned = this.stripCodeFences(rawContent).trim();
     if (!cleaned) {
@@ -894,6 +897,11 @@ class ConversationRunner {
     let othersMemory: string[] | undefined;
     for (const section of stateSections) {
       const values = this.normalizeStringArray((state as Record<string, unknown>)[section.key]);
+      if ((!values || values.length === 0) && section.key === 'others_memory' && allowEmptyOthersMemory) {
+        othersMemory = [];
+        stateSegments.push(this.formatStateSection(section.label, ['（首轮首发：暂无他人刺激）']));
+        continue;
+      }
       if (!values || values.length === 0) {
         return {
           success: false,
@@ -1044,6 +1052,7 @@ class ConversationRunner {
     modelConfig: ModelConfig,
     discussion: RunConfig['discussion'],
     forcedStanceScore?: number,
+    allowEmptyOthersMemory?: boolean,
   ): Promise<{ output?: string; error?: string } | undefined> {
     const systemPrompt =
       '你是一名格式校正助手，只负责把用户给出的文本整理成合法 JSON，不得改写事实或杜撰内容。';
@@ -1054,7 +1063,10 @@ class ConversationRunner {
         ? '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content 三个顶级字段（不要输出 stance；本轮 stance.score 将由系统写入）。'
         : '请把以下模型输出重新整理为合法 JSON，仅包含 state、think、content、stance 四个顶级字段。',
       `- state.personal_memory / others_memory / long_term / short_term 都是字符串数组，每个数组保留最近 3 条。`,
-      '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；不要输出空数组。',
+      allowEmptyOthersMemory
+        ? '- 首轮首发时 state.others_memory 允许为空数组 [] 或用占位词“（首轮首发：暂无他人刺激）”。其余数组不得为空。'
+        : '- 四个 state 数组都不得为空。',
+      '- think 与 content 都是字符串数组，保持原有含义，必要时拆分成多句；think/content 不得为空数组。',
       ...(stanceLocked ? [] : [`- stance.score 必须是 [-${maxLevel}, +${maxLevel}] 范围内的整数，可保留原有 label。`]),
       '- 禁止添加除上述字段之外的键；若原文缺少某部分，可根据上下文提炼最接近的句子填入，不得凭空虚构事实。',
       '',
