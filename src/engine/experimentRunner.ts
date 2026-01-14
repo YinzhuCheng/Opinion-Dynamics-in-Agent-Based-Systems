@@ -36,6 +36,20 @@ import type { VendorDefaults } from '../store/useAppStore';
 const PRIVATE_MEMORY_WINDOW = 3;
 const MAX_AGENT_OUTPUT_ATTEMPTS = 3;
 
+const trackKeyFromSelector = (trait: Big5TraitKey, agentAValue: number, agentBValue: number) =>
+  `${trait}-${agentAValue}-${agentBValue}`;
+
+const compactLiveMessage = (message: Message): Message => {
+  // Keep only fields needed for live viewing; drop large prompt/raw fields.
+  const {
+    systemPrompt: _systemPrompt,
+    userPrompt: _userPrompt,
+    rawContent: _rawContent,
+    ...rest
+  } = message;
+  return rest;
+};
+
 type ParsedAgentJsonData = {
   content: string;
   thoughtSummary: string;
@@ -229,6 +243,22 @@ export const startPersonaTraversalExperiment = async () => {
     });
   };
 
+  const appendLiveMessage = (plan: { trait: Big5TraitKey; agentAValue: number; agentBValue: number; index: number }, msg: Message) => {
+    const key = trackKeyFromSelector(plan.trait, plan.agentAValue, plan.agentBValue);
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const existingMap = current.trackLiveMessages ?? {};
+      const existingList = existingMap[key] ?? [];
+      const nextList = [...existingList, compactLiveMessage(msg)].slice(-400);
+      return {
+        ...current,
+        trackLiveMessages: {
+          ...existingMap,
+          [key]: nextList,
+        },
+      };
+    });
+  };
+
   const appendTrack = (track: ExperimentTrackResult) => {
     useAppStore.getState().updateExperiment(experimentId, (current) => {
       const existing = current.result?.tracks ?? [];
@@ -261,6 +291,7 @@ export const startPersonaTraversalExperiment = async () => {
         vendorDefaults,
         control,
         onMessageCount: (count) => updateTrack(plan.index, { completedMessages: count }),
+        onMessage: (msg) => appendLiveMessage(plan, msg),
       });
       if (control.stopped) {
         return;
@@ -481,12 +512,14 @@ const runDetachedConversation = async ({
   vendorDefaults,
   control,
   onMessageCount,
+  onMessage,
 }: {
   agents: AgentSpec[];
   config: RunConfig;
   vendorDefaults: VendorDefaults;
   control: ExperimentControl;
   onMessageCount?: (count: number) => void;
+  onMessage?: (message: Message) => void;
 }): Promise<SessionResult> => {
   const maxRounds = config.maxRounds ?? 3;
   const maxMessages = typeof config.maxMessages === 'number' && Number.isFinite(config.maxMessages) ? Math.max(1, Math.floor(config.maxMessages)) : undefined;
@@ -540,6 +573,7 @@ const runDetachedConversation = async ({
         messages.push(msg);
         status.totalMessages = messages.length;
         onMessageCount?.(messages.length);
+        onMessage?.(msg);
       }
     }
   }

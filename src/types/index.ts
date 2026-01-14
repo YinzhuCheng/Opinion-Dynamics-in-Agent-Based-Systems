@@ -160,6 +160,7 @@ export interface PersonaTraversalExperimentRecord {
   runConfigSnapshot: RunConfig;
   status: PersonaTraversalExperimentStatus;
   trackProgress?: ExperimentTrackProgress[];
+  trackLiveMessages?: Record<string, Message[]>;
   result?: PersonaTraversalExperimentResult;
 }
 

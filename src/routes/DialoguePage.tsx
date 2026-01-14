@@ -94,6 +94,7 @@ export function DialoguePage() {
   }, [experiments, activeExperimentId]);
   const selectedExperimentResult = selectedExperiment?.result;
   const trackProgress = selectedExperiment?.trackProgress ?? [];
+  const trackLiveMessages = selectedExperiment?.trackLiveMessages ?? {};
   const traitOptions: Big5TraitKey[] = selectedExperimentResult?.config.dimensions ?? [];
   const levelOptions: number[] = selectedExperimentResult?.config.levels ?? [];
   const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
@@ -118,8 +119,16 @@ export function DialoguePage() {
     );
   }, [selectedExperimentResult, resolvedTrackSelector]);
 
+  const selectedTrackLiveMessages = useMemo(() => {
+    if (!resolvedTrackSelector) return undefined;
+    const key = `${resolvedTrackSelector.trait}-${resolvedTrackSelector.agentAValue}-${resolvedTrackSelector.agentBValue}`;
+    return trackLiveMessages[key];
+  }, [resolvedTrackSelector, trackLiveMessages]);
+
   const displayMessages =
-    viewMode === 'experimentTrack' ? (selectedTrack?.result.messages ?? []) : messages;
+    viewMode === 'experimentTrack'
+      ? (selectedTrack?.result.messages ?? selectedTrackLiveMessages ?? [])
+      : messages;
   const visibleDisplayMessages = displayMessages.filter((message) => message.content !== '__SKIP__');
   const displayAgentNameMap =
     viewMode === 'experimentTrack' && selectedExperiment?.agentsSnapshot
@@ -372,7 +381,7 @@ export function DialoguePage() {
                 </label>
               ))}
             </div>
-          {viewMode === 'experimentTrack' && !selectedTrack ? (
+          {viewMode === 'experimentTrack' && !selectedTrack && (!selectedTrackLiveMessages || selectedTrackLiveMessages.length === 0) ? (
             <div className="empty-state">
               <p>当前轨道尚未生成可展示的对话内容（可能仍在排队或运行中）。请稍后再试，或切换到已完成的轨道。</p>
             </div>
