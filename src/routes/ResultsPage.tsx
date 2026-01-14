@@ -69,16 +69,13 @@ export function ResultsPage() {
   );
 
   const selectedExperimentResult = selectedExperiment?.result;
-  const experimentKind = selectedExperimentResult?.config.kind ?? 'big5_grid';
+  const expConfig = selectedExperimentResult?.config;
+  const experimentKind = expConfig?.kind ?? 'big5_grid';
   const trackTraitOptions: Big5TraitKey[] =
-    experimentKind === 'big5_grid' && 'dimensions' in (selectedExperimentResult?.config ?? {})
-      ? (selectedExperimentResult?.config.dimensions ?? [])
-      : [];
+    expConfig && expConfig.kind !== 'symmetric_initial_stance' ? expConfig.dimensions ?? [] : [];
   const trackLevelOptions: number[] =
-    experimentKind === 'big5_grid' && 'levels' in (selectedExperimentResult?.config ?? {})
-      ? (selectedExperimentResult?.config.levels ?? [])
-      : [];
-  const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+    expConfig && expConfig.kind !== 'symmetric_initial_stance' ? expConfig.levels ?? [] : [];
+  const [agentAId, agentBId] = expConfig?.agentIds ?? ['', ''];
   const stanceScaleSize =
     selectedExperiment?.runConfigSnapshot.discussion.stanceScaleSize ?? runState.config.discussion.stanceScaleSize;
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
@@ -245,17 +242,23 @@ export function ResultsPage() {
     const lines: string[] = [];
     lines.push(`实验结束时间：${new Date(data.finishedAt).toLocaleString()}`);
     lines.push(`总轨道数 M：${data.totalTracks}`);
-    lines.push(`维度：${data.config.dimensions.join(', ')}`);
-    lines.push(`档位：${data.config.levels.join(' / ')}`);
+    if (data.config.kind === 'symmetric_initial_stance') {
+      lines.push('遍历类型：对称初始立场（-k,+k…0,0）');
+    } else {
+      lines.push(`维度：${data.config.dimensions.join(', ')}`);
+      lines.push(`档位：${data.config.levels.join(' / ')}`);
+    }
     lines.push(`并发 k：${data.config.concurrency}`);
     lines.push('');
     data.tracks.forEach((track) => {
       lines.push('============================================================');
       const aName = agentNameMap[track.meta.agentAId] ?? track.meta.agentAId;
       const bName = agentNameMap[track.meta.agentBId] ?? track.meta.agentBId;
-      lines.push(
-        `轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait}（${aName}=${track.meta.agentAValue}, ${bName}=${track.meta.agentBValue}）`,
-      );
+      const trackLabel =
+        track.meta.kind === 'symmetric_initial_stance'
+          ? `轨道 #${track.meta.index + 1} ｜ 对称初始立场（${aName}=${track.meta.agentAInitialStance}, ${bName}=${track.meta.agentBInitialStance}）`
+          : `轨道 #${track.meta.index + 1} ｜ 维度 ${track.meta.trait}（${aName}=${track.meta.agentAValue}, ${bName}=${track.meta.agentBValue}）`;
+      lines.push(trackLabel);
       lines.push(`结束时间：${new Date(track.result.finishedAt).toLocaleString()}`);
       lines.push('');
       lines.push(buildTranscriptText(track.result, agentNameMap, mode));
@@ -289,7 +292,11 @@ export function ResultsPage() {
     const link = document.createElement('a');
     link.href = url;
     const suffix = mode === 'full' ? '-full' : '-standard';
-    link.download = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
+    const metaLabel =
+      track.meta.kind === 'symmetric_initial_stance'
+        ? `stance-${track.meta.agentAInitialStance}x${track.meta.agentBInitialStance}`
+        : `${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}`;
+    link.download = `track-${track.meta.index + 1}-${metaLabel}${suffix}-${new Date(track.result.finishedAt).toISOString().replace(/[:.]/g, '-')}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -676,7 +683,9 @@ export function ResultsPage() {
             ) : null}
             <p className="form-hint">
               {selectedExperiment.result
-                ? `规模 M = ${selectedExperiment.result.totalTracks}（维度 ${selectedExperiment.result.config.dimensions.join(', ')} × 5×5 网格），并发 k = ${selectedExperiment.result.config.concurrency}。`
+                ? selectedExperiment.result.config.kind === 'symmetric_initial_stance'
+                  ? `规模 M = ${selectedExperiment.result.totalTracks}（对称初始立场 -k,+k…0,0），并发 k = ${selectedExperiment.result.config.concurrency}。`
+                  : `规模 M = ${selectedExperiment.result.totalTracks}（维度 ${selectedExperiment.result.config.dimensions.join(', ')} × 5×5 网格），并发 k = ${selectedExperiment.result.config.concurrency}。`
                 : null}
               {` 当前状态：${selectedExperiment.status.phase}（已完成 ${selectedExperiment.status.completedTracks}/${selectedExperiment.status.totalTracks}）`}
             </p>

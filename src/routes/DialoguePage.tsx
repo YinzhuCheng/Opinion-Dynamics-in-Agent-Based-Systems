@@ -95,19 +95,16 @@ export function DialoguePage() {
   const selectedExperimentResult = selectedExperiment?.result;
   const trackProgress = selectedExperiment?.trackProgress ?? [];
   const trackLiveMessages = selectedExperiment?.trackLiveMessages ?? {};
-  const experimentKind = selectedExperimentResult?.config.kind ?? 'big5_grid';
-  const [agentAId, agentBId] = selectedExperimentResult?.config.agentIds ?? ['', ''];
+  const expConfig = selectedExperimentResult?.config;
+  const experimentKind = expConfig?.kind ?? 'big5_grid';
+  const [agentAId, agentBId] = expConfig?.agentIds ?? ['', ''];
   const stanceScaleSize =
     selectedExperiment?.runConfigSnapshot.discussion.stanceScaleSize ?? runConfig.discussion.stanceScaleSize;
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const traitOptions: Big5TraitKey[] =
-    experimentKind === 'big5_grid' && 'dimensions' in (selectedExperimentResult?.config ?? {})
-      ? (selectedExperimentResult?.config.dimensions ?? [])
-      : [];
+    expConfig && expConfig.kind !== 'symmetric_initial_stance' ? expConfig.dimensions ?? [] : [];
   const levelOptions: number[] =
-    experimentKind === 'big5_grid' && 'levels' in (selectedExperimentResult?.config ?? {})
-      ? (selectedExperimentResult?.config.levels ?? [])
-      : [];
+    expConfig && expConfig.kind !== 'symmetric_initial_stance' ? expConfig.levels ?? [] : [];
   const symmetricOptions = Array.from({ length: maxLevel + 1 }, (_, idx) => {
     const k = maxLevel - idx;
     return { a: -k, b: k };

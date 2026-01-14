@@ -160,7 +160,11 @@ const addExperimentTrack = (
   track: ExperimentTrackResult,
   agentNameMap: Record<string, string>,
 ) => {
-  const trackLabel = `track-${track.meta.index + 1}-${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}`;
+  const metaLabel =
+    track.meta.kind === 'symmetric_initial_stance'
+      ? `stance-${track.meta.agentAInitialStance}x${track.meta.agentBInitialStance}`
+      : `${track.meta.trait}-${track.meta.agentAValue}x${track.meta.agentBValue}`;
+  const trackLabel = `track-${track.meta.index + 1}-${metaLabel}`;
   addConversationToZip(
     zip,
     `${baseFolder}/experiments/${sanitizePathPart(experimentId)}`,
