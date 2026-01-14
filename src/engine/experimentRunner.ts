@@ -16,7 +16,6 @@ import type {
   PersonaTraversalExperimentRecord,
   PersonaTraversalExperimentStatus,
   ExperimentTrackProgress,
-  ExperimentTrackPhase,
 } from '../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../types';
 import { useAppStore } from '../store/useAppStore';
