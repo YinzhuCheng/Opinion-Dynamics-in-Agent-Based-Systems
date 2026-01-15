@@ -42,6 +42,7 @@ type StanceRow = {
   agentName: string;
   stanceScore: number;
   stanceNote?: string;
+  isFallback: boolean;
   messageId: string;
   ts: number;
   turn: number;
@@ -71,6 +72,7 @@ const collectStanceRows = (
       agentName: agentNameMap[message.agentId] ?? message.agentName ?? message.agentId,
       stanceScore: Number(message.stance.score),
       stanceNote: message.stance.note,
+      isFallback: message.isFallback === true,
       messageId: message.id,
       ts: message.ts,
       turn: message.turn,
@@ -103,6 +105,7 @@ const buildConversationWorkbook = (
     'agentName',
     'stanceScore',
     'stanceNote',
+    'isFallback',
     'messageId',
     'ts',
     'turn',
@@ -115,6 +118,7 @@ const buildConversationWorkbook = (
       r.agentName,
       r.stanceScore,
       r.stanceNote ?? '',
+      r.isFallback ? 1 : 0,
       r.messageId,
       r.ts,
       r.turn,
@@ -128,6 +132,7 @@ const buildConversationWorkbook = (
     const name = agentNameMap[id] ?? id;
     wideHeader.push(`${name}_score`);
     wideHeader.push(`${name}_note`);
+    wideHeader.push(`${name}_isFallback`);
   });
   const stanceByAgentRound = new Map<string, Map<number, StanceRow>>();
   rows.forEach((r) => {
@@ -141,6 +146,7 @@ const buildConversationWorkbook = (
       const item = stanceByAgentRound.get(id)?.get(round);
       row.push(item ? item.stanceScore : '');
       row.push(item ? item.stanceNote ?? '' : '');
+      row.push(item ? (item.isFallback ? 1 : 0) : '');
     });
     wideAoA.push(row);
   }
@@ -169,6 +175,7 @@ const computeStanceExports = (
       agentName: agentNameMap[message.agentId] ?? message.agentName ?? message.agentId,
       stanceScore: Number(message.stance.score),
       stanceNote: message.stance.note,
+      isFallback: message.isFallback === true,
       messageId: message.id,
       ts: message.ts,
       turn: message.turn,
@@ -188,7 +195,7 @@ const computeStanceExports = (
   individualRows.sort((a, b) => a.round - b.round || a.agentName.localeCompare(b.agentName));
 
   const individualLines = [
-    'round,agentId,agentName,stanceScore,stanceNote,messageId,ts,turn',
+    'round,agentId,agentName,stanceScore,stanceNote,isFallback,messageId,ts,turn',
     ...individualRows.map((row) =>
       [
         row.round,
@@ -196,6 +203,7 @@ const computeStanceExports = (
         csvEscape(row.agentName),
         row.stanceScore,
         csvEscape(row.stanceNote ?? ''),
+        row.isFallback ? 1 : 0,
         csvEscape(row.messageId),
         row.ts,
         row.turn,

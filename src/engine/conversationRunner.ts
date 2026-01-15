@@ -699,6 +699,20 @@ class ConversationRunner {
       });
     }
 
+    // Fallback: if all attempts failed, keep stance continuity (inertia) to avoid missing data.
+    if (!stance) {
+      const fallbackScore = this.resolveFallbackStanceScore(agent, round, config);
+      stance = {
+        score: fallbackScore,
+        note: '兜底：保持上一轮立场',
+      };
+      content = '';
+      thoughtSummary = undefined;
+      innerState = undefined;
+      personalMemory = undefined;
+      othersMemory = undefined;
+    }
+
     const message: Message = {
       id: nanoid(),
       agentId: agent.id,
@@ -718,12 +732,32 @@ class ConversationRunner {
     };
     if (stance) {
       message.stance = stance;
+      if (finalFailureDetails) {
+        message.isFallback = true;
+      }
     }
 
     this.appendMessageSnapshot(message);
     this.updateStatusAfterMessage(message);
 
     return message;
+  }
+
+  private resolveFallbackStanceScore(agent: AgentSpec, round: number, config: RunConfig): number {
+    const size = normalizeScaleSize(config.discussion?.stanceScaleSize);
+    const maxLevel = Math.floor(Math.max(3, size) / 2);
+    const clamp = (v: number) => Math.max(-maxLevel, Math.min(maxLevel, Math.round(v)));
+    if (round === 1 && typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)) {
+      return clamp(agent.initialStance);
+    }
+    const history = this.appStore.getState().runState.messages;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const msg = history[i];
+      if (msg.agentId !== agent.id) continue;
+      const s = msg.stance?.score;
+      if (typeof s === 'number' && Number.isFinite(s)) return clamp(s);
+    }
+    return 0;
   }
 
   private isAbortError(error: unknown): boolean {

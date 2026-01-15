@@ -1355,6 +1355,20 @@ const executeAgentTurnLocal = async ({
     });
   }
 
+  // Fallback: if all attempts failed, keep stance continuity (inertia) to avoid missing stance data.
+  if (!stance) {
+    const fallbackScore = resolveFallbackStanceScore(agent, round, config, messages);
+    stance = {
+      score: fallbackScore,
+      note: '兜底：保持上一轮立场',
+    };
+    content = '';
+    thoughtSummary = undefined;
+    innerState = undefined;
+    personalMemory = undefined;
+    othersMemory = undefined;
+  }
+
   const message: Message = {
     id: nanoid(),
     agentId: agent.id,
@@ -1373,6 +1387,30 @@ const executeAgentTurnLocal = async ({
     personalMemory,
     othersMemory,
   };
+  if (finalFailureDetails) {
+    message.isFallback = true;
+  }
   return message;
+};
+
+const resolveFallbackStanceScore = (
+  agent: AgentSpec,
+  round: number,
+  config: RunConfig,
+  historyMessages: Message[],
+): number => {
+  const size = normalizeScaleSize(config.discussion?.stanceScaleSize);
+  const maxLevel = Math.floor(Math.max(3, size) / 2);
+  const clamp = (v: number) => Math.max(-maxLevel, Math.min(maxLevel, Math.round(v)));
+  if (round === 1 && typeof agent.initialStance === 'number' && Number.isFinite(agent.initialStance)) {
+    return clamp(agent.initialStance);
+  }
+  for (let i = historyMessages.length - 1; i >= 0; i -= 1) {
+    const msg = historyMessages[i];
+    if (msg.agentId !== agent.id) continue;
+    const s = msg.stance?.score;
+    if (typeof s === 'number' && Number.isFinite(s)) return clamp(s);
+  }
+  return 0;
 };
 

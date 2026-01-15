@@ -237,6 +237,8 @@ export interface Message {
   innerState?: string;
   personalMemory?: string[];
   othersMemory?: string[];
+  /** True when the system injected a fallback stance due to repeated output failures. */
+  isFallback?: boolean;
 }
 
 export type FailureCategory =
