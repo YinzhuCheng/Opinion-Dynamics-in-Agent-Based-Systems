@@ -511,8 +511,8 @@ export function RunSettingsSection() {
                         onChange={(event) => handleExperimentEnabledChange(event.target.checked)}
                       />
                       <div>
-                        <strong>启用人格遍历实验</strong>
-                        <p className="form-hint">启用后，可在对话页点击“开始实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
+                        <strong>启用遍历实验</strong>
+                        <p className="form-hint">启用后，可在对话页点击“开始遍历实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
                       </div>
                     </div>
                   </label>

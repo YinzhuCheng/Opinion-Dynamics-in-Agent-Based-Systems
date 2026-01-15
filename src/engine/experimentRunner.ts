@@ -126,10 +126,10 @@ export const startPersonaTraversalExperiment = async () => {
   const { agents, config } = store.runState;
   const exp = config.personaTraversalExperiment;
   if (!exp?.enabled) {
-    throw new Error('人格遍历实验未启用。');
+    throw new Error('遍历实验未启用。');
   }
   if (agents.length !== 2) {
-    throw new Error('人格遍历实验目前仅支持 2 个 Agent。');
+    throw new Error('遍历实验目前仅支持 2 个 Agent。');
   }
   const expKind = exp.kind ?? 'big5_grid';
   if (expKind === 'big5_grid') {
@@ -417,7 +417,7 @@ export const startPersonaTraversalExperiment = async () => {
       completedTracks: completed,
       runningTracks: 0,
       finishedAt,
-      error: error?.message ?? '人格遍历实验运行失败。',
+      error: error?.message ?? '遍历实验运行失败。',
     });
     // mark all remaining tracks as error/cancelled if needed
     useAppStore.getState().updateExperiment(experimentId, (current) => ({
