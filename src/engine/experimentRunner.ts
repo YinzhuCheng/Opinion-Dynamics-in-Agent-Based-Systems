@@ -432,9 +432,11 @@ export const stopPersonaTraversalExperiment = () => {
 
 export const restartExperimentTrack = (experimentId: string, selector: ExperimentTrackSelector) => {
   let state = activeExperiment;
+  let shouldStartWorkers = false;
   if (!state || state.control.experimentId !== experimentId) {
     state = buildActiveExperimentFromRecord(experimentId);
     activeExperiment = state;
+    shouldStartWorkers = true;
     // Mark experiment as running again when restarting after completion.
     useAppStore.getState().updateExperiment(experimentId, (current) => ({
       ...current,
@@ -446,7 +448,6 @@ export const restartExperimentTrack = (experimentId: string, selector: Experimen
         error: undefined,
       },
     }));
-    startWorkersForActiveExperiment(state);
   }
   const key = trackKeyFromSelector(selector);
   const plan = state.planByKey.get(key);
@@ -504,6 +505,10 @@ export const restartExperimentTrack = (experimentId: string, selector: Experimen
     };
   });
 
+  // Important: ensure the queue contains work BEFORE workers start, otherwise they may exit immediately.
+  if (shouldStartWorkers) {
+    startWorkersForActiveExperiment(state);
+  }
   state.wake?.();
 };
 
