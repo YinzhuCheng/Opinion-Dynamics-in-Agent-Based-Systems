@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { startConversation, stopConversation } from '../engine/conversationRunner';
-import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment } from '../engine/experimentRunner';
+import { startPersonaTraversalExperiment, stopPersonaTraversalExperiment, restartExperimentTrack } from '../engine/experimentRunner';
 import { resolveAgentNameMap } from '../utils/names';
 import type { Big5TraitKey, ExperimentTrackSelector, ExperimentTrackMeta } from '../types';
 
@@ -203,6 +203,26 @@ export function DialoguePage() {
                       <span>
                         {tp.phase} ({done}/{total})
                       </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="button ghost"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const ok = window.confirm('确认重开该轨道？该轨道旧的对话/曲线/表格将被丢弃并从头开始。');
+                          if (!ok) return;
+                          try {
+                            restartExperimentTrack(selectedExperiment.id, tp.selector);
+                          } catch (e: unknown) {
+                            window.alert(e instanceof Error ? e.message : String(e));
+                          }
+                        }}
+                        title="丢弃该轨道旧记录并从头重跑"
+                      >
+                        重开
+                      </button>
                     </div>
                     <div
                       style={{

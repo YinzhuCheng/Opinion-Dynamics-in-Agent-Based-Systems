@@ -51,6 +51,16 @@ const trackKeyFromSelector = (selector: ExperimentTrackSelector) => {
   return `big5-${selector.trait}-${selector.agentAValue}-${selector.agentBValue}`;
 };
 
+const selectorFromPlan = (plan: TrackPlan): ExperimentTrackSelector =>
+  plan.kind === 'symmetric_initial_stance'
+    ? { kind: 'symmetric_initial_stance', agentAInitialStance: plan.agentAInitialStance, agentBInitialStance: plan.agentBInitialStance }
+    : { kind: 'big5_grid', trait: plan.trait, agentAValue: plan.agentAValue, agentBValue: plan.agentBValue };
+
+const selectorFromMeta = (meta: ExperimentTrackResult['meta']): ExperimentTrackSelector =>
+  meta.kind === 'symmetric_initial_stance'
+    ? { kind: 'symmetric_initial_stance', agentAInitialStance: meta.agentAInitialStance, agentBInitialStance: meta.agentBInitialStance }
+    : { kind: 'big5_grid', trait: meta.trait, agentAValue: meta.agentAValue, agentBValue: meta.agentBValue };
+
 const compactLiveMessage = (message: Message): Message => {
   // Keep only fields needed for live viewing; drop large prompt/raw fields.
   const {
@@ -80,19 +90,57 @@ type ParseAgentJsonResult = {
 };
 
 type ExperimentControl = {
+  /** Global stop (entire experiment). */
   stopped: boolean;
-  inflightControllers: Set<AbortController>;
-  experimentId?: string;
+  experimentId: string;
 };
 
-let activeExperiment: ExperimentControl | undefined;
+type ActiveExperimentState = {
+  control: ExperimentControl;
+  startedAt: number;
+  resolved: PersonaTraversalExperimentConfig;
+  baseRunConfig: RunConfig;
+  vendorDefaults: VendorDefaults;
+  agents: AgentSpec[];
+  stanceScaleSize: number;
+  concurrency: number;
+  /** Plan lookup by key. */
+  planByKey: Map<string, TrackPlan>;
+  /** Queue stores keys. */
+  queue: string[];
+  queuedKeys: Set<string>;
+  runningKeys: Set<string>;
+  /** Track generation increments when restarting; mismatched gen => cancel. */
+  generationByKey: Map<string, number>;
+  /** Track-local abort controller sets, used to cancel a single track. */
+  controllersByKey: Map<string, Set<AbortController>>;
+  /** Wake a worker waiting for new queue items. */
+  wake?: () => void;
+  finalized: boolean;
+};
+
+let activeExperiment: ActiveExperimentState | undefined;
+
+type TrackControl = {
+  /** True when the track should stop (global stop or restart cancellation). */
+  shouldStop: () => boolean;
+  /** Abort controllers for this track only. */
+  inflightControllers: Set<AbortController>;
+};
 
 export const stopPersonaTraversalExperiment = () => {
   if (!activeExperiment) return;
-  const expId = activeExperiment.experimentId;
-  activeExperiment.stopped = true;
-  activeExperiment.inflightControllers.forEach((controller) => controller.abort());
-  activeExperiment.inflightControllers.clear();
+  const expId = activeExperiment.control.experimentId;
+  activeExperiment.control.stopped = true;
+  // Abort all in-flight requests across all tracks.
+  activeExperiment.controllersByKey.forEach((set) => {
+    set.forEach((controller) => controller.abort());
+    set.clear();
+  });
+  activeExperiment.queue.length = 0;
+  activeExperiment.queuedKeys.clear();
+  activeExperiment.runningKeys.clear();
+  activeExperiment.wake?.();
   if (expId) {
     useAppStore.getState().updateExperiment(expId, (record) => ({
       ...record,
@@ -121,6 +169,70 @@ export const stopPersonaTraversalExperiment = () => {
   }
 };
 
+export const restartExperimentTrack = (experimentId: string, selector: ExperimentTrackSelector) => {
+  const state = activeExperiment;
+  if (!state || state.control.experimentId !== experimentId) {
+    throw new Error('当前没有正在运行的遍历实验，无法重开轨道。');
+  }
+  const key = trackKeyFromSelector(selector);
+  const plan = state.planByKey.get(key);
+  if (!plan) {
+    throw new Error('未找到该轨道的遍历配置（可能不是当前实验的一部分）。');
+  }
+
+  // Cancel any in-flight work for this track (if running).
+  const nextGen = (state.generationByKey.get(key) ?? 0) + 1;
+  state.generationByKey.set(key, nextGen);
+  const controllers = state.controllersByKey.get(key);
+  if (controllers) {
+    controllers.forEach((c) => c.abort());
+    controllers.clear();
+  }
+
+  // Remove any pending queue duplicates and enqueue again.
+  state.queue = state.queue.filter((k) => k !== key);
+  state.queuedKeys.delete(key);
+  state.queue.push(key);
+  state.queuedKeys.add(key);
+
+  // Drop prior results/live messages for this track and reset progress.
+  useAppStore.getState().updateExperiment(experimentId, (current) => {
+    const nextProgress = (current.trackProgress ?? []).map((tp) =>
+      tp.index === plan.index
+        ? {
+            ...tp,
+            phase: 'queued' as const,
+            completedMessages: 0,
+            startedAt: undefined,
+            finishedAt: undefined,
+            error: undefined,
+          }
+        : tp,
+    );
+    const nextTracks =
+      current.result?.tracks?.filter((t) => trackKeyFromSelector(selectorFromMeta(t.meta)) !== key) ?? [];
+    const nextLive = { ...(current.trackLiveMessages ?? {}) };
+    delete nextLive[key];
+    return {
+      ...current,
+      trackProgress: nextProgress,
+      trackLiveMessages: nextLive,
+      status: {
+        ...current.status,
+        phase: 'running',
+        runningTracks: state.runningKeys.size,
+        completedTracks: nextProgress.filter((t) => t.phase === 'completed').length,
+        finishedAt: undefined,
+      },
+      result: current.result
+        ? { ...current.result, finishedAt: Date.now(), tracks: nextTracks }
+        : current.result,
+    };
+  });
+
+  state.wake?.();
+};
+
 export const startPersonaTraversalExperiment = async () => {
   const store = useAppStore.getState();
   const { agents, config } = store.runState;
@@ -139,9 +251,6 @@ export const startPersonaTraversalExperiment = async () => {
   }
 
   stopPersonaTraversalExperiment();
-  const control: ExperimentControl = { stopped: false, inflightControllers: new Set() };
-  activeExperiment = control;
-
   const startedAt = Date.now();
 
   const resolved = normalizeExperimentConfig(exp, agents, config.discussion.stanceScaleSize);
@@ -151,7 +260,6 @@ export const startPersonaTraversalExperiment = async () => {
 
   const experimentId = buildExperimentId(startedAt);
   const experimentName = buildExperimentName(resolved, config.discussion.stanceScaleSize);
-  control.experimentId = experimentId;
   const initialStatus: PersonaTraversalExperimentStatus = {
     phase: 'running',
     totalTracks,
@@ -212,78 +320,91 @@ export const startPersonaTraversalExperiment = async () => {
     awaitingLabel: undefined,
   }));
 
-  const results: ExperimentTrackResult[] = [];
   const baseRunConfig = { ...config, personaTraversalExperiment: resolved };
   const vendorDefaults = store.vendorDefaults;
+  const planByKey = new Map<string, TrackPlan>();
+  const queue: string[] = [];
+  const queuedKeys = new Set<string>();
+  const runningKeys = new Set<string>();
+  const generationByKey = new Map<string, number>();
+  const controllersByKey = new Map<string, Set<AbortController>>();
 
-  let completed = 0;
-  let running = 0;
+  tracksPlan.forEach((plan) => {
+    const key = trackKeyFromSelector(selectorFromPlan(plan));
+    planByKey.set(key, plan);
+    queue.push(key);
+    queuedKeys.add(key);
+    generationByKey.set(key, 0);
+    controllersByKey.set(key, new Set());
+  });
 
-  const updateStatus = (partial: Partial<PersonaTraversalExperimentStatus>) => {
-    useAppStore.getState().updateExperiment(experimentId, (current) => ({
-      ...current,
-      status: {
-        ...current.status,
-        ...partial,
-      },
-    }));
-    const phaseMap =
-      partial.phase === 'running'
-        ? 'running'
-        : partial.phase === 'completed'
-          ? 'completed'
-          : partial.phase === 'cancelled'
-            ? 'cancelled'
-            : partial.phase === 'error'
-              ? 'error'
-              : undefined;
-    if (phaseMap) {
-      useAppStore.getState().setRunStatus((status) => ({
-        ...status,
-        phase: phaseMap,
-        currentRound: partial.completedTracks ?? status.currentRound,
-        currentTurn: partial.runningTracks ?? status.currentTurn,
-        totalMessages: partial.completedTracks ?? status.totalMessages,
-        startedAt: status.startedAt ?? startedAt,
-        finishedAt: partial.finishedAt ?? status.finishedAt,
-        error: partial.error ?? status.error,
-        awaitingLabel: undefined,
-      }));
-    } else {
-      // still update counts
-      useAppStore.getState().setRunStatus((status) => ({
-        ...status,
-        currentRound: partial.completedTracks ?? status.currentRound,
-        currentTurn: partial.runningTracks ?? status.currentTurn,
-        totalMessages: partial.completedTracks ?? status.totalMessages,
-      }));
-    }
+  const state: ActiveExperimentState = {
+    control: { stopped: false, experimentId },
+    startedAt,
+    resolved,
+    baseRunConfig,
+    vendorDefaults,
+    agents,
+    stanceScaleSize: config.discussion.stanceScaleSize,
+    concurrency,
+    planByKey,
+    queue,
+    queuedKeys,
+    runningKeys,
+    generationByKey,
+    controllersByKey,
+    finalized: false,
   };
+  activeExperiment = state;
 
   const updateTrack = (index: number, patch: Partial<ExperimentTrackProgress>) => {
     useAppStore.getState().updateExperiment(experimentId, (current) => {
       const list = current.trackProgress ?? [];
       if (list.length === 0) return current;
       const next = list.map((item) => (item.index === index ? { ...item, ...patch } : item));
-      return { ...current, trackProgress: next };
+      const completedTracks = next.filter((t) => t.phase === 'completed').length;
+      return {
+        ...current,
+        status: {
+          ...current.status,
+          phase: current.status.phase === 'error' ? current.status.phase : 'running',
+          completedTracks,
+          runningTracks: state.runningKeys.size,
+          startedAt: current.status.startedAt ?? startedAt,
+          finishedAt: undefined,
+          error: undefined,
+        },
+        trackProgress: next,
+      };
     });
   };
 
-  const appendLiveMessage = (plan: TrackPlan, msg: Message) => {
-    const selector: ExperimentTrackSelector =
-      plan.kind === 'symmetric_initial_stance'
-        ? {
-            kind: 'symmetric_initial_stance',
-            agentAInitialStance: plan.agentAInitialStance,
-            agentBInitialStance: plan.agentBInitialStance,
-          }
-        : {
-            kind: 'big5_grid',
-            trait: plan.trait,
-            agentAValue: plan.agentAValue,
-            agentBValue: plan.agentBValue,
-          };
-    const key = trackKeyFromSelector(selector);
+  const setPhase = (phase: PersonaTraversalExperimentStatus['phase'], patch?: Partial<PersonaTraversalExperimentStatus>) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      status: {
+        ...current.status,
+        phase,
+        runningTracks: state.runningKeys.size,
+        completedTracks: (current.trackProgress ?? []).filter((t) => t.phase === 'completed').length,
+        ...(patch ?? {}),
+      },
+    }));
+  };
+
+  const updateRunStatus = (phase: 'running' | 'completed' | 'cancelled' | 'error', error?: string, finishedAt?: number) => {
+    useAppStore.getState().setRunStatus((status) => ({
+      ...status,
+      phase,
+      mode: config.mode,
+      startedAt: status.startedAt ?? startedAt,
+      finishedAt: finishedAt ?? status.finishedAt,
+      error,
+      awaitingLabel: undefined,
+    }));
+  };
+
+  const appendLiveMessage = (key: string, msg: Message) => {
     useAppStore.getState().updateExperiment(experimentId, (current) => {
       const existingMap = current.trackLiveMessages ?? {};
       const existingList = existingMap[key] ?? [];
@@ -298,10 +419,13 @@ export const startPersonaTraversalExperiment = async () => {
     });
   };
 
-  const appendTrack = (track: ExperimentTrackResult) => {
+  const upsertTrackResult = (track: ExperimentTrackResult) => {
     useAppStore.getState().updateExperiment(experimentId, (current) => {
       const existing = current.result?.tracks ?? [];
-      const nextTracks = [...existing, track].sort((a, b) => a.meta.index - b.meta.index);
+      const key = trackKeyFromSelector(selectorFromMeta(track.meta));
+      const nextTracks = [...existing.filter((t) => trackKeyFromSelector(selectorFromMeta(t.meta)) !== key), track].sort(
+        (a, b) => a.meta.index - b.meta.index,
+      );
       const nextResult: PersonaTraversalExperimentResult = {
         config: resolved,
         totalTracks,
@@ -316,22 +440,43 @@ export const startPersonaTraversalExperiment = async () => {
     });
   };
 
-  const runOne = async (plan: TrackPlan) => {
-    if (control.stopped) return;
-    running += 1;
-    updateStatus({ runningTracks: running });
-    updateTrack(plan.index, { phase: 'running', startedAt: Date.now() });
+  const dequeue = (): string | undefined => {
+    while (state.queue.length > 0) {
+      const key = state.queue.shift();
+      if (!key) break;
+      if (!state.queuedKeys.has(key)) continue;
+      state.queuedKeys.delete(key);
+      return key;
+    }
+    return undefined;
+  };
+
+  const waitForWork = async () => {
+    if (state.control.stopped) return;
+    await new Promise<void>((resolve) => {
+      state.wake = resolve;
+    });
+    state.wake = undefined;
+  };
+
+  const runTrackKey = async (key: string) => {
+    const plan = state.planByKey.get(key);
+    if (!plan) return;
+    const gen = state.generationByKey.get(key) ?? 0;
+    const controllers = state.controllersByKey.get(key) ?? new Set<AbortController>();
+    state.controllersByKey.set(key, controllers);
+
+    state.runningKeys.add(key);
+    updateTrack(plan.index, { phase: 'running', startedAt: Date.now(), finishedAt: undefined, error: undefined, completedMessages: 0 });
+
+    const shouldStop = () => state.control.stopped || (state.generationByKey.get(key) ?? 0) !== gen;
+    const control: TrackControl = { shouldStop, inflightControllers: controllers };
+
     try {
       const [agentAId, agentBId] = resolved.agentIds;
       const agentsForTrack =
         plan.kind === 'symmetric_initial_stance'
-          ? applyInitialStanceOverrideForTrack(
-              agents,
-              agentAId,
-              agentBId,
-              plan.agentAInitialStance,
-              plan.agentBInitialStance,
-            )
+          ? applyInitialStanceOverrideForTrack(agents, agentAId, agentBId, plan.agentAInitialStance, plan.agentBInitialStance)
           : applyBig5OverrideForTrack(agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
       const session = await runDetachedConversation({
         agents: agentsForTrack,
@@ -339,17 +484,11 @@ export const startPersonaTraversalExperiment = async () => {
         vendorDefaults,
         control,
         onMessageCount: (count) => updateTrack(plan.index, { completedMessages: count }),
-        onMessage: (msg) => appendLiveMessage(plan, msg),
+        onMessage: (msg) => appendLiveMessage(key, msg),
       });
-      if (control.stopped) {
-        return;
-      }
-      updateTrack(plan.index, {
-        phase: 'completed',
-        completedMessages: session.messages.length,
-        finishedAt: Date.now(),
-      });
-      results.push({
+      if (shouldStop()) return;
+      updateTrack(plan.index, { phase: 'completed', completedMessages: session.messages.length, finishedAt: Date.now() });
+      upsertTrackResult({
         id: nanoid(),
         meta:
           plan.kind === 'symmetric_initial_stance'
@@ -372,63 +511,52 @@ export const startPersonaTraversalExperiment = async () => {
               },
         result: session,
       });
-      appendTrack(results[results.length - 1]);
     } finally {
-      running -= 1;
-      completed += 1;
-      updateStatus({ runningTracks: running, completedTracks: completed });
+      state.runningKeys.delete(key);
+      controllers.clear();
+      useAppStore.getState().updateExperiment(experimentId, (current) => ({
+        ...current,
+        status: {
+          ...current.status,
+          runningTracks: state.runningKeys.size,
+          completedTracks: (current.trackProgress ?? []).filter((t) => t.phase === 'completed').length,
+        },
+      }));
+      state.wake?.();
+    }
+  };
+
+  const worker = async () => {
+    while (!state.control.stopped) {
+      const key = dequeue();
+      if (!key) {
+        if (state.runningKeys.size === 0 && state.queue.length === 0) break;
+        await waitForWork();
+        continue;
+      }
+      await runTrackKey(key);
     }
   };
 
   try {
-    await runWithConcurrency(tracksPlan, concurrency, runOne, () => control.stopped);
+    updateRunStatus('running');
+    const k = Math.max(1, Math.min(state.concurrency, state.planByKey.size || 1));
+    await Promise.all(Array.from({ length: k }, () => worker()));
     const finishedAt = Date.now();
-    if (control.stopped) {
-      updateStatus({
-        phase: 'cancelled',
-        completedTracks: completed,
-        runningTracks: 0,
-        finishedAt,
-      });
+    if (state.control.stopped) {
+      setPhase('cancelled', { runningTracks: 0, finishedAt });
+      updateRunStatus('cancelled', undefined, finishedAt);
     } else {
-      updateStatus({
-        phase: 'completed',
-        completedTracks: completed,
-        runningTracks: 0,
-        finishedAt,
-      });
+      setPhase('completed', { runningTracks: 0, finishedAt });
+      updateRunStatus('completed', undefined, finishedAt);
     }
-
-    const finalResult: PersonaTraversalExperimentResult = {
-      config: resolved,
-      totalTracks,
-      startedAt,
-      finishedAt,
-      tracks: results.sort((a, b) => a.meta.index - b.meta.index),
-    };
-    useAppStore.getState().updateExperiment(experimentId, (current) => ({
-      ...current,
-      result: finalResult,
-    }));
   } catch (error: any) {
     const finishedAt = Date.now();
-    updateStatus({
-      phase: 'error',
-      completedTracks: completed,
-      runningTracks: 0,
-      finishedAt,
-      error: error?.message ?? '遍历实验运行失败。',
-    });
-    // mark all remaining tracks as error/cancelled if needed
-    useAppStore.getState().updateExperiment(experimentId, (current) => ({
-      ...current,
-      trackProgress: (current.trackProgress ?? []).map((track) =>
-        track.phase === 'completed' ? track : { ...track, phase: 'error', error: error?.message ?? '实验失败' },
-      ),
-    }));
+    setPhase('error', { runningTracks: 0, finishedAt, error: error?.message ?? '遍历实验运行失败。' });
+    updateRunStatus('error', error?.message ?? '遍历实验运行失败。', finishedAt);
     throw error;
   } finally {
-    if (activeExperiment === control) {
+    if (activeExperiment === state) {
       activeExperiment = undefined;
     }
   }
@@ -581,28 +709,6 @@ const applyInitialStanceOverrideForTrack = (
   });
 };
 
-const runWithConcurrency = async <T>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T) => Promise<void>,
-  shouldStop: () => boolean,
-) => {
-  const queue = [...items];
-  const running: Promise<void>[] = [];
-  const next = async () => {
-    if (shouldStop()) return;
-    const item = queue.shift();
-    if (!item) return;
-    await worker(item);
-    await next();
-  };
-  const k = Math.max(1, Math.min(concurrency, items.length || 1));
-  for (let i = 0; i < k; i += 1) {
-    running.push(next());
-  }
-  await Promise.all(running);
-};
-
 const defaultFallbackModel = (): ModelConfig => ({
   vendor: 'openai',
   baseUrl: '',
@@ -638,7 +744,7 @@ const runDetachedConversation = async ({
   agents: AgentSpec[];
   config: RunConfig;
   vendorDefaults: VendorDefaults;
-  control: ExperimentControl;
+  control: TrackControl;
   onMessageCount?: (count: number) => void;
   onMessage?: (message: Message) => void;
 }): Promise<SessionResult> => {
@@ -669,10 +775,10 @@ const runDetachedConversation = async ({
   }, {});
 
   for (let round = 1; round <= maxRounds; round += 1) {
-    if (control.stopped) break;
+    if (control.shouldStop()) break;
     const roundOrder = config.mode === 'sequential' ? agents : shuffleAgentsList(agents);
     for (let idx = 0; idx < roundOrder.length; idx += 1) {
-      if (control.stopped) break;
+      if (control.shouldStop()) break;
       if (maxMessages && messages.length >= maxMessages) break;
       const agent = roundOrder[idx];
       status.currentRound = round;
@@ -700,7 +806,7 @@ const runDetachedConversation = async ({
   }
 
   status.finishedAt = Date.now();
-  status.phase = control.stopped ? 'cancelled' : 'completed';
+  status.phase = control.shouldStop() ? 'cancelled' : 'completed';
 
   return {
     messages,
@@ -1019,7 +1125,7 @@ const applyFormatCorrection = async (
   rawContent: string,
   modelConfig: ModelConfig,
   discussion: RunConfig['discussion'],
-  control: ExperimentControl,
+  control: TrackControl,
   forcedStanceScore?: number,
   allowEmptyOthersMemory?: boolean,
   requireInnerState: boolean = true,
@@ -1097,7 +1203,7 @@ const applyFormatCorrection = async (
       )) || '';
     return { output: response.trim() };
   } catch (error: any) {
-    if (control.stopped) {
+    if (control.shouldStop()) {
       return undefined;
     }
     return { error: error?.message ?? '格式校正请求失败' };
@@ -1127,7 +1233,7 @@ const executeAgentTurnLocal = async ({
   failures: FailureRecord[];
   agentNames: Record<string, string>;
   vendorDefaults: VendorDefaults;
-  control: ExperimentControl;
+  control: TrackControl;
 }): Promise<Message | undefined> => {
   const baseModelConfig = resolveModelConfig(agent, config);
   const apiKey = resolveApiKey(baseModelConfig, vendorDefaults);
@@ -1235,7 +1341,7 @@ const executeAgentTurnLocal = async ({
   let attempt = 0;
   while (attempt < MAX_AGENT_OUTPUT_ATTEMPTS) {
     attempt += 1;
-    if (control.stopped) return undefined;
+    if (control.shouldStop()) return undefined;
 
     let attemptFailureDetails:
       | { category: FailureRecord['category']; reasons: string[] }
@@ -1253,7 +1359,7 @@ const executeAgentTurnLocal = async ({
           controller.signal,
         )) || '';
     } catch (error: any) {
-      if (control.stopped) {
+      if (control.shouldStop()) {
         control.inflightControllers.delete(controller);
         return undefined;
       }
@@ -1294,7 +1400,7 @@ const executeAgentTurnLocal = async ({
           outputInnerStateEnabled,
           outputThinkEnabled,
         );
-        if (control.stopped) return undefined;
+        if (control.shouldStop()) return undefined;
         if (correctionResult) {
           formatCorrectionAttempted = true;
           if (correctionResult.output) {
