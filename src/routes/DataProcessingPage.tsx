@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Link } from 'react-router-dom';
+import JSZip from 'jszip';
 
 type ProcessingOutcome =
   | '未达成一致'
@@ -20,15 +21,6 @@ type StanceLongRow = {
   stanceNote?: string;
 };
 
-type TrackMetaRow = {
-  trackIndex: number;
-  trait: string;
-  agentAName: string;
-  agentBName: string;
-  agentAValue: number;
-  agentBValue: number;
-};
-
 type AnalysisParams = {
   epsilon: number;
   k: number;
@@ -41,7 +33,10 @@ type TrackAnalysis = {
   outcome: ProcessingOutcome;
   stable: boolean;
   maxDInWindow?: number;
+  windowCoverage?: string;
   dSeries?: Array<{ round: number; d: number }>;
+  agent1Name?: string;
+  agent2Name?: string;
   x1_1?: number;
   x2_1?: number;
   x1_post?: number;
@@ -90,31 +85,45 @@ const groupBy = <T,>(items: T[], key: (item: T) => string): Record<string, T[]> 
   }, {});
 };
 
+const parseTrackLabelFromPath = (path: string): { trackIndex: number; label: string } => {
+  // Expected parent folder names:
+  // - tables/<safeLabel>/stance.xlsx where safeLabel may be "track-<n>-<meta...>" or "conversation-..."
+  const parts = path.split('/').filter(Boolean);
+  const stanceIdx = parts.findIndex((p) => p.toLowerCase() === 'stance.xlsx');
+  const folder = stanceIdx > 0 ? parts[stanceIdx - 1] : parts[parts.length - 2] ?? path;
+  const m = folder.match(/^track-(\d+)-(.*)$/i);
+  if (m) {
+    const n = Number(m[1]);
+    const meta = m[2];
+    return { trackIndex: Number.isFinite(n) ? n : 1, label: `#${m[1]}｜${meta}` };
+  }
+  const conv = folder.match(/^conversation-(.*)$/i);
+  if (conv) {
+    return { trackIndex: 1, label: `conversation｜${conv[1]}` };
+  }
+  return { trackIndex: 1, label: folder };
+};
+
+const orderTwoAgents = (names: string[]): [string, string] => {
+  if (names.length !== 2) return [names[0] ?? 'A1', names[1] ?? 'A2'];
+  const m0 = names[0].match(/^A(\d+)$/i);
+  const m1 = names[1].match(/^A(\d+)$/i);
+  if (m0 && m1) {
+    const n0 = Number(m0[1]);
+    const n1 = Number(m1[1]);
+    return n0 <= n1 ? [names[0], names[1]] : [names[1], names[0]];
+  }
+  return names[0].localeCompare(names[1]) <= 0 ? [names[0], names[1]] : [names[1], names[0]];
+};
+
 const computeTrackOutcome = (
   rows: StanceLongRow[],
-  meta: TrackMetaRow | undefined,
   params: AnalysisParams,
+  labelHint?: { trackIndex: number; label: string },
 ): TrackAnalysis => {
-  const trackIndex = meta?.trackIndex ?? (rows[0]?.trackIndex ?? 1);
-  const label =
-    meta
-      ? `#${meta.trackIndex}｜${meta.trait}（${meta.agentAName}=${meta.agentAValue}，${meta.agentBName}=${meta.agentBValue}）`
-      : `#${trackIndex}`;
-
   // Determine A1/A2 (only 2 agents allowed).
   const agentNameSet = Array.from(new Set(rows.map((r) => r.agentName)));
-  if (meta) {
-    // Ensure meta names exist in rows.
-    if (!agentNameSet.includes(meta.agentAName) || !agentNameSet.includes(meta.agentBName)) {
-      return {
-        trackIndex,
-        label,
-        outcome: '未达成一致',
-        stable: false,
-        error: '非法输入：该轨道的 stance_long 中未找到 tracks 表里的 agentA/agentB 名称。',
-      };
-    }
-  }
+  const { trackIndex, label } = labelHint ?? { trackIndex: 1, label: '#1' };
   if (agentNameSet.length !== 2) {
     return {
       trackIndex,
@@ -124,7 +133,7 @@ const computeTrackOutcome = (
       error: `非法输入：只支持 2 个 agent，但检测到 ${agentNameSet.length} 个（${agentNameSet.join(', ')}）。`,
     };
   }
-  const [a1Name, a2Name] = meta ? [meta.agentAName, meta.agentBName] : agentNameSet.sort();
+  const [a1Name, a2Name] = orderTwoAgents(agentNameSet);
 
   const byAgent = groupBy(rows, (r) => r.agentName);
   const pickLastPerRound = (list: StanceLongRow[]) => {
@@ -154,65 +163,62 @@ const computeTrackOutcome = (
     dSeries.push({ round: t, d: Math.abs(x1 - x2) });
   }
 
-  // Require full window present.
-  for (let t = windowStart; t <= maxRound; t += 1) {
-    if (!m1.has(t) || !m2.has(t)) {
-      return {
-        trackIndex,
-        label,
-        outcome: '未达成一致',
-        stable: false,
-        error: `数据不足：最后 k=${k} 轮（${windowStart}..${maxRound}）存在缺失立场分数，无法判定稳定一致。`,
-      };
-    }
-  }
-
   let maxDInWindow = 0;
-  for (let t = windowStart; t <= maxRound; t += 1) {
-    const d = Math.abs((m1.get(t)!.stanceScore ?? 0) - (m2.get(t)!.stanceScore ?? 0));
-    maxDInWindow = Math.max(maxDInWindow, d);
-  }
-  const stable = maxDInWindow <= epsilon;
-  if (!stable) {
-    return { trackIndex, label, outcome: '未达成一致', stable, maxDInWindow, dSeries };
-  }
-
-  // Stable post-stances: mean over last k rounds.
+  let windowPairs = 0;
   let sum1 = 0;
   let sum2 = 0;
   for (let t = windowStart; t <= maxRound; t += 1) {
-    sum1 += m1.get(t)!.stanceScore;
-    sum2 += m2.get(t)!.stanceScore;
+    const x1 = m1.get(t)?.stanceScore;
+    const x2 = m2.get(t)?.stanceScore;
+    if (x1 == null || x2 == null) continue;
+    windowPairs += 1;
+    sum1 += x1;
+    sum2 += x2;
+    maxDInWindow = Math.max(maxDInWindow, Math.abs(x1 - x2));
   }
-  const x1_post = sum1 / k;
-  const x2_post = sum2 / k;
+  const windowCoverage = `${windowPairs}/${k}`;
+  const x1_post = windowPairs > 0 ? sum1 / windowPairs : undefined;
+  const x2_post = windowPairs > 0 ? sum2 / windowPairs : undefined;
+  const stable = windowPairs === k && maxDInWindow <= epsilon;
 
   // Initial stances are x_i(1) = stance at round 1.
-  if (!m1.has(1) || !m2.has(1)) {
-    return {
-      trackIndex,
-      label,
-      outcome: '未达成一致',
-      stable: false,
-      error: '数据不足：缺少第 1 轮立场分数，无法计算变化量与说服/趋同判别。',
-    };
-  }
-  const x1_1 = m1.get(1)!.stanceScore;
-  const x2_1 = m2.get(1)!.stanceScore;
-  const delta1 = x1_post - x1_1;
-  const delta2 = x2_post - x2_1;
-  const denom = Math.abs(delta1) + Math.abs(delta2);
-  const r1 = denom > 0 ? Math.abs(delta1) / denom : 0.5;
-  const r2 = denom > 0 ? Math.abs(delta2) / denom : 0.5;
+  const x1_1 = m1.get(1)?.stanceScore;
+  const x2_1 = m2.get(1)?.stanceScore;
+  const delta1 =
+    x1_post != null && x1_1 != null ? x1_post - x1_1 : undefined;
+  const delta2 =
+    x2_post != null && x2_1 != null ? x2_post - x2_1 : undefined;
+  const denom =
+    delta1 != null && delta2 != null ? Math.abs(delta1) + Math.abs(delta2) : 0;
+  const r1 =
+    delta1 != null && delta2 != null && denom > 0 ? Math.abs(delta1) / denom : 0.5;
+  const r2 =
+    delta1 != null && delta2 != null && denom > 0 ? Math.abs(delta2) / denom : 0.5;
 
   // Mapping to "A1说服A2 / A2说服A1 / 相互趋同" (A1=agentA, A2=agentB).
-  let outcome: ProcessingOutcome = '相互趋同';
-  if (r1 >= tau && r2 < tau) {
-    outcome = 'A2说服A1';
-  } else if (r2 >= tau && r1 < tau) {
-    outcome = 'A1说服A2';
+  let outcome: ProcessingOutcome = '未达成一致';
+  let error: string | undefined;
+  if (windowPairs === 0) {
+    error = `数据不足：最后 k=${k} 轮（${windowStart}..${maxRound}）缺少可配对的两人立场分数，无法计算 Δ 与一致性。`;
+  } else if (x1_post == null || x2_post == null) {
+    error = `数据不足：无法计算最后 k=${k} 轮均值。`;
+  } else if (x1_1 == null || x2_1 == null) {
+    error = '数据不足：缺少第 1 轮立场分数，无法计算 Δ。';
+  } else if (!stable) {
+    outcome = '未达成一致';
+    if (windowPairs !== k) {
+      error = `窗口覆盖不足：需要 ${k} 轮，但仅匹配到 ${windowPairs} 轮；Δ 以可用轮次均值近似。`;
+    }
   } else {
+    // Stable: apply persuasion vs convergence.
     outcome = '相互趋同';
+    if (r1 >= tau && r2 < tau) {
+      outcome = 'A2说服A1';
+    } else if (r2 >= tau && r1 < tau) {
+      outcome = 'A1说服A2';
+    } else {
+      outcome = '相互趋同';
+    }
   }
 
   return {
@@ -222,22 +228,25 @@ const computeTrackOutcome = (
     stable,
     maxDInWindow,
     dSeries,
+    windowCoverage,
+    agent1Name: a1Name,
+    agent2Name: a2Name,
     x1_1,
     x2_1,
     x1_post,
     x2_post,
     delta1,
     delta2,
-    r1,
-    r2,
+    r1: stable ? r1 : undefined,
+    r2: stable ? r2 : undefined,
+    error,
   };
 };
 
 export function DataProcessingPage() {
-  const [fileName, setFileName] = useState<string>('');
+  const [sourceLabel, setSourceLabel] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [stanceRows, setStanceRows] = useState<StanceLongRow[]>([]);
-  const [trackMeta, setTrackMeta] = useState<TrackMetaRow[]>([]);
+  const [trackInputs, setTrackInputs] = useState<Array<{ id: string; labelHint: { trackIndex: number; label: string }; rows: StanceLongRow[] }>>([]);
 
   const [params, setParams] = useState<AnalysisParams>({
     epsilon: 1,
@@ -245,77 +254,95 @@ export function DataProcessingPage() {
     tau: 0.55,
   });
 
-  const handleFile = async (file?: File) => {
+  const parseStanceLongFromArrayBuffer = (buf: ArrayBuffer): StanceLongRow[] => {
+    const wb = XLSX.read(buf, { type: 'array' });
+    const stanceSheet =
+      wb.Sheets['stance_long'] ??
+      wb.Sheets['stance-long'] ??
+      wb.Sheets['stance'] ??
+      undefined;
+    if (!stanceSheet) {
+      throw new Error('未找到工作表：stance_long。请上传导出的 stance.xlsx（来自 tables 文件夹）。');
+    }
+    const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(stanceSheet, { defval: '' });
+    const normalized = raw
+      .map((row) => normalizeStanceLongRow(row))
+      .filter((row): row is StanceLongRow => Boolean(row));
+    if (normalized.length === 0) {
+      throw new Error('stance_long 中未解析到有效数据行。');
+    }
+    return normalized;
+  };
+
+  const handleSingleExcel = async (file?: File) => {
     setError('');
-    setFileName(file?.name ?? '');
-    setStanceRows([]);
-    setTrackMeta([]);
+    setSourceLabel(file?.name ?? '');
+    setTrackInputs([]);
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const stanceSheet =
-        wb.Sheets['stance_long'] ??
-        wb.Sheets['stance-long'] ??
-        wb.Sheets['stance'] ??
-        undefined;
-      if (!stanceSheet) {
-        throw new Error('未找到工作表：stance_long。请上传导出的 stance.xlsx 或 experiment_summary.xlsx。');
-      }
-      const rawStance = XLSX.utils.sheet_to_json<Record<string, unknown>>(stanceSheet, { defval: '' });
-      const normalized = rawStance
-        .map((row) => normalizeStanceLongRow(row))
-        .filter((row): row is StanceLongRow => Boolean(row));
-      if (normalized.length === 0) {
-        throw new Error('stance_long 中未解析到有效数据行。');
-      }
-      setStanceRows(normalized);
+      const rows = parseStanceLongFromArrayBuffer(buf);
+      setTrackInputs([{ id: file.name, labelHint: { trackIndex: 1, label: file.name }, rows }]);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
-      const tracksSheet = wb.Sheets['tracks'];
-      if (tracksSheet) {
-        const rawTracks = XLSX.utils.sheet_to_json<Record<string, unknown>>(tracksSheet, { defval: '' });
-        const metas: TrackMetaRow[] = rawTracks
-          .map((r) => {
-            const trackIndex = asNumber(r.trackIndex ?? r['trackIndex'] ?? r['track'] ?? r['轨道']);
-            const trait = (r.trait ?? r['trait'] ?? r['维度'] ?? 'unknown') as string;
-            const agentAName = String(r.agentAName ?? r['agentAName'] ?? r['A1'] ?? r['agentA']);
-            const agentBName = String(r.agentBName ?? r['agentBName'] ?? r['A2'] ?? r['agentB']);
-            const agentAValue = asNumber(r.agentAValue ?? r['agentAValue']);
-            const agentBValue = asNumber(r.agentBValue ?? r['agentBValue']);
-            if (!trackIndex || !agentAName || !agentBName || agentAValue == null || agentBValue == null) return null;
-            return {
-              trackIndex: Math.floor(trackIndex),
-              trait: String(trait),
-              agentAName,
-              agentBName,
-              agentAValue,
-              agentBValue,
-            };
-          })
-          .filter((x): x is TrackMetaRow => Boolean(x));
-        setTrackMeta(metas);
+  const handleDirectory = async (files: FileList | null) => {
+    setError('');
+    setSourceLabel(files ? `目录（${files.length} files）` : '');
+    setTrackInputs([]);
+    if (!files || files.length === 0) return;
+    try {
+      const candidates = Array.from(files).filter((f) => f.name.toLowerCase() === 'stance.xlsx');
+      if (candidates.length === 0) {
+        throw new Error('目录中未找到 stance.xlsx（请上传 ZIP 解压后的 tables 文件夹）。');
       }
+      const parsed: Array<{ id: string; labelHint: { trackIndex: number; label: string }; rows: StanceLongRow[] }> = [];
+      for (const file of candidates) {
+        const buf = await file.arrayBuffer();
+        const rows = parseStanceLongFromArrayBuffer(buf);
+        const rel = (file as unknown as { webkitRelativePath?: string }).webkitRelativePath ?? file.name;
+        const labelHint = parseTrackLabelFromPath(rel);
+        parsed.push({ id: rel, labelHint, rows });
+      }
+      setTrackInputs(parsed.sort((a, b) => a.labelHint.trackIndex - b.labelHint.trackIndex));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleZip = async (file?: File) => {
+    setError('');
+    setSourceLabel(file?.name ?? '');
+    setTrackInputs([]);
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(buf);
+      const xlsxPaths = Object.keys(zip.files).filter((p) => p.toLowerCase().endsWith('/stance.xlsx'));
+      if (xlsxPaths.length === 0) {
+        throw new Error('ZIP 中未找到 tables/**/stance.xlsx。请上传导出的结果 ZIP（包含 tables 文件夹）。');
+      }
+      const parsed: Array<{ id: string; labelHint: { trackIndex: number; label: string }; rows: StanceLongRow[] }> = [];
+      for (const p of xlsxPaths) {
+        const fileObj = zip.file(p);
+        if (!fileObj) continue;
+        const ab = await fileObj.async('arraybuffer');
+        const rows = parseStanceLongFromArrayBuffer(ab);
+        const labelHint = parseTrackLabelFromPath(p);
+        parsed.push({ id: p, labelHint, rows });
+      }
+      setTrackInputs(parsed.sort((a, b) => a.labelHint.trackIndex - b.labelHint.trackIndex));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   const analyses = useMemo(() => {
-    if (stanceRows.length === 0) return [];
-    const hasTrackIndex = stanceRows.some((r) => typeof r.trackIndex === 'number' && Number.isFinite(r.trackIndex));
-    if (!hasTrackIndex) {
-      // single conversation stance.xlsx
-      return [computeTrackOutcome(stanceRows, undefined, params)];
-    }
-    const grouped = groupBy(stanceRows, (r) => String(r.trackIndex ?? 'unknown'));
-    const metaByIndex = trackMeta.reduce<Record<string, TrackMetaRow>>((acc, m) => {
-      acc[String(m.trackIndex)] = m;
-      return acc;
-    }, {});
-    return Object.entries(grouped)
-      .map(([key, rows]) => computeTrackOutcome(rows, metaByIndex[key], params))
-      .sort((a, b) => a.trackIndex - b.trackIndex);
-  }, [params, stanceRows, trackMeta]);
+    if (trackInputs.length === 0) return [];
+    return trackInputs.map((t) => computeTrackOutcome(t.rows, params, t.labelHint));
+  }, [params, trackInputs]);
 
   const summary = useMemo(() => {
     const counts = analyses.reduce<Record<ProcessingOutcome, number>>(
@@ -341,18 +368,41 @@ export function DataProcessingPage() {
         </header>
         <div className="card__body">
           <p className="form-hint">
-            输入：导出的 <code>stance.xlsx</code>（单次对话/单轨道）或 <code>experiment_summary.xlsx</code>（实验汇总）。
-            仅支持 2 个 Agent；否则视为非法输入。
+            输入：上传导出的结果 <code>.zip</code>（推荐，自动遍历 tables/**/stance.xlsx），或上传解压后的 <code>tables</code> 文件夹（目录上传）。
+            也支持单独上传某个 <code>stance.xlsx</code>。仅支持 2 个 Agent；否则视为非法输入。
           </p>
 
           <label className="form-field">
-            <span>上传 Excel</span>
+            <span>上传结果 ZIP（包含 tables 文件夹）</span>
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              onChange={(e) => handleZip(e.target.files?.[0])}
+            />
+          </label>
+
+          <label className="form-field">
+            <span>上传 tables 文件夹（目录上传，包含多个 stance.xlsx）</span>
+            <input
+              type="file"
+              multiple
+              onChange={(e) => handleDirectory(e.target.files)}
+              ref={(el) => {
+                if (!el) return;
+                el.setAttribute('webkitdirectory', '');
+                el.setAttribute('directory', '');
+              }}
+            />
+          </label>
+
+          <label className="form-field">
+            <span>上传单个 stance.xlsx</span>
             <input
               type="file"
               accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={(e) => handleFile(e.target.files?.[0])}
+              onChange={(e) => handleSingleExcel(e.target.files?.[0])}
             />
-            {fileName ? <p className="form-hint">当前文件：{fileName}</p> : null}
+            {sourceLabel ? <p className="form-hint">当前输入：{sourceLabel}（解析到 {trackInputs.length} 个轨道）</p> : null}
           </label>
 
           <div className="grid two-columns">
@@ -407,14 +457,15 @@ export function DataProcessingPage() {
                       <th>结论</th>
                       <th>稳定一致</th>
                       <th>max d(t)（窗口内）</th>
-                      <th>Δ1 / Δ2</th>
+                      <th>Δ1 / Δ2（带符号）</th>
                       <th>r1 / r2</th>
+                      <th>窗口覆盖</th>
                       <th>备注</th>
                     </tr>
                   </thead>
                   <tbody>
                     {analyses.map((a) => (
-                      <tr key={a.trackIndex}>
+                      <tr key={`${a.trackIndex}-${a.label}`}>
                         <td>{a.label}</td>
                         <td>{a.outcome}</td>
                         <td>{a.stable ? '是' : '否'}</td>
@@ -425,6 +476,7 @@ export function DataProcessingPage() {
                         <td>
                           {a.r1 != null && a.r2 != null ? `${a.r1.toFixed(3)} / ${a.r2.toFixed(3)}` : ''}
                         </td>
+                        <td>{a.windowCoverage ?? ''}</td>
                         <td>{a.error ?? ''}</td>
                       </tr>
                     ))}
