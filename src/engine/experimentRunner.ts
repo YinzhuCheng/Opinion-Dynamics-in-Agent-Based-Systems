@@ -128,6 +128,267 @@ type TrackControl = {
   inflightControllers: Set<AbortController>;
 };
 
+const buildActiveExperimentFromRecord = (experimentId: string): ActiveExperimentState => {
+  const store = useAppStore.getState();
+  const record = store.experiments.find((exp) => exp.id === experimentId);
+  if (!record) {
+    throw new Error('未找到对应的实验记录，无法重开轨道。');
+  }
+  const resolved =
+    record.result?.config ??
+    record.runConfigSnapshot.personaTraversalExperiment ??
+    (undefined as unknown as PersonaTraversalExperimentConfig);
+  if (!resolved || !resolved.enabled) {
+    throw new Error('该实验配置缺失或未启用，无法重开轨道。');
+  }
+  const stanceScaleSize = record.runConfigSnapshot.discussion.stanceScaleSize;
+  const tracksPlan = buildExperimentTracks(resolved, stanceScaleSize);
+  const planByKey = new Map<string, TrackPlan>();
+  const queuedKeys = new Set<string>();
+  const runningKeys = new Set<string>();
+  const generationByKey = new Map<string, number>();
+  const controllersByKey = new Map<string, Set<AbortController>>();
+  tracksPlan.forEach((plan) => {
+    const key = trackKeyFromSelector(selectorFromPlan(plan));
+    planByKey.set(key, plan);
+    generationByKey.set(key, 0);
+    controllersByKey.set(key, new Set());
+  });
+
+  return {
+    control: { stopped: false, experimentId },
+    startedAt: record.status.startedAt ?? record.createdAt,
+    resolved,
+    baseRunConfig: { ...record.runConfigSnapshot, personaTraversalExperiment: resolved },
+    vendorDefaults: store.vendorDefaults,
+    agents: record.agentsSnapshot,
+    stanceScaleSize,
+    concurrency: Math.max(1, Math.min(planByKey.size || 1, resolved.concurrency)),
+    planByKey,
+    queue: [],
+    queuedKeys,
+    runningKeys,
+    generationByKey,
+    controllersByKey,
+    finalized: false,
+  };
+};
+
+const startWorkersForActiveExperiment = (state: ActiveExperimentState) => {
+  if (state.finalized) return;
+  const experimentId = state.control.experimentId;
+  const resolved = state.resolved;
+  const totalTracks = state.planByKey.size;
+  const startedAt = state.startedAt;
+
+  const setPhase = (phase: PersonaTraversalExperimentStatus['phase'], patch?: Partial<PersonaTraversalExperimentStatus>) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      status: {
+        ...current.status,
+        phase,
+        runningTracks: state.runningKeys.size,
+        completedTracks: (current.trackProgress ?? []).filter((t) => t.phase === 'completed').length,
+        ...(patch ?? {}),
+      },
+    }));
+  };
+
+  const updateRunStatus = (phase: 'running' | 'completed' | 'cancelled' | 'error', error?: string, finishedAt?: number) => {
+    useAppStore.getState().setRunStatus((status) => ({
+      ...status,
+      phase,
+      mode: state.baseRunConfig.mode,
+      startedAt: status.startedAt ?? startedAt,
+      finishedAt: finishedAt ?? status.finishedAt,
+      error,
+      awaitingLabel: undefined,
+    }));
+  };
+
+  const updateTrack = (index: number, patch: Partial<ExperimentTrackProgress>) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const list = current.trackProgress ?? [];
+      if (list.length === 0) return current;
+      const next = list.map((item) => (item.index === index ? { ...item, ...patch } : item));
+      return {
+        ...current,
+        trackProgress: next,
+        status: {
+          ...current.status,
+          phase: 'running',
+          runningTracks: state.runningKeys.size,
+          completedTracks: next.filter((t) => t.phase === 'completed').length,
+          startedAt: current.status.startedAt ?? startedAt,
+          finishedAt: undefined,
+          error: undefined,
+          totalTracks: current.status.totalTracks || totalTracks,
+        },
+      };
+    });
+  };
+
+  const appendLiveMessage = (key: string, msg: Message) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const existingMap = current.trackLiveMessages ?? {};
+      const existingList = existingMap[key] ?? [];
+      const nextList = [...existingList, compactLiveMessage(msg)].slice(-400);
+      return {
+        ...current,
+        trackLiveMessages: {
+          ...existingMap,
+          [key]: nextList,
+        },
+      };
+    });
+  };
+
+  const upsertTrackResult = (track: ExperimentTrackResult) => {
+    useAppStore.getState().updateExperiment(experimentId, (current) => {
+      const existing = current.result?.tracks ?? [];
+      const key = trackKeyFromSelector(selectorFromMeta(track.meta));
+      const nextTracks = [...existing.filter((t) => trackKeyFromSelector(selectorFromMeta(t.meta)) !== key), track].sort(
+        (a, b) => a.meta.index - b.meta.index,
+      );
+      const nextResult: PersonaTraversalExperimentResult = {
+        config: resolved,
+        totalTracks,
+        startedAt,
+        finishedAt: Date.now(),
+        tracks: nextTracks,
+      };
+      return {
+        ...current,
+        result: nextResult,
+      };
+    });
+  };
+
+  const dequeue = (): string | undefined => {
+    while (state.queue.length > 0) {
+      const key = state.queue.shift();
+      if (!key) break;
+      if (!state.queuedKeys.has(key)) continue;
+      state.queuedKeys.delete(key);
+      return key;
+    }
+    return undefined;
+  };
+
+  const waitForWork = async () => {
+    if (state.control.stopped) return;
+    await new Promise<void>((resolve) => {
+      state.wake = resolve;
+    });
+    state.wake = undefined;
+  };
+
+  const runTrackKey = async (key: string) => {
+    const plan = state.planByKey.get(key);
+    if (!plan) return;
+    const gen = state.generationByKey.get(key) ?? 0;
+    const controllers = state.controllersByKey.get(key) ?? new Set<AbortController>();
+    state.controllersByKey.set(key, controllers);
+
+    state.runningKeys.add(key);
+    updateTrack(plan.index, { phase: 'running', startedAt: Date.now(), finishedAt: undefined, error: undefined, completedMessages: 0 });
+
+    const shouldStop = () => state.control.stopped || (state.generationByKey.get(key) ?? 0) !== gen;
+    const control: TrackControl = { shouldStop, inflightControllers: controllers };
+
+    try {
+      const [agentAId, agentBId] = resolved.agentIds;
+      const agentsForTrack =
+        plan.kind === 'symmetric_initial_stance'
+          ? applyInitialStanceOverrideForTrack(state.agents, agentAId, agentBId, plan.agentAInitialStance, plan.agentBInitialStance)
+          : applyBig5OverrideForTrack(state.agents, agentAId, agentBId, plan.trait, plan.agentAValue, plan.agentBValue);
+      const session = await runDetachedConversation({
+        agents: agentsForTrack,
+        config: state.baseRunConfig,
+        vendorDefaults: state.vendorDefaults,
+        control,
+        onMessageCount: (count) => updateTrack(plan.index, { completedMessages: count }),
+        onMessage: (msg) => appendLiveMessage(key, msg),
+      });
+      if (shouldStop()) return;
+      updateTrack(plan.index, { phase: 'completed', completedMessages: session.messages.length, finishedAt: Date.now() });
+      upsertTrackResult({
+        id: nanoid(),
+        meta:
+          plan.kind === 'symmetric_initial_stance'
+            ? {
+                index: plan.index,
+                kind: 'symmetric_initial_stance',
+                agentAId,
+                agentBId,
+                agentAInitialStance: plan.agentAInitialStance,
+                agentBInitialStance: plan.agentBInitialStance,
+              }
+            : {
+                index: plan.index,
+                kind: 'big5_grid',
+                trait: plan.trait,
+                agentAId,
+                agentBId,
+                agentAValue: plan.agentAValue,
+                agentBValue: plan.agentBValue,
+              },
+        result: session,
+      });
+    } finally {
+      state.runningKeys.delete(key);
+      controllers.clear();
+      useAppStore.getState().updateExperiment(experimentId, (current) => ({
+        ...current,
+        status: {
+          ...current.status,
+          runningTracks: state.runningKeys.size,
+          completedTracks: (current.trackProgress ?? []).filter((t) => t.phase === 'completed').length,
+        },
+      }));
+      state.wake?.();
+    }
+  };
+
+  const worker = async () => {
+    while (!state.control.stopped) {
+      const key = dequeue();
+      if (!key) {
+        if (state.runningKeys.size === 0 && state.queue.length === 0) break;
+        await waitForWork();
+        continue;
+      }
+      await runTrackKey(key);
+    }
+  };
+
+  // Fire-and-forget worker pool.
+  updateRunStatus('running');
+  const k = Math.max(1, Math.min(state.concurrency, state.planByKey.size || 1));
+  Promise.all(Array.from({ length: k }, () => worker()))
+    .then(() => {
+      const finishedAt = Date.now();
+      if (state.control.stopped) {
+        setPhase('cancelled', { runningTracks: 0, finishedAt });
+        updateRunStatus('cancelled', undefined, finishedAt);
+      } else {
+        setPhase('completed', { runningTracks: 0, finishedAt });
+        updateRunStatus('completed', undefined, finishedAt);
+      }
+    })
+    .catch((error: any) => {
+      const finishedAt = Date.now();
+      setPhase('error', { runningTracks: 0, finishedAt, error: error?.message ?? '遍历实验运行失败。' });
+      updateRunStatus('error', error?.message ?? '遍历实验运行失败。', finishedAt);
+    })
+    .finally(() => {
+      state.finalized = true;
+      if (activeExperiment === state) {
+        activeExperiment = undefined;
+      }
+    });
+};
+
 export const stopPersonaTraversalExperiment = () => {
   if (!activeExperiment) return;
   const expId = activeExperiment.control.experimentId;
@@ -170,9 +431,22 @@ export const stopPersonaTraversalExperiment = () => {
 };
 
 export const restartExperimentTrack = (experimentId: string, selector: ExperimentTrackSelector) => {
-  const state = activeExperiment;
+  let state = activeExperiment;
   if (!state || state.control.experimentId !== experimentId) {
-    throw new Error('当前没有正在运行的遍历实验，无法重开轨道。');
+    state = buildActiveExperimentFromRecord(experimentId);
+    activeExperiment = state;
+    // Mark experiment as running again when restarting after completion.
+    useAppStore.getState().updateExperiment(experimentId, (current) => ({
+      ...current,
+      status: {
+        ...current.status,
+        phase: 'running',
+        runningTracks: 0,
+        finishedAt: undefined,
+        error: undefined,
+      },
+    }));
+    startWorkersForActiveExperiment(state);
   }
   const key = trackKeyFromSelector(selector);
   const plan = state.planByKey.get(key);
