@@ -3,12 +3,6 @@ import * as XLSX from 'xlsx';
 import { Link } from 'react-router-dom';
 import JSZip from 'jszip';
 
-type ProcessingOutcome =
-  | '未达成一致'
-  | 'A1说服A2'
-  | 'A2说服A1'
-  | '相互趋同';
-
 type StanceLongRow = {
   trackIndex?: number;
   trait?: string;
@@ -24,17 +18,13 @@ type StanceLongRow = {
 type AnalysisParams = {
   epsilon: number;
   k: number;
-  tau: number;
 };
 
 type TrackAnalysis = {
   trackIndex: number;
   label: string;
-  outcome: ProcessingOutcome;
   stable: boolean;
-  maxDInWindow?: number;
   windowCoverage?: string;
-  dSeries?: Array<{ round: number; d: number }>;
   agent1Name?: string;
   agent2Name?: string;
   x1_1?: number;
@@ -139,7 +129,6 @@ const computeTrackOutcome = (
     return {
       trackIndex,
       label,
-      outcome: '未达成一致',
       stable: false,
       error: `非法输入：只支持 2 个 agent，但检测到 ${agentNameSet.length} 个（${agentNameSet.join(', ')}）。`,
     };
@@ -158,22 +147,12 @@ const computeTrackOutcome = (
   const rounds = Array.from(new Set(rows.map((r) => r.round))).sort((x, y) => x - y);
   const maxRound = rounds[rounds.length - 1] ?? 0;
   if (maxRound <= 0) {
-    return { trackIndex, label, outcome: '未达成一致', stable: false, error: '无有效轮次数据。' };
+    return { trackIndex, label, stable: false, error: '无有效轮次数据。' };
   }
 
   const k = Math.max(1, Math.floor(params.k));
   const epsilon = Math.max(0, params.epsilon);
-  const tau = Math.min(0.99, Math.max(0.5, params.tau));
-
   const windowStart = Math.max(1, maxRound - k + 1);
-  const dSeries: Array<{ round: number; d: number }> = [];
-  for (let t = 1; t <= maxRound; t += 1) {
-    const x1 = m1.get(t)?.stanceScore;
-    const x2 = m2.get(t)?.stanceScore;
-    if (x1 == null || x2 == null) continue;
-    dSeries.push({ round: t, d: Math.abs(x1 - x2) });
-  }
-
   let maxDInWindow = 0;
   let windowPairs = 0;
   let sum1 = 0;
@@ -208,8 +187,6 @@ const computeTrackOutcome = (
   const r2 =
     delta1 != null && delta2 != null && denom > 0 ? Math.abs(delta2) / denom : 0.5;
 
-  // Mapping to "A1说服A2 / A2说服A1 / 相互趋同" (A1=agentA, A2=agentB).
-  let outcome: ProcessingOutcome = '未达成一致';
   let error: string | undefined;
   if (windowPairs === 0) {
     error = `数据不足：最后 k=${k} 轮（${windowStart}..${maxRound}）缺少可配对的两人立场分数，无法计算 Δ 与一致性。`;
@@ -218,29 +195,15 @@ const computeTrackOutcome = (
   } else if (x1_1 == null || x2_1 == null) {
     error = '数据不足：缺少第 1 轮立场分数，无法计算 Δ。';
   } else if (!stable) {
-    outcome = '未达成一致';
     if (windowPairs !== k) {
       error = `窗口覆盖不足：需要 ${k} 轮，但仅匹配到 ${windowPairs} 轮；Δ 以可用轮次均值近似。`;
-    }
-  } else {
-    // Stable: apply persuasion vs convergence.
-    outcome = '相互趋同';
-    if (r1 >= tau && r2 < tau) {
-      outcome = 'A2说服A1';
-    } else if (r2 >= tau && r1 < tau) {
-      outcome = 'A1说服A2';
-    } else {
-      outcome = '相互趋同';
     }
   }
 
   return {
     trackIndex,
     label,
-    outcome,
     stable,
-    maxDInWindow,
-    dSeries,
     windowCoverage,
     agent1Name: a1Name,
     agent2Name: a2Name,
@@ -252,8 +215,8 @@ const computeTrackOutcome = (
     dPostSigned,
     delta1,
     delta2,
-    r1: stable ? r1 : undefined,
-    r2: stable ? r2 : undefined,
+    r1: delta1 != null && delta2 != null ? r1 : undefined,
+    r2: delta1 != null && delta2 != null ? r2 : undefined,
     error,
   };
 };
@@ -266,7 +229,6 @@ export function DataProcessingPage() {
   const [params, setParams] = useState<AnalysisParams>({
     epsilon: 1,
     k: 5,
-    tau: 0.55,
   });
 
   const parseStanceLongFromArrayBuffer = (buf: ArrayBuffer): StanceLongRow[] => {
@@ -359,16 +321,7 @@ export function DataProcessingPage() {
     return trackInputs.map((t) => computeTrackOutcome(t.rows, params, t.labelHint));
   }, [params, trackInputs]);
 
-  const summary = useMemo(() => {
-    const counts = analyses.reduce<Record<ProcessingOutcome, number>>(
-      (acc, item) => {
-        acc[item.outcome] += 1;
-        return acc;
-      },
-      { 未达成一致: 0, A1说服A2: 0, A2说服A1: 0, 相互趋同: 0 },
-    );
-    return counts;
-  }, [analyses]);
+  const stableCount = useMemo(() => analyses.filter((a) => a.stable).length, [analyses]);
 
   return (
     <div className="page page--results">
@@ -441,20 +394,6 @@ export function DataProcessingPage() {
                 onChange={(e) => setParams((p) => ({ ...p, k: Math.max(1, Math.floor(Number(e.target.value))) }))}
               />
             </label>
-            <label className="form-field">
-              <span>判别阈值 τ（≥0.51）</span>
-              <input
-                type="number"
-                min={0.51}
-                max={0.99}
-                step="0.01"
-                value={params.tau}
-                onChange={(e) => setParams((p) => ({ ...p, tau: Number(e.target.value) }))}
-              />
-              <p className="form-hint">
-                若稳定一致：用 \(r_i=|\Delta_i|/(|\Delta_1|+|\Delta_2|)\) 与 τ 判别 “说服 vs 相互趋同”。
-              </p>
-            </label>
           </div>
 
           {error ? <p className="form-hint error">错误：{error}</p> : null}
@@ -462,41 +401,29 @@ export function DataProcessingPage() {
           {analyses.length > 0 ? (
             <>
               <p className="form-hint">
-                汇总：未达成一致 {summary['未达成一致']} ｜ A1说服A2 {summary['A1说服A2']} ｜ A2说服A1 {summary['A2说服A1']} ｜ 相互趋同 {summary['相互趋同']}
+                汇总：共 {analyses.length} 条记录，其中稳定一致 {stableCount} 条。
               </p>
               <div className="results-table">
                 <table>
                   <thead>
                     <tr>
-                      <th>轨道</th>
-                      <th>结论</th>
+                      <th>实验配置</th>
+                      <th>Δ1（A1）</th>
+                      <th>Δ2（A2）</th>
+                      <th>r1</th>
+                      <th>r2</th>
                       <th>稳定一致</th>
-                      <th>max d(t)（窗口内）</th>
-                      <th>x1(1)-x2(1)</th>
-                      <th>x̄1-x̄2（最后k轮均值）</th>
-                      <th>Δ1 / Δ2（带符号）</th>
-                      <th>r1 / r2</th>
-                      <th>窗口覆盖</th>
-                      <th>备注</th>
                     </tr>
                   </thead>
                   <tbody>
                     {analyses.map((a) => (
                       <tr key={`${a.trackIndex}-${a.label}`}>
-                        <td>{a.label}</td>
-                        <td>{a.outcome}</td>
-                        <td>{a.stable ? '是' : '否'}</td>
-                        <td>{a.maxDInWindow != null ? a.maxDInWindow.toFixed(3) : ''}</td>
-                        <td>{fmtSigned(a.d0Signed)}</td>
-                        <td>{fmtSigned(a.dPostSigned)}</td>
-                        <td>
-                          {a.delta1 != null && a.delta2 != null ? `${fmtSigned(a.delta1)} / ${fmtSigned(a.delta2)}` : ''}
-                        </td>
-                        <td>
-                          {a.r1 != null && a.r2 != null ? `${a.r1.toFixed(3)} / ${a.r2.toFixed(3)}` : ''}
-                        </td>
-                        <td>{a.windowCoverage ?? ''}</td>
-                        <td>{a.error ?? ''}</td>
+                        <td title={a.error ? `备注：${a.error}` : undefined}>{a.label}</td>
+                        <td>{fmtSigned(a.delta1)}</td>
+                        <td>{fmtSigned(a.delta2)}</td>
+                        <td>{a.r1 != null ? a.r1.toFixed(3) : ''}</td>
+                        <td>{a.r2 != null ? a.r2.toFixed(3) : ''}</td>
+                        <td title={a.windowCoverage ? `窗口覆盖：${a.windowCoverage}` : undefined}>{a.stable ? '是' : '否'}</td>
                       </tr>
                     ))}
                   </tbody>
