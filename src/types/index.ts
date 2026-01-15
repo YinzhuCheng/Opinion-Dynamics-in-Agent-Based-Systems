@@ -297,4 +297,4 @@ export interface RunStatus {
   sessionId: number;
 }
 
-export type PageKey = 'configuration' | 'dialogue' | 'results';
+export type PageKey = 'configuration' | 'dialogue' | 'results' | 'processing';

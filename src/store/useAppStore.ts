@@ -190,9 +190,9 @@ export interface AppStore {
   experiments: PersonaTraversalExperimentRecord[];
   activeExperimentId?: string;
   activeExperimentTrack?: ExperimentTrackSelector;
-  currentPage: 'configuration' | 'dialogue' | 'results';
+  currentPage: 'configuration' | 'dialogue' | 'results' | 'processing';
   vendorDefaults: VendorDefaults;
-  setCurrentPage: (page: 'configuration' | 'dialogue' | 'results') => void;
+  setCurrentPage: (page: 'configuration' | 'dialogue' | 'results' | 'processing') => void;
     updateRunConfig: (updater: Partial<RunConfig> | ((config: RunConfig) => RunConfig)) => void;
   setAgents: (agents: AgentSpec[]) => void;
   addAgent: (agent?: Partial<AgentSpec>) => void;
