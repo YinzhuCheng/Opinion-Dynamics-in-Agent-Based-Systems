@@ -41,6 +41,8 @@ type TrackAnalysis = {
   x2_1?: number;
   x1_post?: number;
   x2_post?: number;
+  d0Signed?: number;
+  dPostSigned?: number;
   delta1?: number;
   delta2?: number;
   r1?: number;
@@ -116,6 +118,15 @@ const orderTwoAgents = (names: string[]): [string, string] => {
   return names[0].localeCompare(names[1]) <= 0 ? [names[0], names[1]] : [names[1], names[0]];
 };
 
+const fmtSigned = (value: number | undefined, digits = 3): string => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  const abs = Math.abs(value);
+  const core = abs.toFixed(digits);
+  if (value > 0) return `+${core}`;
+  if (value < 0) return `-${core}`;
+  return `0.${'0'.repeat(digits)}`;
+};
+
 const computeTrackOutcome = (
   rows: StanceLongRow[],
   params: AnalysisParams,
@@ -188,6 +199,8 @@ const computeTrackOutcome = (
     x1_post != null && x1_1 != null ? x1_post - x1_1 : undefined;
   const delta2 =
     x2_post != null && x2_1 != null ? x2_post - x2_1 : undefined;
+  const d0Signed = x1_1 != null && x2_1 != null ? x1_1 - x2_1 : undefined;
+  const dPostSigned = x1_post != null && x2_post != null ? x1_post - x2_post : undefined;
   const denom =
     delta1 != null && delta2 != null ? Math.abs(delta1) + Math.abs(delta2) : 0;
   const r1 =
@@ -235,6 +248,8 @@ const computeTrackOutcome = (
     x2_1,
     x1_post,
     x2_post,
+    d0Signed,
+    dPostSigned,
     delta1,
     delta2,
     r1: stable ? r1 : undefined,
@@ -457,6 +472,8 @@ export function DataProcessingPage() {
                       <th>结论</th>
                       <th>稳定一致</th>
                       <th>max d(t)（窗口内）</th>
+                      <th>x1(1)-x2(1)</th>
+                      <th>x̄1-x̄2（最后k轮均值）</th>
                       <th>Δ1 / Δ2（带符号）</th>
                       <th>r1 / r2</th>
                       <th>窗口覆盖</th>
@@ -470,8 +487,10 @@ export function DataProcessingPage() {
                         <td>{a.outcome}</td>
                         <td>{a.stable ? '是' : '否'}</td>
                         <td>{a.maxDInWindow != null ? a.maxDInWindow.toFixed(3) : ''}</td>
+                        <td>{fmtSigned(a.d0Signed)}</td>
+                        <td>{fmtSigned(a.dPostSigned)}</td>
                         <td>
-                          {a.delta1 != null && a.delta2 != null ? `${a.delta1.toFixed(3)} / ${a.delta2.toFixed(3)}` : ''}
+                          {a.delta1 != null && a.delta2 != null ? `${fmtSigned(a.delta1)} / ${fmtSigned(a.delta2)}` : ''}
                         </td>
                         <td>
                           {a.r1 != null && a.r2 != null ? `${a.r1.toFixed(3)} / ${a.r2.toFixed(3)}` : ''}
