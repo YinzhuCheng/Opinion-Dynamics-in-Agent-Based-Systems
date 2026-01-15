@@ -377,7 +377,7 @@ export function DataProcessingPage() {
               />
             </label>
             <label className="form-field">
-              <span>判别阈值 τ（>0.5）</span>
+              <span>判别阈值 τ（≥0.51）</span>
               <input
                 type="number"
                 min={0.51}
