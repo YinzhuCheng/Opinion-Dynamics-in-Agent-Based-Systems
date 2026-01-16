@@ -185,6 +185,12 @@ ${trustWeights
   const personaStanceIndependence = `人格与立场的关系（实验与严谨性要求）：
   - 人格只影响表达风格、让步幅度、信息采样偏好与“更新规则”，不决定你站哪一边。
   - 立场方向由（系统锁定的 stance.score / 初始立场 / 对话证据）决定；禁止因为人格“看起来更像某一方”就擅自改写正负方向。`;
+  const dialogueStrategyGuidelines = `讨论策略选择（每轮自适应，避免机械化）：
+  - 你可以在“继续争论”与“促进一致”之间自由选择，并根据当前情境切换。
+  - 选择依据必须包含两类信号：①你此刻的状态/风险判断/合作意愿（来自 state.short_term 或你对自身状态的总结）；②讨论推进程度（是否反复打转、是否已出现共识点、是否进入收束/总结阶段）。
+  - 重要：不要在输出中显式写出任何标签或元描述（例如“我选择争论/我选择促进一致/策略=…”），只需让内容自然体现你当前的基调与行动。
+  - 若你倾向“继续争论”：聚焦 1 个核心分歧点，指出对方关键假设/漏洞，并给出证据或推理链推进讨论。
+  - 若你倾向“促进一致”：先提出 2~3 条已达成或可共享的共识点/共同前提，再给出一个双方都能接受的最小共同结论，并用一个简短问题邀请对方确认。促成一致不等于迎合，仍需论证自洽。`;
   const continuityGuidelines = `对话要求（精简）：
   - 优先回应上一位发言者；若开启新点，需解释衔接。
   - 避免复读；引用他人观点时用新角度/新证据推进。
@@ -287,6 +293,7 @@ ${includePersonalExample ? '提示：可加入一个生活化例子（可假设�
     personaBlock,
     personaAlignmentHint,
     personaStanceIndependence,
+    dialogueStrategyGuidelines,
     trustSection,
     extraBlock,
     stanceLine,
