@@ -7,6 +7,7 @@ import type {
   PromptToggleKey,
   Big5TraitKey,
   PersonaTraversalExperimentConfig,
+  PersonaTraversalExperimentKind,
 } from '../../types';
 import { DEFAULT_PROMPT_TOGGLES } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
@@ -112,29 +113,55 @@ export function RunSettingsSection() {
   const experimentLevels = [10, 30, 50, 70, 90];
   const defaultDimensions: Big5TraitKey[] = ['O', 'A', 'N'];
   const isExperimentSupported = agents.length === 2;
-  const resolvedExperimentDimensions = experiment?.dimensions ?? [];
-  const resolvedExperimentLevels = experiment?.levels?.length ? experiment.levels : experimentLevels;
+  const experimentKind: PersonaTraversalExperimentKind = experiment?.kind ?? 'big5_grid';
+  const resolvedExperimentDimensions =
+    experimentKind === 'big5_grid' && experiment && 'dimensions' in experiment ? experiment.dimensions ?? [] : [];
+  const resolvedExperimentLevels =
+    experimentKind === 'big5_grid' && experiment && 'levels' in experiment && experiment.levels?.length
+      ? experiment.levels
+      : experimentLevels;
+  const maxLevel = Math.floor(Math.max(3, discussion.stanceScaleSize) / 2);
   const experimentM =
-    resolvedExperimentDimensions.length > 0
-      ? resolvedExperimentDimensions.length * resolvedExperimentLevels.length * resolvedExperimentLevels.length
-      : 0;
+    experimentKind === 'symmetric_initial_stance'
+      ? maxLevel + 1
+      : resolvedExperimentDimensions.length > 0
+        ? resolvedExperimentDimensions.length * resolvedExperimentLevels.length * resolvedExperimentLevels.length
+        : 0;
   const clampedExperimentConcurrency = Math.max(1, Math.min(experimentM || 1, experiment?.concurrency ?? 1));
 
   const setExperimentConfig = (partial: Partial<PersonaTraversalExperimentConfig>) => {
     if (!isExperimentSupported) return;
+    const kind: PersonaTraversalExperimentKind =
+      ('kind' in partial && partial.kind ? partial.kind : undefined) ??
+      (experiment?.kind ?? 'big5_grid');
     const agentIds: [string, string] =
       partial.agentIds ??
       experiment?.agentIds ??
       ([agents[0]?.id ?? '', agents[1]?.id ?? ''] as [string, string]);
-    const nextDimensions = partial.dimensions ?? resolvedExperimentDimensions;
-    const nextLevels = partial.levels ?? resolvedExperimentLevels;
-    const M =
-      nextDimensions.length > 0 ? nextDimensions.length * nextLevels.length * nextLevels.length : 0;
+    if (kind === 'symmetric_initial_stance') {
+      const M = maxLevel + 1;
+      const nextConcurrency = Math.max(1, Math.min(M || 1, partial.concurrency ?? clampedExperimentConcurrency));
+      updateRunConfig((config) => ({
+        ...config,
+        personaTraversalExperiment: {
+          enabled: partial.enabled ?? experiment?.enabled ?? false,
+          kind: 'symmetric_initial_stance',
+          agentIds,
+          concurrency: nextConcurrency,
+        },
+      }));
+      return;
+    }
+    const nextDimensions =
+      'dimensions' in partial && partial.dimensions ? partial.dimensions : resolvedExperimentDimensions;
+    const nextLevels = 'levels' in partial && partial.levels ? partial.levels : resolvedExperimentLevels;
+    const M = nextDimensions.length > 0 ? nextDimensions.length * nextLevels.length * nextLevels.length : 0;
     const nextConcurrency = Math.max(1, Math.min(M || 1, partial.concurrency ?? clampedExperimentConcurrency));
     updateRunConfig((config) => ({
       ...config,
       personaTraversalExperiment: {
         enabled: partial.enabled ?? experiment?.enabled ?? false,
+        kind: 'big5_grid',
         agentIds,
         dimensions: nextDimensions,
         levels: nextLevels,
@@ -154,6 +181,7 @@ export function RunSettingsSection() {
       ...config,
       personaTraversalExperiment: {
         enabled: true,
+        kind: 'big5_grid',
         agentIds: [agents[0]?.id ?? '', agents[1]?.id ?? ''],
         dimensions: defaultDimensions,
         levels: experimentLevels,
@@ -164,13 +192,13 @@ export function RunSettingsSection() {
 
   const includeDimension = (key: Big5TraitKey) => resolvedExperimentDimensions.includes(key);
   const toggleDimension = (key: Big5TraitKey, checked: boolean) => {
+    if (experimentKind !== 'big5_grid') return;
     const current = new Set<Big5TraitKey>(resolvedExperimentDimensions);
     if (checked) current.add(key);
     else current.delete(key);
     setExperimentConfig({ dimensions: Array.from(current) });
   };
 
-  const maxLevel = Math.floor(Math.max(3, discussion.stanceScaleSize) / 2);
   const applyInitialStances = () => {
     if (!isExperimentSupported) return;
     const a = Number(initialStanceA);
@@ -470,10 +498,10 @@ export function RunSettingsSection() {
 
               {isExperimentSupported ? (
                 <div className="card-section">
-                  <h3 className="card-section-title">人格遍历实验（2 Agent）</h3>
+                  <h3 className="card-section-title">遍历实验（2 Agent）</h3>
                   <p className="form-hint">
-                    固定其他参数，对两位 Agent 的同一人格维度做 5×5 网格遍历（取值 10/30/50/70/90）。
-                    遍历某个维度时，其余人格维度一律设为 50。总实验规模记为 M，并支持并发 k（k ≤ M）。
+                    支持两种遍历方式：
+                    人格遍历（Big5 维度 5×5 网格）与对称初始立场遍历（A1=-k, A2=+k，从 ±{maxLevel} 到 0，去重不再遍历 (k,-k)）。
                   </p>
                   <label className="checkbox-field">
                     <div className="checkbox-description">
@@ -483,8 +511,8 @@ export function RunSettingsSection() {
                         onChange={(event) => handleExperimentEnabledChange(event.target.checked)}
                       />
                       <div>
-                        <strong>启用人格遍历实验</strong>
-                        <p className="form-hint">启用后，可在对话页点击“开始实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
+                        <strong>启用遍历实验</strong>
+                        <p className="form-hint">启用后，可在对话页点击“开始遍历实验”启动批量轨道；单次对话仍可正常开始/停止。</p>
                       </div>
                     </div>
                   </label>
@@ -509,78 +537,107 @@ export function RunSettingsSection() {
                           onChange={(event) => setExperimentConfig({ concurrency: Number(event.target.value) || 1 })}
                         />
                         <p className="form-hint">
-                          当前实验规模 M = {experimentM || 0}（维度 {resolvedExperimentDimensions.join(', ') || '（未选择）'} × 5×5 档位组合）。
+                          当前实验规模 M = {experimentM || 0}
+                          {experimentKind === 'big5_grid'
+                            ? `（维度 ${resolvedExperimentDimensions.join(', ') || '（未选择）'} × 5×5 档位组合）`
+                            : `（对称初始立场：${agents[0]?.name ?? 'A1'}=-${maxLevel}…0，${agents[1]?.name ?? 'A2'}=+${maxLevel}…0）`}
                         </p>
                       </label>
 
-                      <div className="form-field">
-                        <span>初始立场（A1/A2，可选，独立）</span>
-                        <div className="grid two-columns">
-                          <label className="form-field">
-                            <span>{agents[0]?.name ?? 'A1'} 初始立场</span>
-                            <input
-                              type="number"
-                              value={initialStanceA}
-                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
-                              onChange={(event) => setInitialStanceA(event.target.value)}
-                            />
-                          </label>
-                          <label className="form-field">
-                            <span>{agents[1]?.name ?? 'A2'} 初始立场</span>
-                            <input
-                              type="number"
-                              value={initialStanceB}
-                              placeholder={`范围：-${maxLevel}…+${maxLevel}`}
-                              onChange={(event) => setInitialStanceB(event.target.value)}
-                            />
-                          </label>
-                        </div>
-                        <div className="vendor-card__actions">
-                          <button
-                            type="button"
-                            className="button tertiary"
-                            onClick={applyInitialStances}
-                            title="分别写入两位 Agent 的 initialStance（首轮锁死）"
-                          >
-                            应用
-                          </button>
-                          <button
-                            type="button"
-                            className="button ghost"
-                            onClick={clearInitialStances}
-                            title="清空两位 Agent 的 initialStance（不再锁死首轮立场）"
-                          >
-                            清空
-                          </button>
-                        </div>
+                      <label className="form-field">
+                        <span>遍历类型</span>
+                        <select
+                          value={experimentKind}
+                          onChange={(event) => {
+                            const next = event.target.value as PersonaTraversalExperimentKind;
+                            if (next === 'symmetric_initial_stance') {
+                              setExperimentConfig({ kind: 'symmetric_initial_stance', concurrency: 1 });
+                            } else {
+                              setExperimentConfig({ kind: 'big5_grid', dimensions: defaultDimensions, levels: experimentLevels, concurrency: 1 });
+                            }
+                          }}
+                        >
+                          <option value="big5_grid">人格遍历（Big5 5×5 网格）</option>
+                          <option value="symmetric_initial_stance">对称初始立场遍历（-k,+k…0,0）</option>
+                        </select>
                         <p className="form-hint">
-                          人格遍历只覆盖 Big5；initialStance 与人格独立。首轮立场锁死仅在对应 Agent 的 initialStance 有值时生效。
+                          对称初始立场遍历会覆盖两位 Agent 的 initialStance（首轮锁死），每条轨道分别设为 {agents[0]?.name ?? 'A1'}=-k、{agents[1]?.name ?? 'A2'}=+k。
                         </p>
-                      </div>
+                      </label>
 
-                      <div className="form-field">
-                        <span>遍历维度</span>
-                        <div className="grid two-columns">
-                          {(['O', 'C', 'E', 'A', 'N'] as Big5TraitKey[]).map((key) => (
-                            <label key={key} className="checkbox-field">
-                              <div className="checkbox-description">
+                      {experimentKind === 'big5_grid' ? (
+                        <>
+                          <div className="form-field">
+                            <span>初始立场（A1/A2，可选，独立）</span>
+                            <div className="grid two-columns">
+                              <label className="form-field">
+                                <span>{agents[0]?.name ?? 'A1'} 初始立场</span>
                                 <input
-                                  type="checkbox"
-                                  checked={includeDimension(key)}
-                                  onChange={(event) => toggleDimension(key, event.target.checked)}
+                                  type="number"
+                                  value={initialStanceA}
+                                  placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                                  onChange={(event) => setInitialStanceA(event.target.value)}
                                 />
-                                <div>
-                                  <strong>{key}</strong>
-                                  <p className="form-hint">未勾选则该维度始终为 50</p>
-                                </div>
-                              </div>
-                            </label>
-                          ))}
-                        </div>
-                        <p className="form-hint">
-                          至少选择 1 个维度才会生成轨道；不选则 M=0，实验无法启动。
-                        </p>
-                      </div>
+                              </label>
+                              <label className="form-field">
+                                <span>{agents[1]?.name ?? 'A2'} 初始立场</span>
+                                <input
+                                  type="number"
+                                  value={initialStanceB}
+                                  placeholder={`范围：-${maxLevel}…+${maxLevel}`}
+                                  onChange={(event) => setInitialStanceB(event.target.value)}
+                                />
+                              </label>
+                            </div>
+                            <div className="vendor-card__actions">
+                              <button
+                                type="button"
+                                className="button tertiary"
+                                onClick={applyInitialStances}
+                                title="分别写入两位 Agent 的 initialStance（首轮锁死）"
+                              >
+                                应用
+                              </button>
+                              <button
+                                type="button"
+                                className="button ghost"
+                                onClick={clearInitialStances}
+                                title="清空两位 Agent 的 initialStance（不再锁死首轮立场）"
+                              >
+                                清空
+                              </button>
+                            </div>
+                            <p className="form-hint">
+                              人格遍历只覆盖 Big5；initialStance 与人格独立。首轮立场锁死仅在对应 Agent 的 initialStance 有值时生效。
+                            </p>
+                          </div>
+
+                          <div className="form-field">
+                            <span>遍历维度</span>
+                            <div className="grid two-columns">
+                              {(['O', 'C', 'E', 'A', 'N'] as Big5TraitKey[]).map((key) => (
+                                <label key={key} className="checkbox-field">
+                                  <div className="checkbox-description">
+                                    <input
+                                      type="checkbox"
+                                      checked={includeDimension(key)}
+                                      onChange={(event) => toggleDimension(key, event.target.checked)}
+                                    />
+                                    <div>
+                                      <strong>{key}</strong>
+                                      <p className="form-hint">未勾选则该维度始终为 50</p>
+                                    </div>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                            <p className="form-hint">
+                              至少选择 1 个维度才会生成轨道；不选则 M=0，实验无法启动。
+                            </p>
+                          </div>
+                        </>
+                      ) : null}
+
                     </div>
                   ) : null}
                 </div>

@@ -6,6 +6,7 @@ const navItems = [
   { path: '/', label: '配置', key: 'configuration' },
   { path: '/dialogue', label: '对话', key: 'dialogue' },
   { path: '/results', label: '结果', key: 'results' },
+  { path: '/processing', label: '数据处理', key: 'processing' },
 ];
 
 export function TopNav() {

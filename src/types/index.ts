@@ -108,29 +108,52 @@ export interface RunConfig {
 
 export type TrustMatrix = Record<string, Record<string, number>>;
 
-export interface PersonaTraversalExperimentConfig {
-  enabled: boolean;
-  /**
-   * Only supported when exactly 2 agents.
-   * The experiment always traverses BOTH agents' Big5 values.
-   */
-  agentIds: [string, string];
-  /** Selected dimensions to traverse. M = dimensions.length * (levels.length ^ 2). */
-  dimensions: Big5TraitKey[];
-  /** Default: [10,30,50,70,90] */
-  levels: number[];
-  /** Concurrency pool size, 1..M */
-  concurrency: number;
-}
+export type PersonaTraversalExperimentKind = 'big5_grid' | 'symmetric_initial_stance';
 
-export interface ExperimentTrackMeta {
-  index: number;
-  trait: Big5TraitKey;
-  agentAId: string;
-  agentBId: string;
-  agentAValue: number;
-  agentBValue: number;
-}
+export type PersonaTraversalExperimentConfig =
+  | {
+      enabled: boolean;
+      /** Default: big5_grid (legacy configs may omit this field). */
+      kind?: 'big5_grid';
+      /**
+       * Only supported when exactly 2 agents.
+       * The experiment always traverses BOTH agents' Big5 values.
+       */
+      agentIds: [string, string];
+      /** Selected dimensions to traverse. M = dimensions.length * (levels.length ^ 2). */
+      dimensions: Big5TraitKey[];
+      /** Default: [10,30,50,70,90] */
+      levels: number[];
+      /** Concurrency pool size, 1..M */
+      concurrency: number;
+    }
+  | {
+      enabled: boolean;
+      /** Traverse symmetric initial stances: (-k,+k) ... (0,0), without duplicates. */
+      kind: 'symmetric_initial_stance';
+      agentIds: [string, string];
+      /** Concurrency pool size, 1..M */
+      concurrency: number;
+    };
+
+export type ExperimentTrackMeta =
+  | {
+      index: number;
+      kind: 'big5_grid';
+      trait: Big5TraitKey;
+      agentAId: string;
+      agentBId: string;
+      agentAValue: number;
+      agentBValue: number;
+    }
+  | {
+      index: number;
+      kind: 'symmetric_initial_stance';
+      agentAId: string;
+      agentBId: string;
+      agentAInitialStance: number;
+      agentBInitialStance: number;
+    };
 
 export interface ExperimentTrackResult {
   id: string;
@@ -170,11 +193,19 @@ export interface PersonaTraversalExperimentRecord {
   result?: PersonaTraversalExperimentResult;
 }
 
-export interface ExperimentTrackSelector {
-  trait: Big5TraitKey;
-  agentAValue: number;
-  agentBValue: number;
-}
+export type ExperimentTrackSelector =
+  | {
+      /** Default: big5_grid (legacy configs may omit this field). */
+      kind?: 'big5_grid';
+      trait: Big5TraitKey;
+      agentAValue: number;
+      agentBValue: number;
+    }
+  | {
+      kind: 'symmetric_initial_stance';
+      agentAInitialStance: number;
+      agentBInitialStance: number;
+    };
 
 export type ExperimentTrackPhase = 'queued' | 'running' | 'completed' | 'cancelled' | 'error';
 
@@ -206,6 +237,8 @@ export interface Message {
   innerState?: string;
   personalMemory?: string[];
   othersMemory?: string[];
+  /** True when the system injected a fallback stance due to repeated output failures. */
+  isFallback?: boolean;
 }
 
 export type FailureCategory =
@@ -266,4 +299,4 @@ export interface RunStatus {
   sessionId: number;
 }
 
-export type PageKey = 'configuration' | 'dialogue' | 'results';
+export type PageKey = 'configuration' | 'dialogue' | 'results' | 'processing';
