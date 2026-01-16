@@ -80,6 +80,8 @@ interface AgentPromptOptions {
   mode: DialogueMode;
   round: number;
   turn: number;
+  /** Planned total rounds for this conversation (T). */
+  maxRounds: number;
   agentNames: Record<string, string>;
   trustWeights: Array<{ agentName: string; weight: number }>;
   stanceScaleSize: number;
@@ -123,6 +125,8 @@ const buildHistoryTranscript = (
 export const buildAgentSystemPrompt = ({
   agent,
   mode,
+  round,
+  maxRounds,
   trustWeights,
   stanceScaleSize,
   positiveViewpoint,
@@ -185,6 +189,9 @@ ${trustWeights
   const personaStanceIndependence = `人格与立场的关系（实验与严谨性要求）：
   - 人格只影响表达风格、让步幅度、信息采样偏好与“更新规则”，不决定你站哪一边。
   - 立场方向由（系统锁定的 stance.score / 初始立场 / 对话证据）决定；禁止因为人格“看起来更像某一方”就擅自改写正负方向。`;
+  const timelineHint = `进度信息：
+  - 本次对话预设总轮数 T = ${Math.max(1, Math.floor(maxRounds || 1))}
+  - 当前轮次 t = ${Math.max(1, Math.floor(round || 1))}`;
   const dialogueStrategyGuidelines = `讨论策略选择（每轮自适应，避免机械化）：
   - 你可以在“继续争论”与“促进一致”之间自由选择，并根据当前情境切换。
   - 选择依据必须包含两类信号：①你此刻的状态/风险判断/合作意愿（来自 state.short_term 或你对自身状态的总结）；②讨论推进程度（是否反复打转、是否已出现共识点、是否进入收束/总结阶段）。
@@ -219,7 +226,9 @@ ${trustWeights
   - personal_memory：1~3 句，第一人称，记录你此刻要记住的信念/情绪/承诺（必须可从已发生对话推得出）。
   - others_memory：0~3 句，格式“<Agent 名> - 触发点”，只写你确实听到/理解到的刺激（首轮首发可为空数组）。
   - long_term：2~3 句，概括“我是谁/我坚持什么”（人格画像+初始立场+累积记忆）。
-  - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。`
+  - short_term：2~3 句，概括此刻情绪/目标/风险判断，以及最新刺激如何微调你。要求：
+    * 第 1 条必须写明你本轮更偏“继续争论”还是“促进一致”（用自然中文表述，不要写任何标签或元描述）。
+    * 同一条或紧接第 2 条必须说明依据：同时参考①你自身状态（情绪/风险判断/合作意愿）与②对话进程（含是否接近第 T 轮、是否反复打转、是否出现共识点等）。`
     : undefined;
   const innerStateGuidelinesBlock = memoryEnabled ? innerStateGuidelines : undefined;
   const thoughtGuidelines = outputThinkEnabled
@@ -293,6 +302,7 @@ ${includePersonalExample ? '提示：可加入一个生活化例子（可假设�
     personaBlock,
     personaAlignmentHint,
     personaStanceIndependence,
+    timelineHint,
     dialogueStrategyGuidelines,
     trustSection,
     extraBlock,
@@ -317,6 +327,7 @@ export const buildAgentUserPrompt = ({
   mode,
   round,
   agentNames,
+  maxRounds,
   stanceScaleSize,
   previousRoundMessages,
   lastSpeakerMessage,
@@ -395,6 +406,7 @@ export const buildAgentUserPrompt = ({
     mode === 'sequential'
       ? '当前为依次发言模式，请紧扣固定顺序提供有效观点或补充。'
       : '当前为随机顺序发言模式，请在出场机会内明确表达立场与理由。';
+  const timelineHint = `进度信息：当前第 ${Math.max(1, Math.floor(round || 1))} 轮 / 共 ${Math.max(1, Math.floor(maxRounds || 1))} 轮。`;
 
   const maxLevel = Math.floor(Math.max(3, stanceScaleSize) / 2);
   const scaleValues = buildScaleValues(stanceScaleSize);
@@ -416,6 +428,7 @@ export const buildAgentUserPrompt = ({
           : '上一轮你未给出立场刻度：请先给出稳定且可解释的刻度；后续每轮仅允许小幅更新，且禁止单轮跨越 0。';
   const dynamicContext: Array<string | undefined> = [
     modeHint,
+    timelineHint,
     initialOpinionHint,
     stanceHint,
     transcriptMemoryEnabled
