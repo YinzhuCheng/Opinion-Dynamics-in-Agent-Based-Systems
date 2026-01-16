@@ -408,6 +408,8 @@ export function DataProcessingPage() {
                   <thead>
                     <tr>
                       <th>实验配置</th>
+                      <th>x1(1)-x2(1)</th>
+                      <th>x̄1-x̄2（最后k轮均值）</th>
                       <th>Δ1（A1）</th>
                       <th>Δ2（A2）</th>
                       <th>r1</th>
@@ -419,6 +421,8 @@ export function DataProcessingPage() {
                     {analyses.map((a) => (
                       <tr key={`${a.trackIndex}-${a.label}`}>
                         <td title={a.error ? `备注：${a.error}` : undefined}>{a.label}</td>
+                        <td>{fmtSigned(a.d0Signed)}</td>
+                        <td>{fmtSigned(a.dPostSigned)}</td>
                         <td>{fmtSigned(a.delta1)}</td>
                         <td>{fmtSigned(a.delta2)}</td>
                         <td>{a.r1 != null ? a.r1.toFixed(3) : ''}</td>
